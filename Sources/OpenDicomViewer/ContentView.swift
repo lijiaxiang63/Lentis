@@ -156,102 +156,8 @@ struct ContentView: View {
             return .handled
         }
         .onKeyPress(phases: .down) { press in
-            if press.modifiers.isEmpty {
-                switch press.characters {
-                // 1-4: Layout switching
-                case "1":
-                    withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.single) }
-                    return .handled
-                case "2":
-                    withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.twoHorizontal) }
-                    return .handled
-                case "3":
-                    withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.twoVertical) }
-                    return .handled
-                case "4":
-                    withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.quad) }
-                    return .handled
-                default: break
-                }
-
-                switch press.characters.lowercased() {
-                // R = Reset view (zoom/pan + auto W/L)
-                case "r":
-                    model.resetViewForPanel(model.activePanel)
-                    return .handled
-                // L = Toggle synchronized scrolling (link)
-                case "l":
-                    model.synchronizedScrolling.toggle()
-                    return .handled
-                // X = Toggle cross-reference lines
-                case "x":
-                    model.showCrossReference.toggle()
-                    return .handled
-                // T = Toggle DICOM tags
-                case "t":
-                    model.showTags.toggle()
-                    return .handled
-                // I = Invert
-                case "i":
-                    model.invertForPanel(model.activePanel)
-                    return .handled
-                // F = Fit to window
-                case "f":
-                    model.fitToWindowForPanel(model.activePanel)
-                    return .handled
-                // A = Auto W/L
-                case "a":
-                    if let panel = model.activePanel {
-                        model.autoWindowLevelForPanel(panel)
-                    }
-                    return .handled
-                // Tool selection shortcuts
-                case "o":
-                    model.activeTool = .roiWL
-                    return .handled
-                case "s":
-                    model.activeTool = .roiStats
-                    return .handled
-                case "d":
-                    model.activeTool = .ruler
-                    return .handled
-                case "n":
-                    model.activeTool = .angle
-                    return .handled
-                case "e":
-                    model.activeTool = .eraser
-                    return .handled
-                // ] or . = Rotate clockwise 90°
-                case "]", ".":
-                    model.rotateClockwiseForPanel(model.activePanel)
-                    return .handled
-                // [ or , = Rotate counter-clockwise 90°
-                case "[", ",":
-                    model.rotateCounterClockwiseForPanel(model.activePanel)
-                    return .handled
-                // W = Window/Level tool
-                case "w":
-                    model.activeTool = .windowLevel
-                    return .handled
-                // V = Select tool (default)
-                case "v":
-                    model.activeTool = .select
-                    return .handled
-                // P = Pan tool
-                case "p":
-                    model.activeTool = .pan
-                    return .handled
-                // Z = Zoom tool
-                case "z":
-                    model.activeTool = .zoom
-                    return .handled
-                // H = Flip horizontal
-                case "h":
-                    model.flipHorizontalForPanel(model.activePanel)
-                    return .handled
-                default: break
-                }
-            }
+            // Letter/number shortcuts are handled by NSEvent keyDown monitor in DICOMModel
+            // (works regardless of input method). This handler covers special keys only.
 
             // Space = Toggle cine playback
             if press.key == .space {
@@ -286,7 +192,7 @@ struct ContentView: View {
             HelpView()
         }
         .preferredColorScheme(.dark)
-        .background(WindowAccessor())
+        .background(WindowAccessor(model: model))
     }
 
     // MARK: - Handlers

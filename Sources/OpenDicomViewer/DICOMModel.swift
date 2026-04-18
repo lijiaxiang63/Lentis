@@ -357,6 +357,7 @@ class DICOMModel: ObservableObject {
             }
             return event
         }
+
     }
 
     deinit {

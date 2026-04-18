@@ -548,17 +548,112 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
 
         private func saveState() {
             guard let panel = panel, let model = model, let layer = imageView.layer else { return }
-            let scale = layer.transform.m11
+            // Don't extract scale from m11 — after rotation, m11 ≠ scale.
+            // panel.scale is maintained directly by zoom handlers.
             let tx = layer.transform.m41
             let ty = layer.transform.m42
 
-            panel.scale = scale
             panel.translation = CGPoint(x: tx, y: ty)
-            model.saveViewStateForPanel(panel, scale: scale, translation: CGPoint(x: tx, y: ty))
+            model.saveViewStateForPanel(panel, scale: panel.scale, translation: CGPoint(x: tx, y: ty))
             model.syncZoomFromPanel(panel)
         }
 
         override var acceptsFirstResponder: Bool { true }
+
+        // performKeyEquivalent fires BEFORE the Input Method (Korean/Japanese/Chinese IME)
+        // processes the event. This is the only reliable way to handle single-letter shortcuts
+        // when a CJK input method is active. Returns true to consume the event.
+        override func performKeyEquivalent(with event: NSEvent) -> Bool {
+            guard let model = model, let panel = panel else { return super.performKeyEquivalent(with: event) }
+            // Only handle if this is the active panel (avoid duplicate handling across panels)
+            guard panel.id == model.activePanelID else { return super.performKeyEquivalent(with: event) }
+            // Only handle unmodified keys
+            let flags = event.modifierFlags.intersection([.command, .control, .option])
+            guard flags.isEmpty else { return super.performKeyEquivalent(with: event) }
+            guard let key = event.charactersIgnoringModifiers?.lowercased() else { return super.performKeyEquivalent(with: event) }
+
+            switch key {
+            case "1":
+                DispatchQueue.main.async { withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.single) } }
+                return true
+            case "2":
+                DispatchQueue.main.async { withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.twoHorizontal) } }
+                return true
+            case "3":
+                DispatchQueue.main.async { withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.twoVertical) } }
+                return true
+            case "4":
+                DispatchQueue.main.async { withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.quad) } }
+                return true
+            case "r":
+                model.resetViewForPanel(model.activePanel)
+                return true
+            case "l":
+                model.synchronizedScrolling.toggle()
+                return true
+            case "x":
+                model.showCrossReference.toggle()
+                return true
+            case "t":
+                model.showTags.toggle()
+                return true
+            case "i":
+                model.invertForPanel(model.activePanel)
+                return true
+            case "f":
+                model.fitToWindowForPanel(model.activePanel)
+                return true
+            case "a":
+                if let p = model.activePanel {
+                    model.autoWindowLevelForPanel(p)
+                }
+                return true
+            case "o":
+                model.activeTool = .roiWL
+                return true
+            case "s":
+                model.activeTool = .roiStats
+                return true
+            case "d":
+                model.activeTool = .ruler
+                return true
+            case "n":
+                model.activeTool = .angle
+                return true
+            case "e":
+                model.activeTool = .eraser
+                return true
+            case "]", ".":
+                model.rotateClockwiseForPanel(model.activePanel)
+                return true
+            case "[", ",":
+                model.rotateCounterClockwiseForPanel(model.activePanel)
+                return true
+            case "w":
+                model.activeTool = .windowLevel
+                return true
+            case "v":
+                model.activeTool = .select
+                return true
+            case "p":
+                model.activeTool = .pan
+                return true
+            case "z":
+                model.activeTool = .zoom
+                return true
+            case "h":
+                model.flipHorizontalForPanel(model.activePanel)
+                return true
+            case " ":
+                if panel.isMultiFrame && panel.numberOfFrames > 1 {
+                    model.toggleCinePlayback(panel)
+                    return true
+                }
+                return false
+            default:
+                return super.performKeyEquivalent(with: event)
+            }
+        }
 
         func updateROICursor() {
             let tool = model?.activeTool ?? .select
@@ -641,8 +736,10 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
                 return
             }
 
-            // Activate this panel on click
+            // Activate this panel on click and become first responder
+            // (first responder is needed so keyDown: reaches this view, not the SwiftUI host)
             if let panel = panel, let model = model {
+                window?.makeFirstResponder(self)
                 DispatchQueue.main.async {
                     model.activePanelID = panel.id
                 }
@@ -791,30 +888,82 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
                 return
             }
 
+            // Arrow keys by keyCode (not affected by IME)
             let code = event.keyCode
             switch code {
-            case 123: model.navigatePanel(panel, direction: .prevSeries)
-            case 124: model.navigatePanel(panel, direction: .nextSeries)
-            case 126: model.navigatePanelWithGroup(panel, direction: .prevImage)
-            case 125: model.navigatePanelWithGroup(panel, direction: .nextImage)
-            default: super.keyDown(with: event)
+            case 123: model.navigatePanel(panel, direction: .prevSeries); return
+            case 124: model.navigatePanel(panel, direction: .nextSeries); return
+            case 126: model.navigatePanelWithGroup(panel, direction: .prevImage); return
+            case 125: model.navigatePanelWithGroup(panel, direction: .nextImage); return
+            case 49: // Space
+                if panel.isMultiFrame && panel.numberOfFrames > 1 {
+                    model.toggleCinePlayback(panel); return
+                }
+            case 53: // Escape
+                if !model.groupSelectedPanels.isEmpty {
+                    model.clearGroupSelection(); return
+                }
+            default: break
             }
+
+            // Handle letter/symbol shortcuts using charactersIgnoringModifiers
+            // This returns the physical key regardless of IME (Korean, Japanese, Chinese)
+            let flags = event.modifierFlags.intersection([.command, .control, .option])
+            if flags.isEmpty, let key = event.charactersIgnoringModifiers?.lowercased() {
+                switch key {
+                case "1":
+                    DispatchQueue.main.async { withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.single) } }
+                    return
+                case "2":
+                    DispatchQueue.main.async { withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.twoHorizontal) } }
+                    return
+                case "3":
+                    DispatchQueue.main.async { withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.twoVertical) } }
+                    return
+                case "4":
+                    DispatchQueue.main.async { withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.quad) } }
+                    return
+                case "r": model.resetViewForPanel(model.activePanel); return
+                case "l": model.synchronizedScrolling.toggle(); return
+                case "x": model.showCrossReference.toggle(); return
+                case "t": model.showTags.toggle(); return
+                case "i": model.invertForPanel(model.activePanel); return
+                case "f": model.fitToWindowForPanel(model.activePanel); return
+                case "a":
+                    if let p = model.activePanel { model.autoWindowLevelForPanel(p) }
+                    return
+                case "o": model.activeTool = .roiWL; return
+                case "s": model.activeTool = .roiStats; return
+                case "d": model.activeTool = .ruler; return
+                case "n": model.activeTool = .angle; return
+                case "e": model.activeTool = .eraser; return
+                case "]", ".": model.rotateClockwiseForPanel(model.activePanel); return
+                case "[", ",": model.rotateCounterClockwiseForPanel(model.activePanel); return
+                case "w": model.activeTool = .windowLevel; return
+                case "v": model.activeTool = .select; return
+                case "p": model.activeTool = .pan; return
+                case "z": model.activeTool = .zoom; return
+                case "h": model.flipHorizontalForPanel(model.activePanel); return
+                default: break
+                }
+            }
+
+            // Not handled — pass to default (including IME)
+            super.keyDown(with: event)
         }
 
         override func scrollWheel(with event: NSEvent) {
             // Option/Control+Scroll or Zoom tool active = Zoom
             if event.modifierFlags.contains(.option) || event.modifierFlags.contains(.control) || model?.activeTool == .zoom {
-                guard let layer = imageView.layer else { return }
+                guard let panel = panel else { return }
                 let dy = event.deltaY
                 if dy == 0 { return }
                 let zoomSpeed: CGFloat = 0.05
                 let delta = dy * zoomSpeed
-                let oldScale = layer.transform.m11
-                var newScale = oldScale + CGFloat(delta)
+                var newScale = panel.scale + CGFloat(delta)
                 newScale = max(0.1, min(10.0, newScale))
-                layer.transform.m11 = newScale
-                layer.transform.m22 = newScale
-                saveState()
+                panel.scale = newScale
+                restoreState()
                 return
             }
 
@@ -941,16 +1090,14 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
 
             case .zoom:
                 // Drag up = zoom in, drag down = zoom out
-                guard let layer = imageView.layer, let start = lastDragLocation else { return }
+                guard let start = lastDragLocation else { return }
                 let current = event.locationInWindow
                 let dy = current.y - start.y
                 let zoomSpeed: CGFloat = 0.005
-                let oldScale = layer.transform.m11
-                var newScale = oldScale + dy * zoomSpeed
+                var newScale = panel.scale + dy * zoomSpeed
                 newScale = max(0.1, min(10.0, newScale))
-                layer.transform.m11 = newScale
-                layer.transform.m22 = newScale
-                saveState()
+                panel.scale = newScale
+                restoreState()
                 lastDragLocation = current
 
             case .roiWL, .roiStats:
