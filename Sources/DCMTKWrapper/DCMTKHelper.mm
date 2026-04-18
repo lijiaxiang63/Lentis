@@ -184,8 +184,19 @@ static void ensureDCMTKInitialized(void) {
 
   *isSigned = (rep == EPR_Sint8 || rep == EPR_Sint16 || rep == EPR_Sint32);
 
-  unsigned long totalSize = count * elementSize;
-  NSData *data = [NSData dataWithBytes:interData->getData() length:totalSize];
+  unsigned long totalSize;
+  if (__builtin_mul_overflow(count, elementSize, &totalSize)) {
+    delete image;
+    return nil;
+  }
+
+  const void *pixelPtr = interData->getData();
+  if (!pixelPtr) {
+    delete image;
+    return nil;
+  }
+
+  NSData *data = [NSData dataWithBytes:pixelPtr length:totalSize];
 
   delete image;
   return data;
@@ -480,6 +491,13 @@ static void opj_info_callback(const char *msg, void *client_data) {
   OPJ_UINT32 prec = image->comps[0].prec;
   BOOL sgnd = image->comps[0].sgnd;
 
+  // Validate decoded image dimensions
+  if (imgWidth == 0 || imgHeight == 0 || imgWidth > 65535 || imgHeight > 65535) {
+    NSLog(@"[J2K] Invalid decoded dimensions: %ux%u", imgWidth, imgHeight);
+    opj_image_destroy(image);
+    return nil;
+  }
+
   *width = imgWidth;
   *height = imgHeight;
   *samples = numComps;
@@ -489,11 +507,29 @@ static void opj_info_callback(const char *msg, void *client_data) {
 
   if (prec <= 8) {
     *bitDepth = 8;
-    size_t totalSize = imgWidth * imgHeight * numComps;
+    size_t totalSize;
+    size_t pixelCount;
+    if (__builtin_mul_overflow((size_t)imgWidth, (size_t)imgHeight, &pixelCount) ||
+        __builtin_mul_overflow(pixelCount, (size_t)numComps, &totalSize) ||
+        totalSize > (size_t)2UL * 1024 * 1024 * 1024) {
+      NSLog(@"[J2K] Buffer size overflow or exceeds 2GB");
+      opj_image_destroy(image);
+      return nil;
+    }
     uint8_t *outBuffer = (uint8_t *)malloc(totalSize);
+    if (!outBuffer) {
+      NSLog(@"[J2K] malloc failed for %zu bytes", totalSize);
+      opj_image_destroy(image);
+      return nil;
+    }
 
     if (numComps == 1) {
       OPJ_INT32 *src = image->comps[0].data;
+      if (!src) {
+        free(outBuffer);
+        opj_image_destroy(image);
+        return nil;
+      }
       for (OPJ_UINT32 i = 0; i < imgWidth * imgHeight; i++) {
         outBuffer[i] = (uint8_t)OFstatic_cast(int, src[i]);
       }
@@ -511,11 +547,31 @@ static void opj_info_callback(const char *msg, void *client_data) {
                             freeWhenDone:YES];
   } else {
     *bitDepth = 16;
-    size_t totalSize = imgWidth * imgHeight * numComps * 2;
+    size_t totalSize;
+    size_t pixelCount16;
+    size_t componentBytes;
+    if (__builtin_mul_overflow((size_t)imgWidth, (size_t)imgHeight, &pixelCount16) ||
+        __builtin_mul_overflow(pixelCount16, (size_t)numComps, &componentBytes) ||
+        __builtin_mul_overflow(componentBytes, (size_t)2, &totalSize) ||
+        totalSize > (size_t)2UL * 1024 * 1024 * 1024) {
+      NSLog(@"[J2K] Buffer size overflow or exceeds 2GB (16-bit)");
+      opj_image_destroy(image);
+      return nil;
+    }
     uint16_t *outBuffer = (uint16_t *)malloc(totalSize);
+    if (!outBuffer) {
+      NSLog(@"[J2K] malloc failed for %zu bytes (16-bit)", totalSize);
+      opj_image_destroy(image);
+      return nil;
+    }
 
     if (numComps == 1) {
       OPJ_INT32 *src = image->comps[0].data;
+      if (!src) {
+        free(outBuffer);
+        opj_image_destroy(image);
+        return nil;
+      }
       for (OPJ_UINT32 i = 0; i < imgWidth * imgHeight; i++) {
         if (*isSigned) {
           ((int16_t *)outBuffer)[i] = (int16_t)src[i];
@@ -679,8 +735,15 @@ static void opj_info_callback(const char *msg, void *client_data) {
 
   *isSigned = (rep == EPR_Sint8 || rep == EPR_Sint16 || rep == EPR_Sint32);
 
-  unsigned long totalSize = count * elementSize;
-  return [NSData dataWithBytes:interData->getData() length:totalSize];
+  unsigned long totalSize;
+  if (__builtin_mul_overflow(count, elementSize, &totalSize))
+    return nil;
+
+  const void *pixelPtr = interData->getData();
+  if (!pixelPtr)
+    return nil;
+
+  return [NSData dataWithBytes:pixelPtr length:totalSize];
 }
 
 - (double)getWindowWidth {

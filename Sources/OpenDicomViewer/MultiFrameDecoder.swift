@@ -13,10 +13,13 @@ import ImageIO
 
 func cineLog(_ msg: String) {
     let line = "[\(Date())] \(msg)\n"
-    let path = "/tmp/odv_cine_debug.log"
+    let tempDir = FileManager.default.temporaryDirectory
+    let path = tempDir.appendingPathComponent("odv_cine_debug_\(ProcessInfo.processInfo.processIdentifier).log").path
     if let fh = FileHandle(forWritingAtPath: path) {
         fh.seekToEndOfFile()
-        fh.write(line.data(using: .utf8)!)
+        if let data = line.data(using: .utf8) {
+            fh.write(data)
+        }
         fh.closeFile()
     } else {
         FileManager.default.createFile(atPath: path, contents: line.data(using: .utf8))

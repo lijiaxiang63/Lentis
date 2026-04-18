@@ -370,15 +370,17 @@ class MPREngine {
     /// Generate a sagittal slice at a given X voxel index
     func sagittalSlice(at xIndex: Int) -> MPRSlice? {
         guard xIndex >= 0, xIndex < volume.width else { return nil }
-        // Sagittal: rows = Z (depth, reversed so superior is at top), cols = Y (height)
+        // Sagittal: rows = Z (depth), cols = Y (height)
+        // Flip Z so superior is at top: only when sliceDirection.z >= 0 (z increases toward superior)
         let w = volume.height   // output width = Y dimension
         let h = volume.depth    // output height = Z dimension
+        let flipZ = volume.sliceDirection.z >= 0
 
         var data = Data(count: w * h * MemoryLayout<Int16>.stride)
         data.withUnsafeMutableBytes { buf in
             guard let dst = buf.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
             for z in 0..<volume.depth {
-                let outRow = volume.depth - 1 - z  // Flip Z so superior is at top
+                let outRow = flipZ ? (volume.depth - 1 - z) : z
                 for y in 0..<volume.height {
                     dst[outRow * w + y] = volume.voxelAt(x: xIndex, y: y, z: z)
                 }
@@ -402,15 +404,17 @@ class MPREngine {
     /// Generate a coronal slice at a given Y voxel index
     func coronalSlice(at yIndex: Int) -> MPRSlice? {
         guard yIndex >= 0, yIndex < volume.height else { return nil }
-        // Coronal: rows = Z (depth, reversed so superior is at top), cols = X (width)
+        // Coronal: rows = Z (depth), cols = X (width)
+        // Flip Z so superior is at top: only when sliceDirection.z >= 0 (z increases toward superior)
         let w = volume.width    // output width = X dimension
         let h = volume.depth    // output height = Z dimension
+        let flipZ = volume.sliceDirection.z >= 0
 
         var data = Data(count: w * h * MemoryLayout<Int16>.stride)
         data.withUnsafeMutableBytes { buf in
             guard let dst = buf.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
             for z in 0..<volume.depth {
-                let outRow = volume.depth - 1 - z  // Flip Z so superior is at top
+                let outRow = flipZ ? (volume.depth - 1 - z) : z
                 for x in 0..<volume.width {
                     dst[outRow * w + x] = volume.voxelAt(x: x, y: yIndex, z: z)
                 }

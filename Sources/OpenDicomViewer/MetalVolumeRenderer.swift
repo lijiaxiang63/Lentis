@@ -269,7 +269,8 @@ extension MetalVolumeRenderer {
     // Ray-AABB intersection
     bool intersectBox(float3 rayOrigin, float3 rayDir, float3 boxMin, float3 boxMax,
                       thread float &tNear, thread float &tFar) {
-        float3 invDir = 1.0 / rayDir;
+        float3 safeDir = select(rayDir, float3(1e-8), abs(rayDir) < 1e-8);
+        float3 invDir = 1.0 / safeDir;
         float3 t0 = (boxMin - rayOrigin) * invDir;
         float3 t1 = (boxMax - rayOrigin) * invDir;
         float3 tmin = min(t0, t1);
@@ -378,7 +379,8 @@ extension MetalVolumeRenderer {
 
         // Window/Level
         float windowBottom = uniforms.windowCenter - uniforms.windowWidth * 0.5;
-        float normalized = (result - windowBottom) / uniforms.windowWidth;
+        float safeWW = max(uniforms.windowWidth, 1.0);
+        float normalized = (result - windowBottom) / safeWW;
         normalized = clamp(normalized, 0.0, 1.0);
 
         // Apply inversion if requested

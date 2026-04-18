@@ -295,7 +295,22 @@ class DICOMModel: ObservableObject {
 
     // MARK: - Volume / MPR
     /// Cached volumes keyed by series UID
-    private var volumeCache: [String: VolumeData] = [:]
+    private var _volumeCache: [String: VolumeData] = [:]
+    /// Lock protecting volumeCache
+    private let volumeCacheLock = NSLock()
+    /// Thread-safe read access to volumeCache
+    private func volumeCacheGet(_ key: String) -> VolumeData? {
+        volumeCacheLock.lock()
+        let val = _volumeCache[key]
+        volumeCacheLock.unlock()
+        return val
+    }
+    /// Thread-safe write access to volumeCache
+    private func volumeCacheSet(_ key: String, _ value: VolumeData) {
+        volumeCacheLock.lock()
+        _volumeCache[key] = value
+        volumeCacheLock.unlock()
+    }
     /// Background queue for volume building
     private let volumeBuildQueue: OperationQueue = {
         let q = OperationQueue()
@@ -313,6 +328,8 @@ class DICOMModel: ObservableObject {
     private var multiFrameDecoders: [URL: MultiFrameDecoder] = [:]
     /// URLs currently being decoded (prevents duplicate decoder creation)
     private var decodersInFlight: Set<URL> = []
+    /// Lock protecting multiFrameDecoders and decodersInFlight
+    private let decoderLock = NSLock()
     /// Active playback timers keyed by panel ID
     private var cineTimers: [UUID: Timer] = [:]
 
@@ -340,12 +357,17 @@ class DICOMModel: ObservableObject {
             }
             return event
         }
+
     }
 
     deinit {
         if let monitor = flagsMonitor {
             NSEvent.removeMonitor(monitor)
         }
+        for (_, timer) in cineTimers {
+            timer.invalidate()
+        }
+        cineTimers.removeAll()
     }
     
     // Helper for Thumbnail Preview
@@ -746,6 +768,9 @@ class DICOMModel: ObservableObject {
 
         loadingQueue.cancelAllOperations()
 
+        // Snapshot seriesStates on the main thread to avoid DispatchQueue.main.sync deadlock in the background block
+        let capturedSeriesStates = self.seriesStates
+
         let op = BlockOperation()
         op.addExecutionBlock { [weak self, weak op] in
             guard let self = self, let op = op, !op.isCancelled else { return }
@@ -771,7 +796,7 @@ class DICOMModel: ObservableObject {
             
             if self.currentSeriesIndex >= 0 && self.currentSeriesIndex < self.allSeries.count {
                 let currentSeriesUID = self.allSeries[self.currentSeriesIndex].id
-                if let state = self.seriesStates[currentSeriesUID] {
+                if let state = capturedSeriesStates[currentSeriesUID] {
                     if let sw = state.windowWidth, let sc = state.windowCenter {
                          targetWW = sw
                          targetWC = sc
@@ -886,11 +911,8 @@ class DICOMModel: ObservableObject {
                 var ww: Double = 0
                 var wc: Double = 0
                 
-                // Check Persistent State (Thread-safe access)
-                var savedState: SeriesViewState?
-                DispatchQueue.main.sync {
-                    savedState = self.seriesStates[seriesUID]
-                }
+                // Check Persistent State (using snapshot captured on main thread)
+                let savedState = capturedSeriesStates[seriesUID]
                 
                 if let state = savedState, let sw = state.windowWidth, let sc = state.windowCenter {
                     ww = sw
@@ -1468,6 +1490,11 @@ class DICOMModel: ObservableObject {
 
         let bitsAllocated = getInt(g: 0x0028, e: 0x0100) ?? 16   // BitsAllocated
         let bitsStored = getInt(g: 0x0028, e: 0x0101) ?? bitsAllocated  // BitsStored
+        // TODO: Apply HighBit-based masking when BitsStored < BitsAllocated.
+        // For non-standard HighBit values, pixel data should be right-shifted by
+        // (highBit + 1 - bitsStored) and masked to bitsStored width. Deferred to
+        // avoid breaking existing images that render correctly without it.
+        let _ = getInt(g: 0x0028, e: 0x0102) ?? (bitsStored - 1)  // HighBit
         let samplesPerPixel = getInt(g: 0x0028, e: 0x0002) ?? 1  // SamplesPerPixel
         let pixelRepresentation = getInt(g: 0x0028, e: 0x0103) ?? 0  // 0=unsigned, 1=signed
         let photometric = getStr(g: 0x0028, e: 0x0004) ?? "MONOCHROME2"
@@ -1583,7 +1610,7 @@ class DICOMModel: ObservableObject {
         let destBuffer = destData.bindMemory(to: UInt8.self, capacity: totalPixels)
 
         // VOI LUT function (Linear)
-        let w = ww
+        let w = max(ww, 1.0)
         let c = wc
         let windowBottom = c - (w / 2.0)
 
@@ -2397,6 +2424,12 @@ class DICOMModel: ObservableObject {
         for panel in panels {
             panel.reset()
         }
+        // Clear per-image caches to prevent unbounded growth across directory loads
+        imageCacheParamsLock.lock()
+        imageCacheParams.removeAll()
+        imagePixelMeta.removeAll()
+        imageCacheParamsLock.unlock()
+        seriesThumbnails.removeAll()
     }
 
     /// Auto-assign series to panels (one series per panel, in order)
@@ -2429,13 +2462,37 @@ class DICOMModel: ObservableObject {
         } else if newCount < oldCount {
             // Keep the first N panels, reset and remove the rest
             let removed = panels.suffix(from: newCount)
-            for panel in removed { panel.reset() }
+            for panel in removed {
+                stopCinePlayback(panel)
+                panel.reset()
+            }
             panels = Array(panels.prefix(newCount))
+
+            // Clean up decoders for URLs not used by remaining panels
+            let activeURLs: Set<URL> = Set(panels.compactMap { p in
+                guard p.seriesIndex >= 0, p.seriesIndex < allSeries.count else { return nil }
+                let s = allSeries[p.seriesIndex]
+                guard p.imageIndex >= 0, p.imageIndex < s.images.count else { return nil }
+                return s.images[p.imageIndex].url
+            })
+            decoderLock.lock()
+            let orphanedDecoders = multiFrameDecoders.filter { !activeURLs.contains($0.key) }
+            for key in orphanedDecoders.keys { multiFrameDecoders.removeValue(forKey: key) }
+            decoderLock.unlock()
+            for (_, decoder) in orphanedDecoders {
+                decoder.stopRingBuffer()
+                decoder.clearCache()
+            }
         }
 
         // Ensure active panel is still valid
         if !panels.contains(where: { $0.id == activePanelID }) {
             activePanelID = panels.first?.id ?? UUID()
+        }
+
+        // Ensure fullscreen panel ID is still valid
+        if let fsID = fullscreenPanelID, !panels.contains(where: { $0.id == fsID }) {
+            fullscreenPanelID = nil
         }
     }
 
@@ -2549,7 +2606,7 @@ class DICOMModel: ObservableObject {
 
         if panel.panelMode == .mip {
             if let seriesID = allSeries[safe: panel.seriesIndex]?.id,
-               let vol = volumeCache[seriesID] {
+               let vol = volumeCacheGet(seriesID) {
                 switch direction {
                 case .nextImage:
                     if panel.mipSlabPosition < vol.depth - 1 {
@@ -2623,7 +2680,7 @@ class DICOMModel: ObservableObject {
         // MIP mode: scroll moves slab position through volume
         if panel.panelMode == .mip {
             if let seriesID = allSeries[safe: panel.seriesIndex]?.id,
-               let vol = volumeCache[seriesID] {
+               let vol = volumeCacheGet(seriesID) {
                 switch direction {
                 case .nextImage:
                     if panel.mipSlabPosition < vol.depth - 1 {
@@ -2717,7 +2774,7 @@ class DICOMModel: ObservableObject {
                     loadSingleFileForPanel(targetSeries.images[targetIndex].url, panel: panel)
                 }
             case .mip:
-                if let vol = volumeCache[targetSeries.id], vol.depth > 1 {
+                if let vol = volumeCacheGet(targetSeries.id), vol.depth > 1 {
                     let targetIdx = closestVolumeIndex(dimension: vol.depth, targetSeries: targetSeries, sourceZ: sourceZ, fallbackSource: source, sourceSeries: sourceSeries)
                     if targetIdx != panel.mipSlabPosition {
                         panel.mipSlabPosition = targetIdx
@@ -2725,7 +2782,7 @@ class DICOMModel: ObservableObject {
                     }
                 }
             case .mprSagittal:
-                if let vol = volumeCache[targetSeries.id], vol.width > 1 {
+                if let vol = volumeCacheGet(targetSeries.id), vol.width > 1 {
                     let targetIdx = closestVolumeIndex(dimension: vol.width, targetSeries: targetSeries, sourceZ: sourceZ, fallbackSource: source, sourceSeries: sourceSeries)
                     if targetIdx != panel.mprSliceIndex {
                         panel.mprSliceIndex = targetIdx
@@ -2734,7 +2791,7 @@ class DICOMModel: ObservableObject {
                     }
                 }
             case .mprCoronal:
-                if let vol = volumeCache[targetSeries.id], vol.height > 1 {
+                if let vol = volumeCacheGet(targetSeries.id), vol.height > 1 {
                     let targetIdx = closestVolumeIndex(dimension: vol.height, targetSeries: targetSeries, sourceZ: sourceZ, fallbackSource: source, sourceSeries: sourceSeries)
                     if targetIdx != panel.mprSliceIndex {
                         panel.mprSliceIndex = targetIdx
@@ -3216,7 +3273,7 @@ class DICOMModel: ObservableObject {
             if panel.panelMode == .mip, panel.rawPixelData == nil,
                let renderer = self.metalRenderer,
                let seriesID = allSeries[safe: panel.seriesIndex]?.id,
-               let volume = volumeCache[seriesID] {
+               let volume = volumeCacheGet(seriesID) {
                 // GPU re-render with updated W/L (volume already on GPU)
                 let slabMM = Float(panel.mipSlabThickness) * Float(volume.spacingZ)
                 let center = SIMD3<Float>(Float(volume.width) / 2.0, Float(volume.height) / 2.0, Float(panel.mipSlabPosition))
@@ -3476,15 +3533,15 @@ class DICOMModel: ObservableObject {
                 panel.currentImageInfo = "Image \(img.instanceNumber) (\(panel.imageIndex + 1)/\(s.images.count))"
             }
         case .mprSagittal:
-            if let vol = volumeCache[s.id] {
+            if let vol = volumeCacheGet(s.id) {
                 panel.currentImageInfo = "Sagittal \(panel.mprSliceIndex + 1)/\(vol.width)"
             }
         case .mprCoronal:
-            if let vol = volumeCache[s.id] {
+            if let vol = volumeCacheGet(s.id) {
                 panel.currentImageInfo = "Coronal \(panel.mprSliceIndex + 1)/\(vol.height)"
             }
         case .mip:
-            if let vol = volumeCache[s.id] {
+            if let vol = volumeCacheGet(s.id) {
                 let halfSlab = panel.mipSlabThickness / 2
                 let zStart = max(0, panel.mipSlabPosition - halfSlab) + 1
                 let zEnd = min(vol.depth, panel.mipSlabPosition + halfSlab)
@@ -3506,12 +3563,12 @@ class DICOMModel: ObservableObject {
             }
             return s.images.count
         case .mprSagittal:
-            return volumeCache[s.id]?.width ?? 0
+            return volumeCacheGet(s.id)?.width ?? 0
         case .mprCoronal:
-            return volumeCache[s.id]?.height ?? 0
+            return volumeCacheGet(s.id)?.height ?? 0
         case .mip:
             guard let seriesID = allSeries[safe: panel.seriesIndex]?.id else { return 0 }
-            return volumeCache[seriesID]?.depth ?? 0
+            return volumeCacheGet(seriesID)?.depth ?? 0
         }
     }
 
@@ -3553,14 +3610,14 @@ class DICOMModel: ObservableObject {
             if idx != panel.mprSliceIndex {
                 panel.mprSliceIndex = idx
                 if let seriesID = allSeries[safe: panel.seriesIndex]?.id,
-                   let vol = volumeCache[seriesID] {
+                   let vol = volumeCacheGet(seriesID) {
                     updateMPRSpatialMetadata(panel, volume: vol)
                 }
                 loadMPRSlice(for: panel)
             }
         case .mip:
             guard let seriesID = allSeries[safe: panel.seriesIndex]?.id,
-                  let vol = volumeCache[seriesID] else { return }
+                  let vol = volumeCacheGet(seriesID) else { return }
             let idx = max(0, min(index, vol.depth - 1))
             if idx != panel.mipSlabPosition {
                 panel.mipSlabPosition = idx
@@ -3662,7 +3719,7 @@ class DICOMModel: ObservableObject {
     func volumeSliceCount(seriesIndex: Int) -> Int {
         guard seriesIndex >= 0, seriesIndex < allSeries.count else { return 1 }
         let seriesID = allSeries[seriesIndex].id
-        return volumeCache[seriesID]?.depth ?? 1
+        return volumeCacheGet(seriesID)?.depth ?? 1
     }
 
     // MARK: - Volume Building & MPR
@@ -3676,7 +3733,7 @@ class DICOMModel: ObservableObject {
         let series = allSeries[seriesIndex]
 
         // Return cached volume
-        if let cached = volumeCache[series.id] {
+        if let cached = volumeCacheGet(series.id) {
             completion(cached, nil)
             return
         }
@@ -3703,7 +3760,7 @@ class DICOMModel: ObservableObject {
                 )
 
                 DispatchQueue.main.async {
-                    self.volumeCache[series.id] = volume
+                    self.volumeCacheSet(series.id, volume)
                     self.isVolumeBuildingInProgress = false
                     self.volumeBuildProgress = 1.0
                     BenchmarkLogger.shared.stop("volume_build", dataset: volSeriesDesc, detail: "\(volume.width)x\(volume.height)x\(volume.depth) voxels")
@@ -3866,7 +3923,7 @@ class DICOMModel: ObservableObject {
         guard panel.seriesIndex >= 0, panel.seriesIndex < allSeries.count else { return }
 
         let series = allSeries[panel.seriesIndex]
-        if let volume = volumeCache[series.id] {
+        if let volume = volumeCacheGet(series.id) {
             let maxIndex: Int
             switch panel.panelMode {
             case .mprSagittal: maxIndex = volume.width - 1
@@ -3912,7 +3969,7 @@ class DICOMModel: ObservableObject {
 
         case .mip:
             if let seriesID = allSeries[safe: panel.seriesIndex]?.id,
-               let vol = volumeCache[seriesID] {
+               let vol = volumeCacheGet(seriesID) {
                 panel.mipSlabPosition = vol.depth / 2
                 panel.mipSlabThickness = min(10, vol.depth)
             }
@@ -4056,11 +4113,14 @@ class DICOMModel: ObservableObject {
             panel.numberOfFrames = 0
             panel.currentFrameIndex = 0
             // Clear cached multi-frame decoders when switching to single-frame
-            for (_, decoder) in multiFrameDecoders {
+            decoderLock.lock()
+            let decodersSnapshot = multiFrameDecoders
+            multiFrameDecoders.removeAll()
+            decoderLock.unlock()
+            for (_, decoder) in decodersSnapshot {
                 decoder.stopRingBuffer()
                 decoder.clearCache()
             }
-            multiFrameDecoders.removeAll()
             loadSingleFileForPanel(imageContext.url, panel: panel)
         }
     }
@@ -4074,18 +4134,24 @@ class DICOMModel: ObservableObject {
         cineLog("setupMultiFrameForPanel: \(url.lastPathComponent) (\(imageContext.numberOfFrames) frames)")
 
         // Check for cached decoder
-        if let decoder = multiFrameDecoders[url] {
+        decoderLock.lock()
+        let cachedDecoder = multiFrameDecoders[url]
+        decoderLock.unlock()
+        if let decoder = cachedDecoder {
             cineLog("Using cached decoder for \(url.lastPathComponent)")
             applyMultiFrameDecoder(decoder, to: panel)
             return
         }
 
         // Prevent duplicate decoder creation (two code paths can race)
+        decoderLock.lock()
         if decodersInFlight.contains(url) {
+            decoderLock.unlock()
             cineLog("Decoder already in-flight for \(url.lastPathComponent), skipping")
             return
         }
         decodersInFlight.insert(url)
+        decoderLock.unlock()
 
         // Create decoder in background to avoid blocking UI
         panel.isLoading = true
@@ -4110,14 +4176,16 @@ class DICOMModel: ObservableObject {
                 let totalElapsed = CFAbsoluteTimeGetCurrent() - setupStart
                 cineLog("Total setup time: \(String(format: "%.3f", totalElapsed))s for \(url.lastPathComponent)")
                 // Evict other decoders to limit memory (keep only current file)
-                for (cachedURL, cachedDecoder) in self.multiFrameDecoders where cachedURL != url {
-                    cachedDecoder.stopRingBuffer()
-                    cachedDecoder.clearCache()
-                }
+                self.decoderLock.lock()
+                let oldDecoders = self.multiFrameDecoders.filter { $0.key != url }
                 self.multiFrameDecoders.removeAll()
-                // Store on main thread to avoid data race with decoderForPanel reads
                 self.multiFrameDecoders[url] = decoder
                 self.decodersInFlight.remove(url)
+                self.decoderLock.unlock()
+                for (_, oldDecoder) in oldDecoders {
+                    oldDecoder.stopRingBuffer()
+                    oldDecoder.clearCache()
+                }
                 self.applyMultiFrameDecoder(decoder, to: panel)
             }
         }
@@ -4149,7 +4217,10 @@ class DICOMModel: ObservableObject {
         guard panel.seriesIndex >= 0, panel.seriesIndex < allSeries.count else { return nil }
         let series = allSeries[panel.seriesIndex]
         guard panel.imageIndex >= 0, panel.imageIndex < series.images.count else { return nil }
-        return multiFrameDecoders[series.images[panel.imageIndex].url]
+        decoderLock.lock()
+        let decoder = multiFrameDecoders[series.images[panel.imageIndex].url]
+        decoderLock.unlock()
+        return decoder
     }
 
     /// Navigate to a specific frame
