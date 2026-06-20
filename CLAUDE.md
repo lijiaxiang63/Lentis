@@ -286,6 +286,12 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 > renders real CT/MRI in correct **neurological** orientation with **modality-aware window/level**, a
 > now-smooth **3D crosshair** linkage, and **Phase-7 UI polish + dormant segmentation seams**.
 > `swift test` green (**106**: 50 XCTest + 56 swift-testing).
+> **Re-validated 2026-06-21 at HEAD `c514e9a` (working tree clean):** `swift build` clean, `swift test`
+> 106 green, and the Phase-7 seam symbols all present in committed code — `installDemoSphereMask`,
+> `LabelVolume` on `VolumeData.labelMask` (+ `ensureLabelMask`), `MPREngine.maskSlice` (3-plane
+> alignment locked by `SegmentationSeamTests`), `renderSlice(mask:maskColor:maskAlpha:)` wired through
+> `loadMPRSlice`, model `showMaskOverlay`/`maskOverlayColor`/`maskOverlayAlpha`, and the Eraser
+> mask-edit seam comment in `MultiPanelContainer`.
 > **Phase 7 — DONE** (UI: top-leading `ModalityBadge` CT=amber/MRI=teal + 4D timepoint cluster stacked
 > under `VolumeToolbar`, replacing the bottom-center 4D pill that overlapped the W/L toolbar;
 > orientation-label dark halo; 2px panel gaps; NIfTI wording. Seams: same-grid `LabelVolume` on
