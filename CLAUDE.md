@@ -54,7 +54,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 | File | Role |
 |---|---|
 | `App.swift` | `@main struct LentisApp`. Menus. `--benchmark <path>` auto-open. |
-| `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/MIP, W/L, sync-scroll. **Crosshair (Phase 6):** `crosshairWorld` state + `setCrosshair(_:from:)` (relocates all panels through a world point). DICOM ingestion removed (Phase 3). |
+| `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/MIP, W/L, sync-scroll. **Crosshair (Phase 6):** `setCrosshair(_:from:)` relocates all panels through a world point. The world point lives in a **decoupled `CrosshairState`** (drag-lag fix) — `crosshairWorld` is now a forwarding shim, so writing it does NOT fire `model.objectWillChange`. DICOM ingestion removed (Phase 3). |
 | `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. **Modality-aware W/L (Phase 5):** `modalityDefaultWindow`/`seededWindow` (seed), `applyWindowPreset`/`applyModalityAutoWindow`/`autoWindow(for:)` (UI). |
 | `WindowLevel.swift` | **`WindowPreset` + CT HU preset table** (Phase 5). Brain default `(0,80)`, Subdural/Stroke/Bone/Soft-tissue (HU). `storedWindow(slope:intercept:)` maps HU→stored (identity for direct-HU CT). Pure; no deps. |
 | `NIfTI.swift` | **NIFTI-1/2 reader**. Header/endianness/4D/9 dtypes, sform/qform affine, **pure-Swift DEFLATE** (`DeflateInflater`). Zero deps. |
@@ -62,7 +62,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 | `Orientation.swift` | **Single source of orientation truth** (Phase 4). `anatomicalDirection(of:)` (RAS labels) + `closestCanonicalReorientation(affine:)` → `CanonicalReorientation` (axis permutation + flips, lossless, invertible). Pure; no deps. |
 | `VolumeData.swift` | 3D Int16 voxel buffer + affine. **Two inits**: direction-cosine and full-affine (NIFTI). For NIFTI `voxelToWorldMatrix` is the **canonical RAS** affine; `originalAffine` + `reorientation` are retained for mask write-back. |
 | `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:)` (CPU W/L). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors + cross-ref metadata both read it. **Crosshair geometry (Phase 6):** `PlaneGeometry.world(col:row:)`/`pixel(of:)` (exact-inverse pixel↔world) + `orthogonalSliceIndex(for:containing:)` (world→slice index). (`VolumeBuilder` removed in Phase 3.) |
-| `CrossReferenceOverlay.swift` | **3D crosshair overlay (Phase 6, rewritten).** Draws two lines + center dot through `model.crosshairWorld`'s in-plane projection, on MPR panels only; bridges raw→display pixels then reuses the image's `pixelToScreen` transform. `PanelState.displayedPlaneGeometry` helper. (Replaced the old `computeCrossReference` plane-intersection lines.) |
+| `CrossReferenceOverlay.swift` | **3D crosshair overlay (Phase 6, rewritten).** Draws two lines + center dot through `crosshair.world`'s in-plane projection, on MPR panels only; bridges raw→display pixels then reuses the image's `pixelToScreen` transform. `PanelState.displayedPlaneGeometry` helper. **Hosts `CrosshairState`** (tiny ObservableObject) and observes **it** (not the model) — so a crosshair drag invalidates only this overlay, not the whole quad (drag-lag fix). (Replaced the old `computeCrossReference` lines.) |
 | `MetalVolumeRenderer.swift` | Metal compute, **MIP/MinIP/Average only**. Inline shader strings. Texture `.r16Sint`. W/L on raw stored values. |
 | `MultiPanelContainer.swift` (~2000 lines) | Multi-panel views, gestures, overlays, cursor readout, **4D selector**, `OrientationLabelsOverlay` (**RAS-aware** since Phase 4). **Crosshair (Phase 6):** Select-tool `mouseDown`/`mouseDragged` → `crosshairWorld(at:)` → `model.setCrosshair`. |
 | `PanelState.swift` | Per-panel state. `PanelMode = .slice2D/.mprAxial/.mprSagittal/.mprCoronal/.mip`. `isMPR` helper. `rescaleSlope/Intercept`, `valueUnitLabel`. (`.slice2D` now inert — NIFTI uses `.mprAxial`.) |
@@ -183,41 +183,44 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 
 Ordered roughly by priority. None block the build or tests; these are quality/perf debt.
 
-> **⚠ ACTIVE — HIGH PRIORITY: Phase-6 crosshair DRAG is laggy/janky** (user-reported, HEAD `fd55568`).
-> Single click and the *correctness* of relocation are fine (GUI-verified). What stutters is a real,
-> continuous hand-drag in an MPR panel. **NOT caught in my verification** because computer-use can only
-> synthesize one coarse `left_click_drag`, not a high-rate continuous drag (same gotcha as scroll) — so
-> reproduce/measure by hand or with a probe, NOT via computer-use drag.
-> **Most likely cause (diagnose before fixing — don't trust this blindly):** `mouseDragged` (Select tool)
-> calls `ViewerModel.setCrosshair` on *every* drag event (~60–120/s, no throttle), and the first thing it
-> does is write `crosshairWorld` (an `@Published` on the model). That fires `model.objectWillChange` →
-> **every** view holding `@ObservedObject var model` re-evaluates, including all 4 `PanelView`s → all 4
-> `PanelInteractiveDICOMView.updateNSView`, which unconditionally calls `nsView.setImage(image)` +
-> `nsView.applyFilters()` (re-applies the image + CIFilters to the NSImageView) every tick — even for
-> panels whose image didn't change. Plus `setCrosshair` relocates 3 panels/tick, each writing several more
-> `@Published` (`mprSliceIndex`, `imagePositionPatient/Orientation/pixelSpacing`, `isLoading`) and
-> enqueuing `loadMPRSlice` (its `getVolume` completion runs inline on the main thread: `cancelAllOperations`
-> + enqueue ×3/tick). The slice *extraction/render* is already off-main + coalesced (that part is fine);
-> the suspect is **main-thread SwiftUI invalidation + redundant NSView image/filter re-application**, not
-> the render. (Contrast: scroll doesn't thrash — it's threshold-gated to discrete ticks and touches one
-> panel, not `crosshairWorld` + 3 panels continuously.)
-> **Concrete leads / fix directions to evaluate:**
-> 1. **Guard `updateNSView`** (`MultiPanelContainer.swift` ~line 355) to skip `setImage`/`applyFilters`
->    when the image instance and filter-relevant state (`isInverted`, etc.) are unchanged — track
->    last-applied on the NSView. Likely the single highest-impact fix; stops the per-tick ×4 re-render.
-> 2. **Throttle `setCrosshairFromEvent`** in `mouseDragged` to ~60 Hz (mirror the W/L-drag
->    `wlRenderInterval`/`flushPendingWindowLevelIfNeeded` pattern already in this same NSView), and/or
->    only act when the target pixel actually moved ≥1 px.
-> 3. **Decouple crosshair state**: move `crosshairWorld` into its own tiny `ObservableObject` observed
->    *only* by `CrossReferenceOverlay`, so updating it doesn't invalidate the heavy
->    `PanelInteractiveDICOMView`. (Relocation still goes through the model, but only when an index changes —
->    already guarded by `idx != panel.mprSliceIndex`.)
-> 4. **Profile first:** add a `scroll_main`-style `BenchmarkLogger` probe around `setCrosshair` (and/or
->    `updateNSView`) so the main-thread cost per drag event is measured (`--benchmark` →
->    `~/Desktop/odv_benchmark.csv`), the way the scroll-lag fix was proven. The deterministic standalone
->    harness won't help here (this is a SwiftUI/AppKit main-thread issue, not pure extraction).
-> **Constraints:** keep orientation in `MPREngine.planeGeometry` (don't touch flips); keep the crosshair
-> *correctness* verified on T1 (patient-LEFT click → Sagittal left hemisphere); 95 tests must stay green.
+> **✓ RESOLVED — Phase-6 crosshair DRAG lag** (commits `04e7290` Slider + `fbe5b1d` decouple).
+> **The documented prime hypothesis was WRONG** — a cautionary tale. The redundant
+> `updateNSView`/`applyFilters` re-application I suspected measured **0.0 ms** (instrumented per
+> sub-call with `CLOCK_THREAD_CPUTIME`); guarding it would have done nothing. The real cost was found
+> only by a CPU **`sample`** of the main thread during a drag-rate stress run.
+> **Actual root cause — a pathological SwiftUI `Slider`.** The MIP panel's "Slab" slider
+> (`VolumeToolbar.swift`) used `in: 1...maxSlabSlices, step: 1`, where `maxSlabSlices` = volume depth
+> (**~1024** for the MPRAGE). On macOS a *stepped* `Slider` renders one tick-mark **label per step**, so
+> SwiftUI laid out **~1024 marks** (`SliderMarkLabels.LabelLayout.LabelLayoutResolver.place`) on every
+> layout pass of that toolbar — **~2 s of main-thread layout**. `crosshairWorld` was `@Published` on the
+> model, so a drag fired `model.objectWillChange` **per mouse event** → the MIP `VolumeToolbar`
+> re-evaluated → that ~2 s layout ran every event. (This is exactly why **scroll was fine but the
+> crosshair thrashed**: scroll mutates *panel* state; the crosshair mutated *model* state, hitting the
+> MIP toolbar's slider.)
+> **Fix 1 (root cause) — `04e7290`:** drop `step:` from the Slab slider → continuous slider, no marks
+> (setter snaps to `Int`, so slab stays integer). **~1980 → ~100 ms/event.**
+> **Fix 2 (residual) — `fbe5b1d`:** the remaining ~100 ms/event was generic quad relayout from the
+> per-event `model.objectWillChange`. Moved the crosshair world point into its own `CrosshairState`
+> `ObservableObject` (in `CrossReferenceOverlay.swift`) observed **only** by `CrossReferenceOverlay`;
+> `model.crosshairWorld` is now a computed shim forwarding to `crosshair.world` (call sites unchanged).
+> Also removed the obsolete `self.objectWillChange.send()` in the MPR/MIP render completions (its only
+> job — refresh all overlays — is moot now that overlays observe `CrosshairState` + their own panel).
+> **~100 → ~1.7 ms/event** (steady; 42 ms first-event warmup). Overall **~1980 → ~1.7 ms/event**, ~1000×.
+> **How measured (computer-use CANNOT reproduce this** — it coalesces a synthetic drag to ~2 events):
+> a deterministic in-app `--xhair-stress` harness (since removed) fired N `setCrosshair` calls along a
+> slice sweep, draining the run loop after each, timing **main-thread CPU** (`CLOCK_THREAD_CPUTIME`, not
+> wall — wall includes a render-server forcing artifact) per event + a CPU `sample`. A permanent
+> `crosshair_set` `--benchmark` probe (scroll_main-style) was kept.
+> **Verified (real T1, GUI):** patient-LEFT axial click → Sagittal **47/176** (left hemisphere); drag to
+> patient-R + anterior → Sagittal **135/176**, Coronal **160/240** — laterality + A-P intact, crosshair
+> tracks, MIP excluded. Slice labels still update (confirms the `objectWillChange.send()` removal is
+> safe). **99 tests green** (43 XCTest + 56 swift-testing; +4 in `CrosshairDecouplingTests.swift` lock
+> in "a crosshair write must NOT fire `model.objectWillChange`"). Orientation untouched.
+> **Lesson:** for a SwiftUI "lag", `sample` the main thread before trusting a hypothesis — the cost was
+> in layout of an unrelated control, not the code that *triggered* the invalidation.
+> **(Not done — deliberately skipped):** throttling `setCrosshairFromEvent` (lead 2) is unnecessary at
+> ~1.7 ms/event and would make the crosshair feel less responsive; guarding `updateNSView` (lead 1) is
+> moot (measured 0 ms, and the overlay is decoupled so drags no longer call it).
 
 1. **[FIXED — commit `cb12693`] MPRAGE fast-scroll lag = sagittal slice extraction.** Diagnosed with a
    deterministic standalone harness over the real `MPREngine` code (differential: MPRAGE vs CT/T1). The
@@ -252,7 +255,7 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
    mapping is no longer the cross-panel mechanism (it remains only for the mouse-wheel group-scroll path).
    Note the "stuck orthogonal panels" complaint was partly a misread: scrolling S *should not* change which
    sagittal/coronal slice is shown — what was missing (and is now drawn) is the moving crosshair line.
-5. **`--benchmark` instrumentation left in** (`scroll_main`, `mpr_render`; `mip_render` pre-existing).
+5. **`--benchmark` instrumentation left in** (`scroll_main`, `mpr_render`, `crosshair_set`; `mip_render` pre-existing).
    Gated behind `--benchmark` so it's inert in normal runs, but in benchmark mode it logs to
    `~/Desktop/odv_benchmark.csv` per scroll tick (each `log()` also takes a `task_info` memory snapshot).
    Keep as a perf probe, or strip `scroll_main`/`mpr_render` once perf work settles.
@@ -264,13 +267,16 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 
 ## Phase status & roadmap
 
-> **▶ RESUME POINT — Phases 1–6 complete & committed** on branch `lentis-nifti-conversion`
-> (not pushed; no remote). The app builds with **zero native deps**, runs, and renders real CT/MRI
-> in correct **neurological** orientation with **modality-aware window/level** and **3D crosshair
-> linkage**. `swift test` green (**95**: 43 XCTest + 52 swift-testing; the old doc "52" was only the
-> swift-testing line). **⚠ Next: FIX the Phase-6 crosshair DRAG lag** (user-reported jank on continuous
-> hand-drag; click + relocation correctness are fine) — see the **⚠ ACTIVE** callout atop *Known issues*
-> for the analysis + leads. **Then Phase 7 — UI polish + segmentation seams.**
+> **▶ RESUME POINT — Phases 1–6 complete + crosshair-drag-lag FIXED & committed** on branch
+> `lentis-nifti-conversion` (not pushed; no remote). The app builds with **zero native deps**, runs, and
+> renders real CT/MRI in correct **neurological** orientation with **modality-aware window/level** and a
+> now-smooth **3D crosshair** linkage. `swift test` green (**99**: 43 XCTest + 56 swift-testing). The
+> Phase-6 crosshair DRAG lag is **RESOLVED** (commits `04e7290` + `fbe5b1d`): the real cause was the MIP
+> Slab `Slider`'s ~1024 tick-mark layout re-running on every `model.objectWillChange` — **NOT** the
+> documented applyFilters hypothesis (measured 0 ms via CPU sampling) — fixed by dropping the slider
+> `step:` + decoupling `crosshairWorld` into its own `CrosshairState` `ObservableObject`; per-event
+> main-thread CPU **~1980 → ~1.7 ms** (~1000×). See the **✓ RESOLVED** callout atop *Known issues*.
+> **⚠ Next: Phase 7 — UI polish + segmentation seams.**
 > Phase 5 outcome (verified in GUI on real CT + real T1): CT defaults to the **Brain** HU preset
 > (WL 40/WW 80) with a preset menu (Brain/Subdural/Stroke/Bone/Soft-tissue, applied to all linked
 > panels); MRI auto-detects and uses a percentile auto-window (WL 899/WW 1798 on the T1, via an
@@ -382,6 +388,22 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   relocated Sagittal 89→42/176 (left hemisphere) + coronal crosshair on the left; drag toward patient-R +
   anterior moved Sagittal→132/176, Coronal→160/240; laterality + A-P correct, MIP excluded, orientation
   intact. Subsumes old *Known issues* #4 (the z-only `syncScrollFromPanel`). Cosmetic debt still deferred.
+- [x] **Crosshair drag-lag fix (post-Phase-6).** 2 commits (`04e7290` Slider, `fbe5b1d` decouple).
+  Diagnosed a real continuous-drag stutter (relocation correctness was always fine). **The documented
+  prime hypothesis was WRONG** — the redundant `applyFilters`/`updateNSView` re-application measured
+  **0.0 ms** (per-sub-call `CLOCK_THREAD_CPUTIME`). A CPU **`sample`** of the main thread during a
+  deterministic in-app `--xhair-stress` run found the cost in SwiftUI **layout**: the MIP "Slab"
+  `Slider` used `step: 1` over `1...~1024` (volume depth) → macOS renders **~1024 tick-mark labels**
+  (`SliderMarkLabels…place`) → **~2 s layout** per `model.objectWillChange`, and a drag fired that per
+  mouse event (`crosshairWorld` was `@Published` on the model; scroll was fine because it mutates
+  *panel* state, not the model). Fix: drop the slider `step:` (no marks; setter snaps to Int) **+**
+  decouple `crosshairWorld` into its own `CrosshairState` `ObservableObject` observed only by
+  `CrossReferenceOverlay` (+ remove the obsolete `objectWillChange.send()` in the MPR/MIP completions).
+  **Measured per-event main-thread CPU ~1980 → ~1.7 ms** (~1000×). **Verified (real T1, GUI):**
+  patient-LEFT axial click → Sagittal 47/176 (left hemisphere); drag → Sagittal 135/176, Coronal
+  160/240; laterality + A-P + orientation intact. **99 tests** (43 XCTest + 56 swift-testing; +4 in
+  `CrosshairDecouplingTests.swift`). Throttling (lead 2) skipped — unneeded at 1.7 ms/event. Note:
+  **computer-use can't reproduce the lag** (coalesces a synthetic drag to ~2 events); measured by probe.
 - [ ] **Phase 7 — UI polish + segmentation seams.** Fix 4D-selector overlap with the "Auto" button;
   modality badge; orientation labels; spacing. Seams (don't implement seg now): same-grid
   mask/label volume in `VolumeData`; Metal mask overlay (color+alpha); keep Eraser/ROI; preserve
