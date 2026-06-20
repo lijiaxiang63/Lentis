@@ -50,6 +50,13 @@ final class MPREngineTests: XCTestCase {
         return result
     }
 
+    /// Read a single displayed pixel at (col, row); row 0 is the top of the image.
+    private func pixelAt(_ slice: MPRSlice, col: Int, row: Int) -> Int16 {
+        slice.pixelData.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            raw.bindMemory(to: Int16.self)[row * slice.width + col]
+        }
+    }
+
     // MARK: - Axial Slice
 
     func testAxialSliceDimensions() {
@@ -61,24 +68,52 @@ final class MPREngineTests: XCTestCase {
         XCTAssertEqual(slice?.height, 6)
     }
 
-    func testAxialSlicePixelValues() {
+    func testAxialSliceNeurologicalOrientation() {
         let vol = makeGradientVolume(width: 4, height: 4, depth: 4)
         let engine = MPREngine(volume: vol)
 
-        // Axial slice at z=0 should contain voxels for z=0
-        let slice = engine.axialSlice(at: 0)!
-        let pixels = readPixels(from: slice)
+        // Axial at z=0: voxel(x,y,0) = x + 4y. Canonical-RAS volume (i→R, j→A),
+        // so the neurological layout flips j → Anterior (max y) at top, with
+        // L (x=0) on the left.
+        let s = engine.axialSlice(at: 0)!
+        XCTAssertEqual(pixelAt(s, col: 0, row: 0), 12)  // top-left  (x=0,y=3) L/Anterior
+        XCTAssertEqual(pixelAt(s, col: 3, row: 0), 15)  // top-right (x=3,y=3) R/Anterior
+        XCTAssertEqual(pixelAt(s, col: 0, row: 3), 0)   // bot-left  (x=0,y=0) L/Posterior
+        XCTAssertEqual(pixelAt(s, col: 3, row: 3), 3)   // bot-right (x=3,y=0) R/Posterior
 
-        // voxel(0,0,0) = 0, voxel(1,0,0) = 1, voxel(0,1,0) = 4, etc.
-        XCTAssertEqual(pixels[0], 0)  // (x=0, y=0)
-        XCTAssertEqual(pixels[1], 1)  // (x=1, y=0)
-        XCTAssertEqual(pixels[4], 4)  // (x=0, y=1)
+        // z=1 adds 16 to every voxel.
+        let s1 = engine.axialSlice(at: 1)!
+        XCTAssertEqual(pixelAt(s1, col: 0, row: 3), 16) // (x=0,y=0,z=1)
+    }
 
-        // Axial slice at z=1 should have offset of 16
-        let slice1 = engine.axialSlice(at: 1)!
-        let pixels1 = readPixels(from: slice1)
-        XCTAssertEqual(pixels1[0], 16) // voxel(0,0,1)
-        XCTAssertEqual(pixels1[1], 17) // voxel(1,0,1)
+    func testCoronalSliceNeurologicalOrientation() {
+        let vol = makeGradientVolume(width: 4, height: 4, depth: 4)
+        let engine = MPREngine(volume: vol)
+
+        // Coronal at y=0: voxel(x,0,z) = x + 16z. cols = i (L→R); rows flipped so
+        // Superior (max z) on top.
+        let s = engine.coronalSlice(at: 0)!
+        XCTAssertEqual(s.width, 4)   // i / R
+        XCTAssertEqual(s.height, 4)  // k / S
+        XCTAssertEqual(pixelAt(s, col: 0, row: 0), 48)  // top-left  (x=0,z=3) L/Superior
+        XCTAssertEqual(pixelAt(s, col: 3, row: 0), 51)  // top-right (x=3,z=3) R/Superior
+        XCTAssertEqual(pixelAt(s, col: 0, row: 3), 0)   // bot-left  (x=0,z=0) L/Inferior
+        XCTAssertEqual(pixelAt(s, col: 3, row: 3), 3)   // bot-right (x=3,z=0) R/Inferior
+    }
+
+    func testSagittalSliceNeurologicalOrientation() {
+        let vol = makeGradientVolume(width: 4, height: 4, depth: 4)
+        let engine = MPREngine(volume: vol)
+
+        // Sagittal at x=0: voxel(0,y,z) = 4y + 16z. cols flipped so Anterior
+        // (max y) on left; rows flipped so Superior (max z) on top.
+        let s = engine.sagittalSlice(at: 0)!
+        XCTAssertEqual(s.width, 4)   // j / A
+        XCTAssertEqual(s.height, 4)  // k / S
+        XCTAssertEqual(pixelAt(s, col: 0, row: 0), 60)  // top-left  (y=3,z=3) Anterior/Superior
+        XCTAssertEqual(pixelAt(s, col: 3, row: 0), 48)  // top-right (y=0,z=3) Posterior/Superior
+        XCTAssertEqual(pixelAt(s, col: 0, row: 3), 12)  // bot-left  (y=3,z=0) Anterior/Inferior
+        XCTAssertEqual(pixelAt(s, col: 3, row: 3), 0)   // bot-right (y=0,z=0) Posterior/Inferior
     }
 
     func testAxialSliceOutOfBounds() {

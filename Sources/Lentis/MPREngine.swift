@@ -36,100 +36,112 @@ class MPREngine {
     }
 
     // MARK: - Orthogonal Slices
+    //
+    // These assume a **canonical-RAS** volume (i→R, j→A, k→S) — guaranteed for
+    // NIfTI by NiftiDataset.makeVolume. The displayed buffer's row 0 is the top
+    // of the screen and column 0 the left edge, so each plane applies a fixed,
+    // deterministic flip to reach the standard neurological layout:
+    //   • Axial:    L left / R right, Anterior top, Posterior bottom
+    //   • Coronal:  L left / R right, Superior top, Inferior bottom
+    //   • Sagittal: Anterior left / Posterior right, Superior top, Inferior bottom
+    // Each MPRSlice reports planeRowDir (world dir toward screen-right) and
+    // planeColDir (toward screen-bottom) consistent with that layout, so the
+    // orientation labels and cross-reference lines derive from one source.
 
-    /// Generate an axial slice at a given Z voxel index (fast path, no interpolation needed)
+    /// Generate an axial slice at a given Z (Superior) voxel index.
     func axialSlice(at zIndex: Int) -> MPRSlice? {
         guard zIndex >= 0, zIndex < volume.depth else { return nil }
-        let w = volume.width
-        let h = volume.height
-        let sliceStride = w * h
+        let w = volume.width    // i / R  (columns, L→R)
+        let h = volume.height   // j / A  (rows; flipped so Anterior is on top)
+        let offset = zIndex * w * h
 
-        var data = Data(count: sliceStride * MemoryLayout<Int16>.stride)
+        var data = Data(count: w * h * MemoryLayout<Int16>.stride)
         data.withUnsafeMutableBytes { buf in
             guard let dst = buf.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
-            let offset = zIndex * sliceStride
-            for i in 0..<sliceStride {
-                dst[i] = volume.voxels[offset + i]
+            for y in 0..<h {
+                let dstRow = (h - 1 - y) * w   // Anterior (max j) at top
+                let srcRow = offset + y * w
+                for x in 0..<w { dst[dstRow + x] = volume.voxels[srcRow + x] }
             }
         }
 
-        let origin = volume.voxelToWorld(SIMD3<Double>(0, 0, Double(zIndex)))
+        // Displayed top-left pixel = (i=0 = Left, j=h−1 = Anterior).
+        let origin = volume.voxelToWorld(SIMD3<Double>(0, Double(h - 1), Double(zIndex)))
 
         return MPRSlice(
             pixelData: data,
             width: w,
             height: h,
             planeOrigin: origin,
-            planeRowDir: volume.rowDirection,
-            planeColDir: volume.colDirection,
+            planeRowDir: volume.rowDirection,    // +col → +i → R
+            planeColDir: -volume.colDirection,   // +row (down) → −j → P
             pixelSpacingX: volume.spacingX,
             pixelSpacingY: volume.spacingY
         )
     }
 
-    /// Generate a sagittal slice at a given X voxel index
+    /// Generate a sagittal slice at a given X (Right) voxel index.
     func sagittalSlice(at xIndex: Int) -> MPRSlice? {
         guard xIndex >= 0, xIndex < volume.width else { return nil }
-        // Sagittal: rows = Z (depth), cols = Y (height)
-        // Flip Z so superior is at top: only when sliceDirection.z >= 0 (z increases toward superior)
-        let w = volume.height   // output width = Y dimension
-        let h = volume.depth    // output height = Z dimension
-        let flipZ = volume.sliceDirection.z >= 0
+        // cols span j (A); rows span k (S). Anterior at left, Superior at top.
+        let w = volume.height   // j / A
+        let h = volume.depth    // k / S
 
         var data = Data(count: w * h * MemoryLayout<Int16>.stride)
         data.withUnsafeMutableBytes { buf in
             guard let dst = buf.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
             for z in 0..<volume.depth {
-                let outRow = flipZ ? (volume.depth - 1 - z) : z
+                let outRow = (volume.depth - 1 - z) * w   // Superior at top
                 for y in 0..<volume.height {
-                    dst[outRow * w + y] = volume.voxelAt(x: xIndex, y: y, z: z)
+                    let outCol = volume.height - 1 - y    // Anterior at left
+                    dst[outRow + outCol] = volume.voxelAt(x: xIndex, y: y, z: z)
                 }
             }
         }
 
-        let origin = volume.voxelToWorld(SIMD3<Double>(Double(xIndex), 0, 0))
+        // Top-left pixel = (j = height−1 = Anterior, k = depth−1 = Superior).
+        let origin = volume.voxelToWorld(SIMD3<Double>(Double(xIndex), Double(volume.height - 1), Double(volume.depth - 1)))
 
         return MPRSlice(
             pixelData: data,
             width: w,
             height: h,
             planeOrigin: origin,
-            planeRowDir: volume.colDirection,              // Y direction
-            planeColDir: volume.sliceDirection,             // Z direction
+            planeRowDir: -volume.colDirection,    // +col → −j → P (screen-right)
+            planeColDir: -volume.sliceDirection,  // +row (down) → −k → I
             pixelSpacingX: volume.spacingY,
             pixelSpacingY: volume.spacingZ
         )
     }
 
-    /// Generate a coronal slice at a given Y voxel index
+    /// Generate a coronal slice at a given Y (Anterior) voxel index.
     func coronalSlice(at yIndex: Int) -> MPRSlice? {
         guard yIndex >= 0, yIndex < volume.height else { return nil }
-        // Coronal: rows = Z (depth), cols = X (width)
-        // Flip Z so superior is at top: only when sliceDirection.z >= 0 (z increases toward superior)
-        let w = volume.width    // output width = X dimension
-        let h = volume.depth    // output height = Z dimension
-        let flipZ = volume.sliceDirection.z >= 0
+        // cols span i (R); rows span k (S). L on left, Superior at top.
+        let w = volume.width    // i / R
+        let h = volume.depth    // k / S
 
         var data = Data(count: w * h * MemoryLayout<Int16>.stride)
         data.withUnsafeMutableBytes { buf in
             guard let dst = buf.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
             for z in 0..<volume.depth {
-                let outRow = flipZ ? (volume.depth - 1 - z) : z
+                let outRow = (volume.depth - 1 - z) * w   // Superior at top
                 for x in 0..<volume.width {
-                    dst[outRow * w + x] = volume.voxelAt(x: x, y: yIndex, z: z)
+                    dst[outRow + x] = volume.voxelAt(x: x, y: yIndex, z: z)
                 }
             }
         }
 
-        let origin = volume.voxelToWorld(SIMD3<Double>(0, Double(yIndex), 0))
+        // Top-left pixel = (i = 0 = Left, k = depth−1 = Superior).
+        let origin = volume.voxelToWorld(SIMD3<Double>(0, Double(yIndex), Double(volume.depth - 1)))
 
         return MPRSlice(
             pixelData: data,
             width: w,
             height: h,
             planeOrigin: origin,
-            planeRowDir: volume.rowDirection,               // X direction
-            planeColDir: volume.sliceDirection,              // Z direction
+            planeRowDir: volume.rowDirection,     // +col → +i → R
+            planeColDir: -volume.sliceDirection,  // +row (down) → −k → I
             pixelSpacingX: volume.spacingX,
             pixelSpacingY: volume.spacingZ
         )
