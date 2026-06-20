@@ -60,6 +60,14 @@ extension ViewerModel {
         let idx = registerStandaloneVolume(volume, cacheKey: dataset.seriesID, description: dataset.displayName)
         niftiSeriesIndex = idx
 
+        // Dev-only (`--benchmark`): paint a synthetic demo mask so the Phase 7
+        // segmentation overlay seam is visually verifiable. Done before
+        // setPanelMode so the first async render already sees the mask. Inert
+        // in normal runs (BenchmarkLogger.enabled is false).
+        if BenchmarkLogger.shared.enabled {
+            installDemoSphereMask(on: volume)
+        }
+
         // Seed the modality default: CT → the Brain HU preset, MRI → percentile
         // auto-window. (initialWindow remains a defensive fallback.)
         let (ww, wc) = modalityDefaultWindow(forSeriesIndex: idx) ?? initialWindow(for: dataset)
@@ -175,6 +183,30 @@ extension ViewerModel {
         } else {
             autoWindowLevelForPanel(panel)
         }
+    }
+
+    /// Dev-only (`--benchmark`) segmentation-seam demo: paint a solid sphere
+    /// into the volume's same-grid label mask so the colored MPR overlay is
+    /// visually verifiable end-to-end. Never called in normal runs. (For 4D, a
+    /// timepoint switch rebuilds the volume and drops this mask — fine for a
+    /// one-shot visual check.)
+    func installDemoSphereMask(on volume: VolumeData) {
+        let mask = volume.ensureLabelMask()
+        let cx = volume.width / 2, cy = volume.height / 2, cz = volume.depth / 2
+        let radius = max(2, min(volume.width, min(volume.height, volume.depth)) / 6)
+        let r2 = radius * radius
+        for z in max(0, cz - radius)...min(volume.depth - 1, cz + radius) {
+            for y in max(0, cy - radius)...min(volume.height - 1, cy + radius) {
+                for x in max(0, cx - radius)...min(volume.width - 1, cx + radius) {
+                    let dx = x - cx, dy = y - cy, dz = z - cz
+                    if dx * dx + dy * dy + dz * dz <= r2 {
+                        mask.setLabel(1, x: x, y: y, z: z)
+                    }
+                }
+            }
+        }
+        BenchmarkLogger.shared.log(event: "demo_mask",
+                                   detail: "sphere r=\(radius) labeled=\(mask.labeledVoxelCount)")
     }
 
     /// Initial display window (width, center) in STORED units. Defensive

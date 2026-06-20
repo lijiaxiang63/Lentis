@@ -301,6 +301,15 @@ class ViewerModel: ObservableObject {
     /// Effective modality: manual override if set, else auto-detected.
     var effectiveModality: ImagingModality? { modalityOverride ?? niftiDataset?.detectedModality }
 
+    // MARK: - Segmentation mask overlay (seam)
+    /// Whether the MPR render path composites a panel volume's `labelMask` over
+    /// the slice (Phase 7 seam). A future Eraser/ROI segmentation UI flips this;
+    /// inert in normal runs because no volume carries a mask. Color defaults to
+    /// calcification red.
+    @Published var showMaskOverlay: Bool = true
+    var maskOverlayColor: SIMD3<Double> = SIMD3<Double>(1.0, 0.23, 0.19)
+    var maskOverlayAlpha: Double = 0.45
+
     /// Register a pre-built volume (e.g. from a NIfTI file) under `cacheKey` so
     /// panels can display it without any DICOM files. Returns the series index.
     @discardableResult
@@ -1422,6 +1431,13 @@ class ViewerModel: ObservableObject {
             let wc = panel.windowWidth > 0 ? panel.windowCenter : (panel.initialWindowWidth > 0 ? panel.initialWindowCenter : 500)
             let invert = panel.isInverted
 
+            // Mask overlay (segmentation seam): captured on the main thread.
+            // `engine.maskSlice` returns nil unless the volume carries a labelMask,
+            // so renderSlice stays on the grayscale path in normal runs.
+            let showMask = self.showMaskOverlay
+            let maskColor = self.maskOverlayColor
+            let maskAlpha = self.maskOverlayAlpha
+
             // --- background: extract + render; coalesce via cancel + staleness check ---
             panel.loadingQueue.cancelAllOperations()
             let op = BlockOperation()
@@ -1438,9 +1454,11 @@ class ViewerModel: ObservableObject {
                 case .mprCoronal:  slice = engine.coronalSlice(at: targetIndex)
                 default:           slice = nil
                 }
+                let maskSlice = showMask ? engine.maskSlice(mode: mode, sliceIndex: targetIndex) : nil
                 guard !op.isCancelled,
                       let mprSlice = slice,
-                      let image = MPREngine.renderSlice(mprSlice, ww: ww, wc: wc, invert: invert) else {
+                      let image = MPREngine.renderSlice(mprSlice, ww: ww, wc: wc, invert: invert,
+                                                        mask: maskSlice, maskColor: maskColor, maskAlpha: maskAlpha) else {
                     DispatchQueue.main.async { panel.isLoading = false }
                     return
                 }
