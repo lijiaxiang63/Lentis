@@ -19,17 +19,25 @@ This file is the working record. Update it as phases complete.
 ```bash
 swift build                       # debug build (~20s clean; zero native/system deps)
 ./scripts/package_app.sh          # release build → Lentis.app + Lentis.dmg (ad-hoc signed)
-swift test                        # full suite: MIXED XCTest + swift-testing (106: 50 XCTest + 56 swift-testing)
+swift test                        # full suite: MIXED XCTest + swift-testing (107: 50 XCTest + 57 swift-testing)
 swift test --filter nifti --filter dataset   # just the NIFTI tests
 swift test --filter SegmentationSeam         # just the Phase-7 mask-seam tests
+swift test --filter windowLevelRenderIsAsync # the W/L-drag async/off-main regression test
 
 # Run + auto-open a file (App.swift handles --benchmark):
 open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
+# Deterministic, GUI-free interactive-perf benchmark (W/L + crosshair + scroll):
+open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 ```
 
 - **Perf probe:** `--benchmark` writes `~/Desktop/odv_benchmark.csv` (and `[BENCH]` to stderr).
-  Useful events: `scroll_main` (synchronous main-thread cost of one scroll tick — must stay sub-ms),
-  `mpr_render` / `mip_render` (per-slice render ms, now off-main). Used to prove the scroll-lag fix.
+  Main-thread-cost events (must stay sub-ms): `scroll_main` (one scroll tick), `crosshair_set` (one
+  crosshair relocation), `wl_drag` (one W/L flush). Off-main render events: `mpr_render` / `mip_render`
+  (per-slice render ms). `--perf-stress` (with `--benchmark`) is a **self-driving** harness that loads
+  the file, builds the MPR quad, and fires 80 each of W/L flushes (sagittal MPR + MIP), crosshair
+  relocations, and scroll ticks — logging the four main-thread-cost events — so interactive perf can be
+  measured **without GUI/computer-use** (which coalesces a synthetic drag to ~2 events). Latest MPRAGE
+  quad numbers: `wl_drag` 0.10 ms, `crosshair_set` 0.15 ms, `scroll_main` 0.30 ms — all off-main render.
 
 - Toolchain: Swift 6.3, Xcode 26.4, macOS arm64. Bundle id `com.kalicooper.lentis`.
   **Zero native/system dependencies** — pure Swift + Metal/AppKit (DCMTK/OpenJPEG gone in Phase 3).
@@ -56,7 +64,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 | File | Role |
 |---|---|
 | `App.swift` | `@main struct LentisApp`. Menus. `--benchmark <path>` auto-open. |
-| `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/MIP, W/L, sync-scroll. **Crosshair (Phase 6):** `setCrosshair(_:from:)` relocates all panels through a world point. The world point lives in a **decoupled `CrosshairState`** (drag-lag fix) — `crosshairWorld` is now a forwarding shim, so writing it does NOT fire `model.objectWillChange`. DICOM ingestion removed (Phase 3). |
+| `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/MIP, W/L, sync-scroll. **Crosshair (Phase 6):** `setCrosshair(_:from:)` relocates all panels through a world point. The world point lives in a **decoupled `CrosshairState`** (drag-lag fix) — `crosshairWorld` is now a forwarding shim, so writing it does NOT fire `model.objectWillChange`. **W/L drag (off-main):** `adjustWindowLevelForPanel` updates W/L state synchronously but re-drives `loadMPRSlice`/`loadMIPForPanel` so the re-render is off the main thread (`wl_drag` ~0.1 ms); locked by `WindowLevelAsyncRenderTests`. DICOM ingestion removed (Phase 3). |
 | `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. **Modality-aware W/L (Phase 5):** `modalityDefaultWindow`/`seededWindow` (seed), `applyWindowPreset`/`applyModalityAutoWindow`/`autoWindow(for:)` (UI). **Phase 7 seam:** `installDemoSphereMask` (`--benchmark`-only mask demo). |
 | `WindowLevel.swift` | **`WindowPreset` + CT HU preset table** (Phase 5). Brain default `(0,80)`, Subdural/Stroke/Bone/Soft-tissue (HU). `storedWindow(slope:intercept:)` maps HU→stored (identity for direct-HU CT). Pure; no deps. |
 | `NIfTI.swift` | **NIFTI-1/2 reader**. Header/endianness/4D/9 dtypes, sform/qform affine, **pure-Swift DEFLATE** (`DeflateInflater`). Zero deps. |
@@ -64,7 +72,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 | `Orientation.swift` | **Single source of orientation truth** (Phase 4). `anatomicalDirection(of:)` (RAS labels) + `closestCanonicalReorientation(affine:)` → `CanonicalReorientation` (axis permutation + flips, lossless, invertible). Pure; no deps. |
 | `VolumeData.swift` | 3D Int16 voxel buffer + affine. **Two inits**: direction-cosine and full-affine (NIFTI). For NIFTI `voxelToWorldMatrix` is the **canonical RAS** affine; `originalAffine` + `reorientation` are retained for mask write-back. **Seg seam (Phase 7):** optional same-grid `labelMask: LabelVolume?` + `ensureLabelMask()`. |
 | `LabelVolume.swift` | **Segmentation seam (Phase 7).** Same-grid UInt8 mask (slice-major, identical dims) riding on `VolumeData.labelMask`; shares the volume's voxel grid so write-back reuses its `reorientation` + `originalAffine`. `labelAt`/`setLabel`/`clear`/`labeledVoxelCount`. Inert in normal runs. |
-| `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:mask:…)` (CPU W/L; RGBA composite when a mask is present). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors, cross-ref metadata, **and `maskSlice` (Phase 7 seam)** all read it. **Crosshair geometry (Phase 6):** `PlaneGeometry.world(col:row:)`/`pixel(of:)` (exact-inverse pixel↔world) + `orthogonalSliceIndex(for:containing:)` (world→slice index). (`VolumeBuilder` removed in Phase 3.) |
+| `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:mask:…)` (CPU W/L — **Float + precomputed-reciprocal, parallelised across 8 bands** for ≥512² slices, `parallelToneMapThreshold`; RGBA composite when a mask is present). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors, cross-ref metadata, **and `maskSlice` (Phase 7 seam)** all read it. **Crosshair geometry (Phase 6):** `PlaneGeometry.world(col:row:)`/`pixel(of:)` (exact-inverse pixel↔world) + `orthogonalSliceIndex(for:containing:)` (world→slice index). (`VolumeBuilder` removed in Phase 3.) |
 | `CrossReferenceOverlay.swift` | **3D crosshair overlay (Phase 6, rewritten).** Draws two lines + center dot through `crosshair.world`'s in-plane projection, on MPR panels only; bridges raw→display pixels then reuses the image's `pixelToScreen` transform. `PanelState.displayedPlaneGeometry` helper. **Hosts `CrosshairState`** (tiny ObservableObject) and observes **it** (not the model) — so a crosshair drag invalidates only this overlay, not the whole quad (drag-lag fix). (Replaced the old `computeCrossReference` lines.) |
 | `MetalVolumeRenderer.swift` | Metal compute, **MIP/MinIP/Average only**. Inline shader strings. Texture `.r16Sint`. W/L on raw stored values. |
 | `MultiPanelContainer.swift` (~2100 lines) | Multi-panel views, gestures, overlays, cursor readout, `OrientationLabelsOverlay` (**RAS-aware** since Phase 4; dark-halo letters Phase 7). **Phase 7 UI:** `PanelStatusCluster` + `ModalityBadge` (top-leading modality badge + 4D timepoint stepper, stacked under `VolumeToolbar`; replaces the old bottom-center 4D pill). **Crosshair (Phase 6):** Select-tool `mouseDown`/`mouseDragged` → `crosshairWorld(at:)` → `model.setCrosshair`. **Seg seam:** Eraser/ROI retained as the future mask-edit surface (seam comment at the `.eraser` handler). |
@@ -87,15 +95,21 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
    sync-scroll** layout lag (`syncScrollFromPanel` re-renders the MIP panel every tick). **This (not GPU
    W/L) fixed laggy scrolling on the 344×1024×1024 / 721 MB MPRAGE**, whose long plane is a full
    1024×1024 **megapixel** slice; measured per-tick main-thread cost dropped ~15–25 ms → 0.3 ms.
-   W/L drag is throttled to 60 Hz and re-renders from the cached slice `rawPixelData` (still on the
-   main thread — move async too if it bites on huge volumes). The brief's "windowing = GPU uniform
-   only" rule is **still NOT met for slices** — the GPU slice-W/L move was **deferred** (the W/L
-   *arithmetic* is cheap; per-slice cost is dominated by extraction + the NSImage alloc, which a
-   W/L-only shader wouldn't touch, and a full 3D-texture sample risks the canonical-RAS orientation;
-   `MPREngine` stays the single source). Revisit when a live MTKView / mask overlay needs it. Clean
-   seam: keep slice *extraction* (the oriented Int16 buffer) in `MPREngine`, upload it to a 2D
-   `.r16Sint` input texture, and do W/L in a trivial shader → NSImage — **no flip logic in MSL**, so
-   tested orientation can't drift. (`MetalVolumeRenderer` already has the texture + in-shader W/L for MIP.)
+   W/L drag is throttled to 60 Hz and is **also off-main now** — `adjustWindowLevelForPanel` updates
+   the W/L state synchronously (the toolbar binds it) and re-drives the panel's async+coalesced loader
+   (`loadMPRSlice` / `loadMIPForPanel`), so the per-flush main-thread cost (`wl_drag`) is ~0.1 ms.
+   `renderSlice`'s W/L loop is **Float + precomputed-reciprocal + parallelised** across 8 bands (1 MP
+   slice 3.14 → 0.46 ms end-to-end, max gray delta 0). The brief's "windowing = GPU uniform only" rule
+   is **still NOT met for slices, and is deliberately not pursued** (see *Known issues* #3): the earlier
+   rationale here ("W/L arithmetic is cheap; cost is the extraction + NSImage alloc") was **measured to
+   be wrong** — the W/L loop was ~80% of `renderSlice` (CGContext alloc 0.008 ms, makeImage/NSImage
+   0.018 ms). Now that the loop is fast on CPU, a GPU **per-slice-readback** path would only break even
+   (upload + `waitUntilCompleted` + readback ≈ the whole CPU render) while adding orientation-plumbing
+   risk. The real GPU win needs the readback gone — a **live `MTKView`** with W/L as a shader uniform
+   (no NSImage), a real NSImageView→MTKView migration deferred until a concrete driver appears. If ever
+   pursued, the clean seam still holds: keep slice *extraction* (the oriented Int16 buffer) in
+   `MPREngine`, upload it to a 2D `.r16Sint` texture, W/L in a trivial shader — **no flip logic in MSL**,
+   so tested orientation can't drift. (`MetalVolumeRenderer` already has the texture + in-shader W/L for MIP.)
 2. **W/L units = RAW STORED Int16 values.** The shader/CPU window on stored voxels; `scl`/rescale
    is NOT applied in the window math. So presets & auto-window are expressed in **stored units**.
 3. **VolumeData stores Int16.** NIFTI float32/uint16 are **quantized to Int16** by `NiftiDataset`,
@@ -250,19 +264,39 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
    real path. **GUI-verified (real app, `--benchmark`):** sagittal `mpr_render` ~5.0–6.7 ms warm (8.4 ms
    cold), `scroll_main` 0.1–0.5 ms/tick; orientation correct in single-panel **and** the one-click quad
    (S/I/A/P labels, no tearing → parallel extraction is race-free); all four quad panels W/L-seeded/bright.
-2. **W/L drag re-render is still synchronous on the main thread.** `adjustWindowLevelForPanel`
-   re-renders from the cached slice `rawPixelData` (megapixel W/L loop), throttled to 60 Hz. On the
-   721 MB MPRAGE a hard W/L drag can feel heavy. Fix = route it through the same async+coalesced path
-   as `loadMPRSlice` (the slice is already extracted, so it's render-only). **Note:** `MPREngine.renderSlice`
-   itself is also optimizable — the scalar `Double` W/L loop is ~3 ms for a 1 MP slice; a Float +
-   precomputed-reciprocal rewrite measured **3.0 → 1.9 ms serial / 0.6 ms parallel** (≈±1 gray-level
-   delta from the reassociated arithmetic, imperceptible). Deferred from the scroll fix (extraction was
-   the bottleneck; 213 slices/s already exceeds refresh) — fold in here when tackling the W/L drag, since
-   both share `renderSlice`.
-3. **GPU slice W/L deferred** (the brief's "windowing = GPU uniform only" rule). Decided against for
-   now: per-slice cost is dominated by extraction + NSImage alloc, *not* the W/L arithmetic, and a full
-   3D-texture sample risks the canonical-RAS orientation (which lives only in `MPREngine.planeGeometry`).
-   Clean re-entry seam documented in *Data & rendering pipeline* §1. Revisit for a live MTKView / mask overlay.
+2. **[RESOLVED — W/L-drag perf]** Two commits (`de07903` renderSlice, `9399a6a` async). The W/L-drag
+   re-render used to run synchronously on the main thread — MPR ran `MPREngine.renderSlice` on the
+   megapixel slice; **MIP ran `renderProjection`'s `waitUntilCompleted` GPU block directly on main**
+   (the same block the scroll fix moved off-main, ~15–20 ms steady / ~200 ms first upload). Fix:
+   (a) `renderSlice`'s W/L loop is now Float + precomputed-reciprocal + parallelised across 8 bands —
+   the loop was **~80% of renderSlice's cost** (CGContext alloc 0.008 ms + makeImage/NSImage 0.018 ms
+   are negligible; see §1), measured **3.14 → 0.46 ms end-to-end** on a 1 MP slice (max gray delta 0).
+   (b) `adjustWindowLevelForPanel` keeps the W/L *state* update synchronous (the toolbar binds it) but
+   pushes the re-render off-main by re-driving the panel's own async+coalesced loader (MPR →
+   `loadMPRSlice`, MIP → `loadMIPForPanel`). Re-driving `loadMPRSlice` (vs a render-only path over the
+   cached `rawPixelData`) re-extracts the *current* slice fresh — cheap off-main, correct by
+   construction (can't show a stale slice if a scroll was in flight). **Measured (`--perf-stress`,
+   MPRAGE quad): `wl_drag` main-thread cost 0.10 ms (MPR + MIP)** — down from a synchronous render of
+   ~3 ms (MPR) / ~15–200 ms (MIP). Locked by `windowLevelRenderIsAsyncOffMainThread` (verified red on
+   `de07903`). The `renderSliceMasked` composite got the same Float+parallel treatment (`8b9919b`).
+3. **GPU slice W/L — EVALUATED, deliberately NOT done (CPU wins make it pointless).** The old premise
+   here was **wrong**: it claimed per-slice cost is "dominated by extraction + NSImage alloc, *not* the
+   W/L arithmetic." Measured the opposite — the W/L **arithmetic** was ~80% of `renderSlice`; the
+   NSImage alloc is 0.018 ms. Having now optimized that arithmetic on CPU (Float+parallel, **0.46 ms**
+   for a 1 MP grayscale slice, fully off-main), a GPU per-slice path (upload Int16 → `.r16Sint` texture,
+   W/L shader, **readback** → NSImage) offers **no win**: the texture upload + `waitUntilCompleted` +
+   readback round-trip alone costs ≈ the entire CPU render, while adding complexity and orientation risk
+   (extraction/flips would stay in `MPREngine.planeGeometry`, but the upload/readback plumbing is new
+   surface). **Recommendation: do not do the per-slice-readback GPU variant.** The genuine GPU payoff
+   needs the **readback eliminated** — render straight into a live `MTKView`/`CAMetalLayer` per MPR
+   panel, with W/L as a shader uniform (no CPU re-render, no NSImage). That is a real architectural
+   change (NSImageView → MTKView; crosshair / cursor / orientation / ROI overlays re-plumbed onto the
+   Metal layer) and should wait for a concrete driver — there is none today (W/L drag is already
+   0.10 ms main-thread). It would also unlock the Phase-7 Metal mask-texture overlay. **When
+   segmentation goes live (Phase 8):** the masked path's real cost is `maskSlice`'s *serial* sagittal
+   gather (~13 ms — the cache-hostile pattern the gray extractor had before `cb12693`), NOT the W/L
+   arithmetic (the masked render loop is ~1.7 ms). Parallelise `maskSlice` first (mirror `sagittalSlice`)
+   — bigger win than GPU, keeps orientation in `MPREngine`.
 4. **[RESOLVED — Phase 6] Quad-MPR cross-panel linkage is now the 3D crosshair.** Click/drag sets
    `crosshairWorld`; `ViewerModel.setCrosshair` relocates each panel via `MPREngine.orthogonalSliceIndex`
    + the existing async `loadMPRSlice`/`loadMIPForPanel`. The old z-only `syncScrollFromPanel` proportional
@@ -281,11 +315,22 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 
 ## Phase status & roadmap
 
-> **▶ RESUME POINT — Phases 1–7 complete + crosshair-drag-lag FIXED & committed** on branch
+> **▶ RESUME POINT — Phases 1–7 + crosshair-drag-lag + W/L-drag perf FIXED & committed** on branch
 > `lentis-nifti-conversion` (not pushed; no remote). The app builds with **zero native deps**, runs, and
 > renders real CT/MRI in correct **neurological** orientation with **modality-aware window/level**, a
-> now-smooth **3D crosshair** linkage, and **Phase-7 UI polish + dormant segmentation seams**.
-> `swift test` green (**106**: 50 XCTest + 56 swift-testing).
+> now-smooth **3D crosshair** linkage, **off-main W/L drag**, and **Phase-7 UI polish + dormant
+> segmentation seams**. `swift test` green (**107**: 50 XCTest + 57 swift-testing).
+> **W/L-drag perf (2026-06-21) — DONE** (commits `de07903` renderSlice Float+parallel, `9399a6a` async
+> W/L, `8804548` regression test, `8b9919b` masked composite, `a67be70` `--perf-stress` harness). The
+> W/L re-render no longer blocks the main thread (MPR `renderSlice` was on main; **MIP ran a
+> `waitUntilCompleted` GPU block on main**). `renderSlice`'s W/L loop is Float+reciprocal+parallel
+> (**3.14 → 0.46 ms** on a 1 MP slice, gray delta 0; it was ~80% of render cost — the NSImage-alloc
+> premise in the old doc was wrong), and `adjustWindowLevelForPanel` keeps W/L *state* sync but pushes
+> the render off-main via `loadMPRSlice`/`loadMIPForPanel`. **Measured (`--perf-stress`, MPRAGE quad):
+> main-thread `wl_drag` 0.10 ms, `crosshair_set` 0.15 ms, `scroll_main` 0.30 ms — all sub-ms, renders
+> off-main.** GPU slice W/L **evaluated and deliberately NOT done** — CPU is fast enough that a
+> per-slice-readback GPU path only breaks even; the real win (live MTKView, no readback) awaits a
+> concrete driver (see *Known issues* #3). Orientation/crosshair code untouched; corner tests green.
 > **Re-validated 2026-06-21 at HEAD `c514e9a` (working tree clean):** `swift build` clean, `swift test`
 > 106 green, and the Phase-7 seam symbols all present in committed code — `installDemoSphereMask`,
 > `LabelVolume` on `VolumeData.labelMask` (+ `ensureLabelMask`), `MPREngine.maskSlice` (3-plane
@@ -399,6 +444,29 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   and bright. 52 tests green. **Deferred (not needed for scroll):** the `renderSlice` W/L loop
   (Float+reciprocal measured 3.0 → 0.6 ms parallel / 1.9 ms serial, ±1 gray-level) — fold into the
   W/L-drag fix (*Known issues* #2), as both share `renderSlice`.
+- [x] **Perf — W/L-drag off-main + renderSlice loop (post-crosshair).** 5 commits (`de07903` renderSlice
+  Float+parallel, `9399a6a` async W/L + `wl_drag` probe, `8804548` regression test, `8b9919b` masked
+  composite, `a67be70` `--perf-stress`). Diagnosed with the standalone harness: `renderSlice`'s scalar
+  `Double` W/L loop was **~80% of per-slice render cost** (CGContext alloc 0.008 ms + makeImage/NSImage
+  0.018 ms negligible — **the old "NSImage alloc dominates" premise was wrong**). Rewrote the loop as
+  Float + precomputed-reciprocal, parallelised across 8 bands (≥512² via `parallelToneMapThreshold`):
+  **3.14 → 0.46 ms** end-to-end on a 1 MP slice, **max gray-level delta 0** (Int16 exact in Float). Then
+  `adjustWindowLevelForPanel` keeps W/L *state* synchronous (toolbar binds it) but re-drives the panel's
+  async+coalesced `loadMPRSlice`/`loadMIPForPanel` — moving both the MPR render **and the MIP
+  `renderProjection waitUntilCompleted` GPU block** off the main thread. `renderSliceMasked` got the
+  same Float+parallel composite (the masked path is the Phase-8 segmentation hot path; its residual cost
+  is `maskSlice`'s serial sagittal gather ~13 ms, flagged for Phase 8). **Verified (deterministic, no
+  GUI — access was unavailable; `--perf-stress` self-driving harness on the MPRAGE quad):** main-thread
+  `wl_drag` **0.10 ms** (MPR + MIP, was ~3 ms MPR / ~15–200 ms MIP synchronous), `crosshair_set`
+  **0.15 ms**, `scroll_main` **0.30 ms** — all sub-ms, renders off-main. `WindowLevelAsyncRenderTests`
+  locks the async behavior (verified red on `de07903`). **107 tests** (50 XCTest + 57 swift-testing).
+  GPU slice W/L **evaluated, deliberately deferred** — CPU is now fast enough that a per-slice-readback
+  GPU path only breaks even; the real win (live MTKView, W/L as a uniform, no readback) awaits a concrete
+  driver (*Known issues* #3). Orientation/crosshair code untouched. **Not GUI-verified** (computer-use
+  can't drive a high-rate drag + the system access dialog was unresponsive) — correctness is preserved by
+  construction (no orientation/crosshair code touched; `renderSlice` output is gray-delta-0) + the
+  regression test; a by-hand GUI pass (W/L visibly changes, patient-LEFT → left-hemisphere sagittal) is
+  the one outstanding belt-and-suspenders check.
 - [x] **Phase 6 — Crosshair drag linkage.** Done in 5 commits on `lentis-nifti-conversion`. Click/drag
   in any MPR panel (default **Select** tool) sets `ViewerModel.crosshairWorld` (RAS mm); every other panel
   relocates so its slice/MIP-slab passes through the point (`setCrosshair` → `MPREngine.orthogonalSliceIndex`
