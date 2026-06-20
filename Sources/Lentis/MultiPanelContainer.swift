@@ -141,16 +141,25 @@ struct PanelView: View {
                 }
             }
 
-            // Top toolbar (Volume)
+            // Top toolbar (Volume) + NIfTI status cluster (modality badge + 4D
+            // timepoint selector), stacked top-leading beneath the mode toolbar
+            // so neither collides with the bottom W/L adjustment toolbar.
             if panel.seriesIndex >= 0 && panel.image != nil {
-                VStack {
+                VStack(alignment: .leading, spacing: 6) {
                     HStack {
                         VolumeToolbar(model: model, panel: panel)
-                            .padding(6)
                         Spacer()
+                    }
+                    if panel.seriesIndex == model.niftiSeriesIndex,
+                       let modality = model.effectiveModality {
+                        HStack {
+                            PanelStatusCluster(model: model, panel: panel, modality: modality)
+                            Spacer()
+                        }
                     }
                     Spacer()
                 }
+                .padding(6)
                 .zIndex(5)
             }
 
@@ -218,29 +227,8 @@ struct PanelView: View {
                     .zIndex(55)
             }
 
-            // 4D NIfTI timepoint selector
-            if let ds = model.niftiDataset, ds.isMultiVolume, panel.seriesIndex == model.niftiSeriesIndex {
-                VStack {
-                    Spacer()
-                    HStack(spacing: 8) {
-                        Image(systemName: "square.stack.3d.up.fill")
-                        Text("Volume \(model.currentTimepoint + 1)/\(ds.timepointCount)")
-                            .font(.system(.caption, design: .monospaced))
-                        Stepper("", value: Binding(
-                            get: { model.currentTimepoint },
-                            set: { model.selectTimepoint($0) }
-                        ), in: 0...(ds.timepointCount - 1))
-                        .labelsHidden()
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(.black.opacity(0.6))
-                    .foregroundStyle(.white)
-                    .cornerRadius(8)
-                    .padding(.bottom, 10)
-                }
-                .zIndex(56)
-            }
+            // (4D NIfTI timepoint selector moved into the top-leading
+            // PanelStatusCluster, alongside the modality badge.)
 
             // Error Overlay
             if let error = panel.errorMessage {
@@ -1541,6 +1529,67 @@ struct PanelAdjustmentToolbar: View {
                 .padding(.vertical, 1)
                 .background(Color.white.opacity(0.15))
                 .cornerRadius(3)
+        }
+    }
+}
+
+// MARK: - Panel Status Cluster (modality badge + 4D timepoint)
+
+/// Top-leading status chip for the loaded NIfTI series: a color-coded modality
+/// badge plus, for 4D volumes, a compact timepoint stepper. The badge is
+/// read-only — the CT/MRI *toggle* lives in the bottom adjustment toolbar — and
+/// the cluster sits just below the VolumeToolbar so it never overlaps the
+/// bottom W/L toolbar (Phase 7; replaces the old bottom-center 4D pill).
+struct PanelStatusCluster: View {
+    @ObservedObject var model: ViewerModel
+    @ObservedObject var panel: PanelState
+    let modality: ImagingModality
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ModalityBadge(modality: modality)
+
+            if let ds = model.niftiDataset, ds.isMultiVolume {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.stack.3d.up.fill")
+                        .font(.caption2)
+                    Text("Vol \(model.currentTimepoint + 1)/\(ds.timepointCount)")
+                        .font(.system(.caption, design: .monospaced))
+                    Stepper("", value: Binding(
+                        get: { model.currentTimepoint },
+                        set: { model.selectTimepoint($0) }
+                    ), in: 0...(ds.timepointCount - 1))
+                    .labelsHidden()
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.black.opacity(0.55), in: Capsule())
+                .foregroundStyle(.white)
+            }
+        }
+    }
+}
+
+/// Small color-coded modality pill: CT = amber, MRI = teal.
+struct ModalityBadge: View {
+    let modality: ImagingModality
+
+    var body: some View {
+        Text(modality.rawValue)
+            .font(.system(size: 11, weight: .bold, design: .rounded))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(badgeColor.opacity(0.9), in: Capsule())
+            .overlay(Capsule().strokeBorder(.white.opacity(0.3), lineWidth: 0.5))
+            .foregroundStyle(.white)
+            .help("Detected modality: \(modality.rawValue). Change it with the CT/MRI toggle in the bottom toolbar.")
+    }
+
+    private var badgeColor: Color {
+        switch modality {
+        case .ct:  return Color(red: 0.85, green: 0.52, blue: 0.10)   // amber
+        case .mri: return Color(red: 0.10, green: 0.55, blue: 0.62)   // teal
         }
     }
 }
