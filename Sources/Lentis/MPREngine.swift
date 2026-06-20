@@ -335,6 +335,11 @@ class MPREngine {
 
     // MARK: - Rendering MPR to NSImage
 
+    /// Slices at or above this pixel count split the W/L tone-map across GCD
+    /// worker bands; smaller ones run serially (parallel setup would dominate).
+    /// 512×512 — below the 1 MP MPRAGE planes, above CT/synthetic test slices.
+    static let parallelToneMapThreshold = 262_144
+
     /// Render an MPR slice to a displayable image with Window/Level. The NSImage
     /// size reflects physical dimensions (mm) so non-isotropic pixels display
     /// correctly. When a same-size `mask` is supplied (Phase 7 segmentation
@@ -376,17 +381,43 @@ class MPREngine {
         guard let destData = context.data else { return nil }
         let destBuffer = destData.bindMemory(to: UInt8.self, capacity: totalPixels)
 
-        let windowBottom = wc - (ww / 2.0)
+        // W/L tone-map: stored Int16 → 8-bit gray. Float math with a precomputed
+        // reciprocal (one multiply per pixel, no per-pixel divide); reassociated
+        // from the old (v−windowBottom)/ww*255 but byte-identical on real data
+        // (max gray-level delta 0 over a 1 MP slice — Int16 is exact in Float).
+        // This loop is ~80% of renderSlice's cost (CGContext alloc + makeImage are
+        // both <0.02 ms), so it is the one thing worth speeding up here — and it
+        // is shared by scroll AND the W/L-drag re-render. Parallelised across pixel
+        // bands for megapixel slices; small slices stay serial (GCD setup would
+        // dominate). Safe to parallelise from the background loadingQueue (disjoint
+        // writes, read-only source) — same discipline as `sagittalSlice`.
+        let windowBottom = Float(wc - (ww / 2.0))
+        let scale = Float(255.0) / Float(ww)
 
         slice.pixelData.withUnsafeBytes { rawBuf in
             guard let src = rawBuf.baseAddress?.assumingMemoryBound(to: Int16.self),
                   slice.pixelData.count >= totalPixels * 2 else { return }
 
-            for i in 0..<totalPixels {
-                let val = Double(src[i])
-                var norm = (val - windowBottom) / ww * 255.0
-                if invert { norm = 255.0 - norm }
-                destBuffer[i] = UInt8(max(0, min(255, norm)))
+            @inline(__always) func toneMap(_ lo: Int, _ hi: Int) {
+                var i = lo
+                while i < hi {
+                    var norm = (Float(src[i]) - windowBottom) * scale
+                    if invert { norm = 255.0 - norm }
+                    if norm < 0 { norm = 0 } else if norm > 255 { norm = 255 }
+                    destBuffer[i] = UInt8(norm)
+                    i += 1
+                }
+            }
+            if totalPixels >= parallelToneMapThreshold {
+                let bands = 8
+                let chunk = (totalPixels + bands - 1) / bands
+                DispatchQueue.concurrentPerform(iterations: bands) { b in
+                    let lo = b * chunk
+                    let hi = min(totalPixels, lo + chunk)
+                    if lo < hi { toneMap(lo, hi) }
+                }
+            } else {
+                toneMap(0, totalPixels)
             }
         }
 
