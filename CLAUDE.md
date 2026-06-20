@@ -193,9 +193,9 @@ Ordered roughly by priority. None block the build or tests (52 green); these are
    equality) via a raw-pointer walk parallelised across z-planes (disjoint writes). **Measured: sagittal
    extract 15.25 → 1.54 ms (10×); end-to-end 17.9 → 4.70 ms = 57 → 213 slices/s (above refresh).** App
    cross-check: in-app axial `mpr_render` = 1.5 ms matches the harness, so harness numbers reflect the
-   real path. *(GUI scroll-feel confirmation still pending — computer-use approval timed out; relaunch
-   `open Lentis.app --args --benchmark <MPRAGE>`, scroll the sagittal panel, watch `mpr_render Sagittal`
-   in `~/Desktop/odv_benchmark.csv` — expect ~4–5 ms, was ~18 ms.)*
+   real path. **GUI-verified (real app, `--benchmark`):** sagittal `mpr_render` ~5.0–6.7 ms warm (8.4 ms
+   cold), `scroll_main` 0.1–0.5 ms/tick; orientation correct in single-panel **and** the one-click quad
+   (S/I/A/P labels, no tearing → parallel extraction is race-free); all four quad panels W/L-seeded/bright.
 2. **W/L drag re-render is still synchronous on the main thread.** `adjustWindowLevelForPanel`
    re-renders from the cached slice `rawPixelData` (megapixel W/L loop), throttled to 60 Hz. On the
    721 MB MPRAGE a hard W/L drag can feel heavy. Fix = route it through the same async+coalesced path
