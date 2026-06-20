@@ -16,39 +16,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-testing.git", from: "0.12.0")
     ],
     targets: [
-        .target(
-            name: "DCMTKWrapper",
-            dependencies: [],
-            cSettings: [
-                .headerSearchPath("../../libs/dcmtk/include"),
-                .headerSearchPath("../../libs/openjpeg/include/openjpeg-2.5")
-            ],
-            cxxSettings: [
-                .headerSearchPath("../../libs/dcmtk/include"),
-                .headerSearchPath("../../libs/openjpeg/include/openjpeg-2.5"),
-                .define("DCMTK_BUILD_IN_PROGRESS")
-            ],
-            linkerSettings: [
-                .unsafeFlags(["-Llibs/dcmtk/lib", "-Llibs/openjpeg/lib"]),
-                .linkedLibrary("dcmimage"),
-                .linkedLibrary("dcmimgle"),
-                .linkedLibrary("dcmdata"),
-                .linkedLibrary("oflog"),
-                .linkedLibrary("ofstd"),
-                .linkedLibrary("dcmjpeg"),
-                .linkedLibrary("dcmjpls"),
-                .linkedLibrary("dcmtkcharls"),
-                .linkedLibrary("ijg8"),
-                .linkedLibrary("ijg12"),
-                .linkedLibrary("ijg16"),
-                .linkedLibrary("oficonv"),
-                .linkedLibrary("z"),
-                .linkedLibrary("openjp2")
-            ]
-        ),
         .executableTarget(
-            name: "Lentis",
-            dependencies: ["DCMTKWrapper"]
+            name: "Lentis"
         ),
         .testTarget(
             name: "OpenDicomViewerTests",

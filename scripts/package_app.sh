@@ -38,9 +38,6 @@ cp "${BUILD_DIR}/${APP_NAME}" "${MACOS_DIR}/"
 echo "Copying App Icon..."
 cp "AppIcon.icns" "${RESOURCES_DIR}/"
 
-echo "Copying DCMTK Dictionary..."
-cp "libs/dcmtk/share/dcmtk-3.6.8/dicom.dic" "${RESOURCES_DIR}/"
-
 echo "Creating Info.plist..."
 cat > "${CONTENTS_DIR}/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
