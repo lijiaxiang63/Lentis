@@ -54,16 +54,17 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 | File | Role |
 |---|---|
 | `App.swift` | `@main struct LentisApp`. Menus. `--benchmark <path>` auto-open. |
-| `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/MIP, W/L, sync-scroll. DICOM ingestion removed (Phase 3). |
+| `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/MIP, W/L, sync-scroll. **Crosshair (Phase 6):** `crosshairWorld` state + `setCrosshair(_:from:)` (relocates all panels through a world point). DICOM ingestion removed (Phase 3). |
 | `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. **Modality-aware W/L (Phase 5):** `modalityDefaultWindow`/`seededWindow` (seed), `applyWindowPreset`/`applyModalityAutoWindow`/`autoWindow(for:)` (UI). |
 | `WindowLevel.swift` | **`WindowPreset` + CT HU preset table** (Phase 5). Brain default `(0,80)`, Subdural/Stroke/Bone/Soft-tissue (HU). `storedWindow(slope:intercept:)` maps HU→stored (identity for direct-HU CT). Pure; no deps. |
 | `NIfTI.swift` | **NIFTI-1/2 reader**. Header/endianness/4D/9 dtypes, sform/qform affine, **pure-Swift DEFLATE** (`DeflateInflater`). Zero deps. |
 | `NiftiVolumeLoader.swift` | **`NiftiDataset`**: modality detection, Int16 quantization, percentile auto-window. **`makeVolume` reorients to canonical RAS** (Phase 4) — folds the relabel/flip into the quantization pass. |
 | `Orientation.swift` | **Single source of orientation truth** (Phase 4). `anatomicalDirection(of:)` (RAS labels) + `closestCanonicalReorientation(affine:)` → `CanonicalReorientation` (axis permutation + flips, lossless, invertible). Pure; no deps. |
 | `VolumeData.swift` | 3D Int16 voxel buffer + affine. **Two inits**: direction-cosine and full-affine (NIFTI). For NIFTI `voxelToWorldMatrix` is the **canonical RAS** affine; `originalAffine` + `reorientation` are retained for mask write-back. |
-| `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:)` (CPU W/L). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors + cross-ref metadata both read it. (`VolumeBuilder` removed in Phase 3.) |
+| `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:)` (CPU W/L). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors + cross-ref metadata both read it. **Crosshair geometry (Phase 6):** `PlaneGeometry.world(col:row:)`/`pixel(of:)` (exact-inverse pixel↔world) + `orthogonalSliceIndex(for:containing:)` (world→slice index). (`VolumeBuilder` removed in Phase 3.) |
+| `CrossReferenceOverlay.swift` | **3D crosshair overlay (Phase 6, rewritten).** Draws two lines + center dot through `model.crosshairWorld`'s in-plane projection, on MPR panels only; bridges raw→display pixels then reuses the image's `pixelToScreen` transform. `PanelState.displayedPlaneGeometry` helper. (Replaced the old `computeCrossReference` plane-intersection lines.) |
 | `MetalVolumeRenderer.swift` | Metal compute, **MIP/MinIP/Average only**. Inline shader strings. Texture `.r16Sint`. W/L on raw stored values. |
-| `MultiPanelContainer.swift` (~2000 lines) | Multi-panel views, gestures, overlays, cursor readout, **4D selector**, `OrientationLabelsOverlay` (**RAS-aware** since Phase 4). |
+| `MultiPanelContainer.swift` (~2000 lines) | Multi-panel views, gestures, overlays, cursor readout, **4D selector**, `OrientationLabelsOverlay` (**RAS-aware** since Phase 4). **Crosshair (Phase 6):** Select-tool `mouseDown`/`mouseDragged` → `crosshairWorld(at:)` → `model.setCrosshair`. |
 | `PanelState.swift` | Per-panel state. `PanelMode = .slice2D/.mprAxial/.mprSagittal/.mprCoronal/.mip`. `isMPR` helper. `rescaleSlope/Intercept`, `valueUnitLabel`. (`.slice2D` now inert — NIFTI uses `.mprAxial`.) |
 | `ContentView.swift` | Root split view: sidebar (series list) + multi-panel detail. (Legacy single-view subtree deleted in Phase 3.) |
 
@@ -209,10 +210,12 @@ Ordered roughly by priority. None block the build or tests (52 green); these are
    now: per-slice cost is dominated by extraction + NSImage alloc, *not* the W/L arithmetic, and a full
    3D-texture sample risks the canonical-RAS orientation (which lives only in `MPREngine.planeGeometry`).
    Clean re-entry seam documented in *Data & rendering pipeline* §1. Revisit for a live MTKView / mask overlay.
-4. **Quad-MPR synchronized scroll is z-only.** `syncScrollFromPanel` maps the source world-z to each
-   panel via `closestVolumeIndex`; for orthogonal planes (sagittal = L/R, coronal = A/P) that usually
-   doesn't move them, so they look "stuck" when you scroll the axial. True 3D crosshair linkage is the
-   Phase 6 job (`CrossReferenceOverlay` exists).
+4. **[RESOLVED — Phase 6] Quad-MPR cross-panel linkage is now the 3D crosshair.** Click/drag sets
+   `crosshairWorld`; `ViewerModel.setCrosshair` relocates each panel via `MPREngine.orthogonalSliceIndex`
+   + the existing async `loadMPRSlice`/`loadMIPForPanel`. The old z-only `syncScrollFromPanel` proportional
+   mapping is no longer the cross-panel mechanism (it remains only for the mouse-wheel group-scroll path).
+   Note the "stuck orthogonal panels" complaint was partly a misread: scrolling S *should not* change which
+   sagittal/coronal slice is shown — what was missing (and is now drawn) is the moving crosshair line.
 5. **`--benchmark` instrumentation left in** (`scroll_main`, `mpr_render`; `mip_render` pre-existing).
    Gated behind `--benchmark` so it's inert in normal runs, but in benchmark mode it logs to
    `~/Desktop/odv_benchmark.csv` per scroll tick (each `log()` also takes a `task_info` memory snapshot).
@@ -225,10 +228,11 @@ Ordered roughly by priority. None block the build or tests (52 green); these are
 
 ## Phase status & roadmap
 
-> **▶ RESUME POINT — Phases 1–5 complete & committed** on branch `lentis-nifti-conversion`
+> **▶ RESUME POINT — Phases 1–6 complete & committed** on branch `lentis-nifti-conversion`
 > (not pushed; no remote). The app builds with **zero native deps**, runs, and renders real CT/MRI
-> in correct **neurological** orientation with **modality-aware window/level**. `swift test` green
-> (52). **Next: Phase 6 — crosshair drag linkage.**
+> in correct **neurological** orientation with **modality-aware window/level** and **3D crosshair
+> linkage**. `swift test` green (**95**: 43 XCTest + 52 swift-testing; the old doc "52" was only the
+> swift-testing line). **Next: Phase 7 — UI polish + segmentation seams.**
 > Phase 5 outcome (verified in GUI on real CT + real T1): CT defaults to the **Brain** HU preset
 > (WL 40/WW 80) with a preset menu (Brain/Subdural/Stroke/Bone/Soft-tissue, applied to all linked
 > panels); MRI auto-detects and uses a percentile auto-window (WL 899/WW 1798 on the T1, via an
@@ -243,6 +247,18 @@ Ordered roughly by priority. None block the build or tests (52 green); these are
 > diagnosed to the **sagittal slice extraction** — a 1-megapixel cache-hostile `voxelAt` gather (~15 ms,
 > ~57 slices/s). `MPREngine.sagittalSlice` now uses a byte-identical parallel raw-pointer walk: **57 → 213
 > slices/s** (extract 15.25 → 1.54 ms). Orientation unchanged (corner tests + harness equality). 52 tests green.
+> **Phase 6 (3D crosshair linkage) — DONE** (commits Phase 6 1/5–5/5): click/drag in any MPR panel
+> (default Select tool) sets a shared `crosshairWorld` (RAS); every other panel relocates so its slice
+> passes through it and draws a green crosshair through the in-plane projection. Geometry lives with the
+> ONE orientation source: `PlaneGeometry.world(col:row:)`/`pixel(of:)` (exact-inverse pixel↔world) +
+> `MPREngine.orthogonalSliceIndex(for:containing:)` (world→slice index; axial→k, sagittal→i, coronal→j),
+> both unit-tested. The crosshair **replaces** the old dashed plane-intersection lines. `setupMPRLayout`
+> turns the crosshair on for the one-click quad. MIP panel: slab tracks the crosshair's z but no lines
+> drawn (its slab metadata is unflipped — deferred). **GUI-verified on real T1** (`--benchmark`): clicking
+> patient-LEFT in axial relocated Sagittal 89→42/176 (left hemisphere) with the coronal crosshair on the
+> left; dragging toward patient-R + anterior moved Sagittal→132/176 and Coronal→160/240 — laterality and
+> A-P correct, crosshair tracks the cursor, MIP excluded. **This subsumes old Known-issue #4** (the z-only
+> `syncScrollFromPanel`): orthogonal planes correctly stay put unless the in-plane click moved their index.
 
 - [x] **Phase 1 — Rebrand to Lentis.** SPM/target/dir/app-struct renamed; menus/About/Help show
   Lentis; `package_app.sh` + bundle id updated; `UpdateChecker` removed (phoned home to upstream).
@@ -313,9 +329,21 @@ Ordered roughly by priority. None block the build or tests (52 green); these are
   and bright. 52 tests green. **Deferred (not needed for scroll):** the `renderSlice` W/L loop
   (Float+reciprocal measured 3.0 → 0.6 ms parallel / 1.9 ms serial, ±1 gray-level) — fold into the
   W/L-drag fix (*Known issues* #2), as both share `renderSlice`.
-- [ ] **Phase 6 — Crosshair drag linkage.** Click/drag sets crosshair **world** coord; all three
-  views relocate + draw crosshair lines. Build on `CrossReferenceOverlay` + sync-scroll. (Note: this
-  also subsumes *Known issues* #4 — replace the z-only `syncScrollFromPanel` with true 3D linkage.)
+- [x] **Phase 6 — Crosshair drag linkage.** Done in 5 commits on `lentis-nifti-conversion`. Click/drag
+  in any MPR panel (default **Select** tool) sets `ViewerModel.crosshairWorld` (RAS mm); every other panel
+  relocates so its slice/MIP-slab passes through the point (`setCrosshair` → `MPREngine.orthogonalSliceIndex`
+  → the existing async+coalesced `loadMPRSlice`/`loadMIPForPanel`), and a green crosshair is drawn through
+  the in-plane projection (`CrossReferenceOverlay`, rewritten — **replaces** the dashed plane-intersection
+  lines it subsumes). Pure geometry on the ONE orientation source: `PlaneGeometry.world(col:row:)` /
+  `pixel(of:)` (exact-inverse pixel↔world) + `MPREngine.orthogonalSliceIndex(for:containing:)`, both
+  unit-tested (4 new in `MPREngineTests`). Click→world maps display-space pixel → raw pixel →
+  `PlaneGeometry.world`; `PanelState.displayedPlaneGeometry` reconstructs the plane from stored metadata.
+  `setupMPRLayout` enables the crosshair for the one-click quad; `applyNiftiDataset` clears it on load.
+  MIP panel: slab tracks the crosshair's z, but no lines drawn (its slab geometry is unflipped — deferred).
+  **Verified:** XCTest 43 (incl. +4) + swift-testing 52 green; **GUI on real T1** — patient-LEFT axial click
+  relocated Sagittal 89→42/176 (left hemisphere) + coronal crosshair on the left; drag toward patient-R +
+  anterior moved Sagittal→132/176, Coronal→160/240; laterality + A-P correct, MIP excluded, orientation
+  intact. Subsumes old *Known issues* #4 (the z-only `syncScrollFromPanel`). Cosmetic debt still deferred.
 - [ ] **Phase 7 — UI polish + segmentation seams.** Fix 4D-selector overlap with the "Auto" button;
   modality badge; orientation labels; spacing. Seams (don't implement seg now): same-grid
   mask/label volume in `VolumeData`; Metal mask overlay (color+alpha); keep Eraser/ROI; preserve
