@@ -757,6 +757,35 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
             return CGPoint(x: pixelX, y: pixelY)
         }
 
+        /// World coordinate (RAS mm) under the cursor, on this panel's displayed
+        /// slice plane. screenToPixel yields aspect-corrected display-space
+        /// coords; convert back to raw pixels (inverse of the overlay's
+        /// rawToDisplay) and run through the panel's plane geometry. nil unless
+        /// this is an MPR panel with valid geometry under the cursor.
+        private func crosshairWorld(at event: NSEvent) -> SIMD3<Double>? {
+            guard let panel = panel, panel.panelMode.isMPR,
+                  let g = panel.displayedPlaneGeometry,
+                  let disp = screenToPixel(event), disp.x.isFinite, disp.y.isFinite
+            else { return nil }
+            let iw = CGFloat(max(1, panel.imageWidth))
+            let ih = CGFloat(max(1, panel.imageHeight))
+            let dw = panel.displayImageWidth > 0 ? panel.displayImageWidth : iw
+            let dh = panel.displayImageHeight > 0 ? panel.displayImageHeight : ih
+            let colRaw = Double(disp.x * iw / dw)
+            let rowRaw = Double(disp.y * ih / dh)
+            return g.world(col: colRaw, row: rowRaw)
+        }
+
+        /// In multi-panel MPR with the crosshair enabled, place the shared 3D
+        /// crosshair at the click and relocate the other panels. No-op otherwise
+        /// (so a plain Select click just activates the panel, as before).
+        private func setCrosshairFromEvent(_ event: NSEvent) {
+            guard let model = model, let panel = panel,
+                  model.showCrossReference, model.panels.count > 1,
+                  let world = crosshairWorld(at: event) else { return }
+            model.setCrosshair(world, from: panel)
+        }
+
         override func mouseDown(with event: NSEvent) {
             // Shift+click: toggle group selection via overlay
             if event.modifierFlags.contains(.shift), let panel = panel, let model = model, model.panels.count > 1 {
@@ -786,7 +815,9 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
 
             switch model.activeTool {
             case .select:
-                break
+                // Default tool doubles as the crosshair localizer: click sets
+                // the shared 3D crosshair (when enabled in multi-panel MPR).
+                setCrosshairFromEvent(event)
 
             case .pan:
                 // Just activate (handled above)
@@ -1088,7 +1119,8 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
 
             switch model.activeTool {
             case .select:
-                break
+                // Drag the crosshair (continuous localizer) in multi-panel MPR.
+                setCrosshairFromEvent(event)
 
             case .pan:
                 // Left-click drag = pan

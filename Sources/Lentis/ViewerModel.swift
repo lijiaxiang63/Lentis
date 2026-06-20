@@ -682,6 +682,9 @@ class ViewerModel: ObservableObject {
         // Set active panel to axial
         activePanelID = panels[0].id
         synchronizedScrolling = true
+        // Show the 3D crosshair out of the box for the tri-planar layout —
+        // click/drag any plane to localize the others.
+        showCrossReference = true
     }
 
     // MARK: - Panel Group Selection (simultaneous scrolling)

@@ -53,6 +53,7 @@ extension ViewerModel {
         niftiDataset = dataset
         currentTimepoint = 0
         modalityOverride = nil
+        crosshairWorld = nil  // drop any crosshair from a previously-loaded volume
 
         // Cache under a stable key (the dataset id) so 4D timepoint switches
         // simply replace the cached volume without spawning new series.
