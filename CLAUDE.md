@@ -299,8 +299,20 @@ Ordered roughly by priority. None block the build or tests (52 green); these are
   background queues). Fixed laggy slice scrolling on the 721 MB MPRAGE — both single-panel and the
   quad-MPR + sync-scroll layout (where the MIP panel's synchronous `waitUntilCompleted` was the real
   blocker). **Measured:** per-tick main-thread cost ~15–25 ms → **0.3 ms** (`scroll_main`, `--benchmark`).
-  Residual (see *Known issues* #1): scrolling the MPRAGE still isn't perfectly smooth under fast
-  continuous scrolling — left for fresh diagnosis (don't assume a cause; measure).
+  Residual fast-scroll lag (then undiagnosed) was the *sagittal extraction* — see next entry.
+- [x] **Perf — sagittal slice extraction (post-Phase-5).** 1 commit (`cb12693`; docs `8db7a16`,
+  `22161aa`). Diagnosed the residual MPRAGE fast-scroll lag with a deterministic standalone harness
+  over the real `MPREngine` code (differential vs CT/T1): the 344×1024×1024 MPRAGE's **sagittal** plane
+  is a 1-megapixel cache-hostile `voxelAt` gather (~15 ms → ~57 slices/s); axial (1.3 ms) / coronal
+  (2.3 ms) were already fine. Rewrote `MPREngine.sagittalSlice` as a bounds-check-free raw-pointer walk
+  parallelised across z-planes (disjoint writes → race-free), **byte-for-byte identical** output
+  (orientation unchanged; `testSagittalSliceNeurologicalOrientation` corner checks + harness `==`).
+  **Measured:** sagittal extract 15.25 → **1.54 ms** (10×), end-to-end 17.9 → **4.7 ms = 57 → 213
+  slices/s**. **GUI-verified (real app, `--benchmark`):** sagittal `mpr_render` ~5–6.7 ms warm (was
+  ~18 ms), `scroll_main` 0.1–0.5 ms; single-panel + one-click quad render correct (S/I/A/P, no tearing)
+  and bright. 52 tests green. **Deferred (not needed for scroll):** the `renderSlice` W/L loop
+  (Float+reciprocal measured 3.0 → 0.6 ms parallel / 1.9 ms serial, ±1 gray-level) — fold into the
+  W/L-drag fix (*Known issues* #2), as both share `renderSlice`.
 - [ ] **Phase 6 — Crosshair drag linkage.** Click/drag sets crosshair **world** coord; all three
   views relocate + draw crosshair lines. Build on `CrossReferenceOverlay` + sync-scroll. (Note: this
   also subsumes *Known issues* #4 — replace the z-only `syncScrollFromPanel` with true 3D linkage.)
