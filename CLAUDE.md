@@ -19,8 +19,9 @@ This file is the working record. Update it as phases complete.
 ```bash
 swift build                       # debug build (~20s clean; zero native/system deps)
 ./scripts/package_app.sh          # release build → Lentis.app + Lentis.dmg (ad-hoc signed)
-swift test                        # full suite: MIXED XCTest + swift-testing
+swift test                        # full suite: MIXED XCTest + swift-testing (106: 50 XCTest + 56 swift-testing)
 swift test --filter nifti --filter dataset   # just the NIFTI tests
+swift test --filter SegmentationSeam         # just the Phase-7 mask-seam tests
 
 # Run + auto-open a file (App.swift handles --benchmark):
 open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
@@ -34,8 +35,8 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
   **Zero native/system dependencies** — pure Swift + Metal/AppKit (DCMTK/OpenJPEG gone in Phase 3).
 - `swift build` after adding a `PanelMode` case → the compiler flags every non-exhaustive
   `switch` (~10 sites). Fix each (usually mirror `.mprCoronal` or fold into a combined case).
-- **Git state:** Phases 1–6 **+ the crosshair-drag-lag fix** are committed on branch
-  **`lentis-nifti-conversion`** (off upstream `master`); HEAD `d472c51`, see `git log`. Not pushed
+- **Git state:** Phases 1–7 **+ the crosshair-drag-lag fix** are committed on branch
+  **`lentis-nifti-conversion`** (off upstream `master`); see `git log`. Not pushed
   (no remote configured). Real patient data (`TestData/sub-*`) is gitignored — only synthetic fixtures
   are tracked. Commit per phase/logical step going forward.
 
@@ -56,16 +57,17 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 |---|---|
 | `App.swift` | `@main struct LentisApp`. Menus. `--benchmark <path>` auto-open. |
 | `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/MIP, W/L, sync-scroll. **Crosshair (Phase 6):** `setCrosshair(_:from:)` relocates all panels through a world point. The world point lives in a **decoupled `CrosshairState`** (drag-lag fix) — `crosshairWorld` is now a forwarding shim, so writing it does NOT fire `model.objectWillChange`. DICOM ingestion removed (Phase 3). |
-| `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. **Modality-aware W/L (Phase 5):** `modalityDefaultWindow`/`seededWindow` (seed), `applyWindowPreset`/`applyModalityAutoWindow`/`autoWindow(for:)` (UI). |
+| `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. **Modality-aware W/L (Phase 5):** `modalityDefaultWindow`/`seededWindow` (seed), `applyWindowPreset`/`applyModalityAutoWindow`/`autoWindow(for:)` (UI). **Phase 7 seam:** `installDemoSphereMask` (`--benchmark`-only mask demo). |
 | `WindowLevel.swift` | **`WindowPreset` + CT HU preset table** (Phase 5). Brain default `(0,80)`, Subdural/Stroke/Bone/Soft-tissue (HU). `storedWindow(slope:intercept:)` maps HU→stored (identity for direct-HU CT). Pure; no deps. |
 | `NIfTI.swift` | **NIFTI-1/2 reader**. Header/endianness/4D/9 dtypes, sform/qform affine, **pure-Swift DEFLATE** (`DeflateInflater`). Zero deps. |
 | `NiftiVolumeLoader.swift` | **`NiftiDataset`**: modality detection, Int16 quantization, percentile auto-window. **`makeVolume` reorients to canonical RAS** (Phase 4) — folds the relabel/flip into the quantization pass. |
 | `Orientation.swift` | **Single source of orientation truth** (Phase 4). `anatomicalDirection(of:)` (RAS labels) + `closestCanonicalReorientation(affine:)` → `CanonicalReorientation` (axis permutation + flips, lossless, invertible). Pure; no deps. |
-| `VolumeData.swift` | 3D Int16 voxel buffer + affine. **Two inits**: direction-cosine and full-affine (NIFTI). For NIFTI `voxelToWorldMatrix` is the **canonical RAS** affine; `originalAffine` + `reorientation` are retained for mask write-back. |
-| `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:)` (CPU W/L). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors + cross-ref metadata both read it. **Crosshair geometry (Phase 6):** `PlaneGeometry.world(col:row:)`/`pixel(of:)` (exact-inverse pixel↔world) + `orthogonalSliceIndex(for:containing:)` (world→slice index). (`VolumeBuilder` removed in Phase 3.) |
+| `VolumeData.swift` | 3D Int16 voxel buffer + affine. **Two inits**: direction-cosine and full-affine (NIFTI). For NIFTI `voxelToWorldMatrix` is the **canonical RAS** affine; `originalAffine` + `reorientation` are retained for mask write-back. **Seg seam (Phase 7):** optional same-grid `labelMask: LabelVolume?` + `ensureLabelMask()`. |
+| `LabelVolume.swift` | **Segmentation seam (Phase 7).** Same-grid UInt8 mask (slice-major, identical dims) riding on `VolumeData.labelMask`; shares the volume's voxel grid so write-back reuses its `reorientation` + `originalAffine`. `labelAt`/`setLabel`/`clear`/`labeledVoxelCount`. Inert in normal runs. |
+| `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:mask:…)` (CPU W/L; RGBA composite when a mask is present). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors, cross-ref metadata, **and `maskSlice` (Phase 7 seam)** all read it. **Crosshair geometry (Phase 6):** `PlaneGeometry.world(col:row:)`/`pixel(of:)` (exact-inverse pixel↔world) + `orthogonalSliceIndex(for:containing:)` (world→slice index). (`VolumeBuilder` removed in Phase 3.) |
 | `CrossReferenceOverlay.swift` | **3D crosshair overlay (Phase 6, rewritten).** Draws two lines + center dot through `crosshair.world`'s in-plane projection, on MPR panels only; bridges raw→display pixels then reuses the image's `pixelToScreen` transform. `PanelState.displayedPlaneGeometry` helper. **Hosts `CrosshairState`** (tiny ObservableObject) and observes **it** (not the model) — so a crosshair drag invalidates only this overlay, not the whole quad (drag-lag fix). (Replaced the old `computeCrossReference` lines.) |
 | `MetalVolumeRenderer.swift` | Metal compute, **MIP/MinIP/Average only**. Inline shader strings. Texture `.r16Sint`. W/L on raw stored values. |
-| `MultiPanelContainer.swift` (~2000 lines) | Multi-panel views, gestures, overlays, cursor readout, **4D selector**, `OrientationLabelsOverlay` (**RAS-aware** since Phase 4). **Crosshair (Phase 6):** Select-tool `mouseDown`/`mouseDragged` → `crosshairWorld(at:)` → `model.setCrosshair`. |
+| `MultiPanelContainer.swift` (~2100 lines) | Multi-panel views, gestures, overlays, cursor readout, `OrientationLabelsOverlay` (**RAS-aware** since Phase 4; dark-halo letters Phase 7). **Phase 7 UI:** `PanelStatusCluster` + `ModalityBadge` (top-leading modality badge + 4D timepoint stepper, stacked under `VolumeToolbar`; replaces the old bottom-center 4D pill). **Crosshair (Phase 6):** Select-tool `mouseDown`/`mouseDragged` → `crosshairWorld(at:)` → `model.setCrosshair`. **Seg seam:** Eraser/ROI retained as the future mask-edit surface (seam comment at the `.eraser` handler). |
 | `PanelState.swift` | Per-panel state. `PanelMode = .slice2D/.mprAxial/.mprSagittal/.mprCoronal/.mip`. `isMPR` helper. `rescaleSlope/Intercept`, `valueUnitLabel`. (`.slice2D` now inert — NIFTI uses `.mprAxial`.) |
 | `ContentView.swift` | Root split view: sidebar (series list) + multi-panel detail. (Legacy single-view subtree deleted in Phase 3.) |
 
@@ -130,6 +132,17 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 7. **Cursor readout:** `cursorHU = stored * panel.rescaleSlope + panel.rescaleIntercept`, label
    `panel.valueUnitLabel` ("HU" for CT, "Val" for MRI). (On-screen overlay needs a real
    NSTrackingArea mouse event — synthetic computer-use moves may not trigger it.)
+8. **Segmentation mask overlay (Phase 7 seam; dormant).** A same-grid `LabelVolume` rides on
+   `VolumeData.labelMask` (UInt8, identical voxel grid → write-back via the volume's `reorientation`
+   + `originalAffine`). `MPREngine.maskSlice(mode:sliceIndex:)` extracts it in the **same (col,row)
+   layout as the gray slice** by mirroring `planeGeometry`'s flips (so the overlay can't drift —
+   `SegmentationSeamTests` locks all 3 planes against the gray extractor). `loadMPRSlice` passes the
+   mask to `renderSlice`, which composites a translucent color (model `maskOverlayColor`/`Alpha`,
+   default calcification red) over labeled pixels — **CPU RGBA path, taken only when a mask exists**,
+   so the grayscale fast path is untouched in normal runs. **MIP is excluded** (Metal path; documented
+   seam). The CPU composite is the live-display seam; the **Metal** entry (upload mask as a 2nd R8
+   texture, blend in the W/L shader) is documented in `renderSlice`/`MetalVolumeRenderer`. Demo:
+   `--benchmark` paints `installDemoSphereMask` so the overlay is visible once; inert otherwise.
 
 ---
 
@@ -268,16 +281,22 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 
 ## Phase status & roadmap
 
-> **▶ RESUME POINT — Phases 1–6 complete + crosshair-drag-lag FIXED & committed** on branch
+> **▶ RESUME POINT — Phases 1–7 complete + crosshair-drag-lag FIXED & committed** on branch
 > `lentis-nifti-conversion` (not pushed; no remote). The app builds with **zero native deps**, runs, and
-> renders real CT/MRI in correct **neurological** orientation with **modality-aware window/level** and a
-> now-smooth **3D crosshair** linkage. `swift test` green (**99**: 43 XCTest + 56 swift-testing). The
-> Phase-6 crosshair DRAG lag is **RESOLVED** (commits `04e7290` + `fbe5b1d`): the real cause was the MIP
-> Slab `Slider`'s ~1024 tick-mark layout re-running on every `model.objectWillChange` — **NOT** the
-> documented applyFilters hypothesis (measured 0 ms via CPU sampling) — fixed by dropping the slider
-> `step:` + decoupling `crosshairWorld` into its own `CrosshairState` `ObservableObject`; per-event
-> main-thread CPU **~1980 → ~1.7 ms** (~1000×). See the **✓ RESOLVED** callout atop *Known issues*.
-> **⚠ Next: Phase 7 — UI polish + segmentation seams.**
+> renders real CT/MRI in correct **neurological** orientation with **modality-aware window/level**, a
+> now-smooth **3D crosshair** linkage, and **Phase-7 UI polish + dormant segmentation seams**.
+> `swift test` green (**106**: 50 XCTest + 56 swift-testing).
+> **Phase 7 — DONE** (UI: top-leading `ModalityBadge` CT=amber/MRI=teal + 4D timepoint cluster stacked
+> under `VolumeToolbar`, replacing the bottom-center 4D pill that overlapped the W/L toolbar;
+> orientation-label dark halo; 2px panel gaps; NIfTI wording. Seams: same-grid `LabelVolume` on
+> `VolumeData.labelMask`, `MPREngine.maskSlice` mirroring `planeGeometry`, `renderSlice(mask:)` RGBA
+> composite wired through `loadMPRSlice`, Eraser/ROI kept as the mask-edit surface, `originalAffine`
+> preserved for write-back). **GUI-verified** on real-ish synthetic CT/MRI: badge color + no-overlap in
+> single & quad; the `--benchmark` demo sphere composites translucent-red and registers in axial/
+> sagittal/coronal (MIP excluded by design). Orientation untouched. See the Phase-7 roadmap entry below.
+> **⚠ Next: Phase 8 (suggested) — real segmentation (paint into `labelMask` via Eraser/ROI; threshold
+> seed on CT HU), mask persistence/write-back through `originalAffine`, Metal mask-texture overlay,
+> and the remaining cosmetic debt (file headers, `PanelDICOMInteractView` names, inert `.slice2D`).**
 > Phase 5 outcome (verified in GUI on real CT + real T1): CT defaults to the **Brain** HU preset
 > (WL 40/WW 80) with a preset menu (Brain/Subdural/Stroke/Bone/Soft-tissue, applied to all linked
 > panels); MRI auto-detects and uses a percentile auto-window (WL 899/WW 1798 on the T1, via an
@@ -405,10 +424,29 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   160/240; laterality + A-P + orientation intact. **99 tests** (43 XCTest + 56 swift-testing; +4 in
   `CrosshairDecouplingTests.swift`). Throttling (lead 2) skipped — unneeded at 1.7 ms/event. Note:
   **computer-use can't reproduce the lag** (coalesces a synthetic drag to ~2 events); measured by probe.
-- [ ] **Phase 7 — UI polish + segmentation seams.** Fix 4D-selector overlap with the "Auto" button;
-  modality badge; orientation labels; spacing. Seams (don't implement seg now): same-grid
-  mask/label volume in `VolumeData`; Metal mask overlay (color+alpha); keep Eraser/ROI; preserve
-  affine for mask write-back.
+- [x] **Phase 7 — UI polish + segmentation seams.** Done in 5 commits on `lentis-nifti-conversion`.
+  **UI polish:** (1) Fixed the 4D-selector / W/L-toolbar overlap — both were bottom-center overlays;
+  introduced a top-leading `PanelStatusCluster` (a read-only color-coded `ModalityBadge` — CT=amber,
+  MRI=teal — plus, for 4D, a compact timepoint stepper) stacked under `VolumeToolbar`, and removed the
+  bottom-center 4D pill so the bottom holds only the W/L toolbar. (2) `OrientationLabelsOverlay` letters
+  got a dark halo for legibility on bright slices; inter-panel grid gap 1→2px; stale "DICOM folder"
+  user strings (empty-panel + Help) corrected to NIfTI. **Segmentation seams (no seg behavior):**
+  `LabelVolume.swift` (same-grid UInt8 mask) on `VolumeData.labelMask` + `ensureLabelMask()` — shares
+  the volume's voxel grid so write-back reuses `reorientation` + `originalAffine`; `MPREngine.maskSlice`
+  extracts it in the SAME (col,row) layout as the gray slice (mirrors `planeGeometry`, locked by
+  `SegmentationSeamTests` against the gray extractor in all 3 planes); `renderSlice(mask:maskColor:
+  maskAlpha:)` RGBA-composites a translucent color over labeled pixels (taken only when a mask exists,
+  so the grayscale fast path is untouched), wired through `loadMPRSlice` with model config
+  `showMaskOverlay`/`maskOverlayColor`/`maskOverlayAlpha`. Eraser/ROI retained as the future mask-edit
+  surface (seam comment at the `.eraser` handler). The **Metal** mask-overlay path (2nd R8 texture in
+  the W/L shader) is documented as the live-MTKView entry; the CPU composite is the current seam. A
+  `--benchmark`-only `installDemoSphereMask` makes the overlay visually verifiable; inert otherwise.
+  **Verified:** 106 tests green (50 XCTest incl. +7 seam, 56 swift-testing); GUI on synthetic CT
+  (amber badge, demo red sphere composited in axial/sagittal/coronal of the one-click quad, MIP
+  excluded) + synthetic 4D MRI (teal badge, "Vol 1/5" stepper in the top cluster, no bottom overlap);
+  Phase-4 orientation + Phase-6 crosshair intact. **Deferred:** real segmentation, mask write-back/
+  persistence, the Metal mask texture, and the remaining cosmetic debt (file headers,
+  `PanelDICOMInteractView` names, inert `.slice2D`, vestigial `ImageContext`).
 
 ---
 

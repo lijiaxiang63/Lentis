@@ -881,6 +881,15 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
                 }
 
             case .eraser:
+                // SEAM (Phase 7 segmentation): the Eraser/ROI tools are retained
+                // as the editing surface for a future intracranial-calcification
+                // mask. A "paint mask" sub-mode would map this click to a voxel
+                // exactly as the crosshair does — screenToPixel → raw pixel via
+                // panel.displayedPlaneGeometry → PlaneGeometry.world → volume
+                // worldToVoxel — then `volume.ensureLabelMask().setLabel(_:x:y:z:)`
+                // (or 0 to erase) and re-render through loadMPRSlice (which already
+                // composites volume.labelMask). The annotation-erase below is the
+                // current, unchanged behavior.
                 if let px = screenToPixel(event) {
                     // Find nearest annotation and remove it
                     let threshold: CGFloat = 15.0
