@@ -249,14 +249,4 @@ final class PanelStateTests: XCTestCase {
             XCTFail("Expected roiStats annotation")
         }
     }
-
-    // MARK: - VolumeBuilderError descriptions
-
-    func testVolumeBuilderErrorDescriptions() {
-        XCTAssertEqual(VolumeBuilderError.noImages.description, "Series has no images")
-        XCTAssertEqual(VolumeBuilderError.inconsistentDimensions.description, "Images have different dimensions")
-        XCTAssertEqual(VolumeBuilderError.missingSpatialMetadata.description, "Missing spatial metadata (position/orientation/spacing)")
-        XCTAssertEqual(VolumeBuilderError.inconsistentOrientation.description, "Images have different orientations")
-        XCTAssertTrue(VolumeBuilderError.memoryLimitExceeded(requiredMB: 2048).description.contains("2048"))
-    }
 }

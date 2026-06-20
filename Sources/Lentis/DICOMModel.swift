@@ -395,24 +395,6 @@ class DICOMModel: ObservableObject {
     // Legacy fallbackToExternalConverter removed
 
     
-    // MARK: - State Management
-
-    // MARK: - Presets
-    
-    // MARK: - Rendering
-    
-    /// Extract raw pixel data from an uncompressed DICOM file using SimpleDicomParser.
-    /// Returns nil if the file uses encapsulated (compressed) transfer syntax or has no pixel data.
-    private struct RawPixelResult {
-        let pixelData: Data
-        let width: Int
-        let height: Int
-        let bitDepth: Int
-        let samples: Int
-        let isSigned: Bool
-        let isMonochrome1: Bool
-    }
-
     private func computeMinMax(data: Data, isSigned: Bool, bits: Int) -> (Double, Double) {
         var minVal: Double = Double.greatestFiniteMagnitude
         var maxVal: Double = -Double.greatestFiniteMagnitude
