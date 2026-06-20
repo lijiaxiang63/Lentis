@@ -310,3 +310,69 @@ func dataset4DProducesDistinctTimepointVolumes() throws {
     #expect(abs(v0.calibratedValue(x: 0, y: 0, z: 0) - 500) < 1)
     #expect(abs(v2.calibratedValue(x: 0, y: 0, z: 0) - 1500) < 1)
 }
+
+// MARK: - Canonical-RAS reorientation (Phase 4)
+
+@Test
+func datasetReorientsLASVolumeToCanonicalRAS() throws {
+    // LAS storage: voxel-i increases toward patient Left (−x). Voxel values are
+    // the source linear index, so we can trace exactly where each one lands.
+    let nx = 8, ny = 8, nz = 8
+    let spec = NiftiSpec(nx: nx, ny: ny, nz: nz, datatype: 4, bitpix: 16,
+                         srow: [[-1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0]])
+    let img = try NiftiImage.read(data: buildNifti(spec, voxels: rampVoxels(nx, ny, nz)))
+    let vol = NiftiDataset(image: img, seriesID: "las", displayName: "las").makeVolume(timepoint: 0)
+
+    // Pure flip on axis 0 ⇒ same dims, axis-0 reversed.
+    #expect(vol.width == 8 && vol.height == 8 && vol.depth == 8)
+    let reo = try #require(vol.reorientation)
+    #expect(reo.sourceAxis == (0, 1, 2))
+    #expect(reo.flip == (true, false, false))
+
+    // Canonical voxel (I,J,K) holds source (7−I, J, K): value = (7−I) + 8J + 64K.
+    func expected(_ I: Int, _ J: Int, _ K: Int) -> Double { Double((7 - I) + 8 * J + 64 * K) }
+    #expect(vol.calibratedValue(x: 0, y: 0, z: 0) == expected(0, 0, 0))   // 7
+    #expect(vol.calibratedValue(x: 7, y: 0, z: 0) == expected(7, 0, 0))   // 0
+    #expect(vol.calibratedValue(x: 1, y: 2, z: 3) == expected(1, 2, 3))   // 214
+
+    // Canonical voxel-i now points to patient Right (+x).
+    let di = vol.voxelToWorld(SIMD3(1, 0, 0)) - vol.voxelToWorld(SIMD3(0, 0, 0))
+    #expect(anatomicalDirection(of: di) == .R)
+
+    // World position preserved vs. the original affine + original voxel.
+    let p = vol.voxelToWorld(SIMD3(1, 2, 3))
+    let q = img.affine * SIMD4<Double>(Double(7 - 1), 2, 3, 1)
+    #expect(abs(p.x - q.x) < 1e-6 && abs(p.y - q.y) < 1e-6 && abs(p.z - q.z) < 1e-6)
+    #expect(vol.originalAffine != nil)
+}
+
+@Test
+func datasetReorientsPermutedVolumeToCanonicalRAS() throws {
+    // Sagittal-style storage: voxel i→S, j→A, k→R. Distinct dims so the
+    // permutation is observable in the canonical extent.
+    let nx = 4, ny = 8, nz = 16
+    let spec = NiftiSpec(nx: nx, ny: ny, nz: nz, datatype: 4, bitpix: 16,
+                         srow: [[0, 0, 1, 0], [0, 1, 0, 0], [1, 0, 0, 0]])
+    let img = try NiftiImage.read(data: buildNifti(spec, voxels: rampVoxels(nx, ny, nz)))
+    let vol = NiftiDataset(image: img, seriesID: "sag", displayName: "sag").makeVolume(timepoint: 0)
+
+    // canonical (R,A,S) ← source (k,j,i): extent (nz,ny,nx) = (16,8,4).
+    #expect(vol.width == 16 && vol.height == 8 && vol.depth == 4)
+    let reo = try #require(vol.reorientation)
+    #expect(reo.sourceAxis == (2, 1, 0))
+    #expect(reo.flip == (false, false, false))
+
+    // Canonical (I,J,K) holds source (i=K, j=J, k=I): value = K + 4J + 32I.
+    func expected(_ I: Int, _ J: Int, _ K: Int) -> Double { Double(K + 4 * J + 32 * I) }
+    #expect(vol.calibratedValue(x: 0, y: 0, z: 0) == expected(0, 0, 0))     // 0
+    #expect(vol.calibratedValue(x: 15, y: 0, z: 0) == expected(15, 0, 0))   // 480
+    #expect(vol.calibratedValue(x: 2, y: 3, z: 1) == expected(2, 3, 1))     // 77
+
+    // Canonical axes point to R / A / S.
+    let dR = vol.voxelToWorld(SIMD3(1, 0, 0)) - vol.voxelToWorld(SIMD3(0, 0, 0))
+    let dA = vol.voxelToWorld(SIMD3(0, 1, 0)) - vol.voxelToWorld(SIMD3(0, 0, 0))
+    let dS = vol.voxelToWorld(SIMD3(0, 0, 1)) - vol.voxelToWorld(SIMD3(0, 0, 0))
+    #expect(anatomicalDirection(of: dR) == .R)
+    #expect(anatomicalDirection(of: dA) == .A)
+    #expect(anatomicalDirection(of: dS) == .S)
+}

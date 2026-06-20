@@ -36,10 +36,20 @@ final class VolumeData {
     let rescaleSlope: Double
     let rescaleIntercept: Double
 
-    /// 4×4 affine: voxel (i,j,k) → world (x,y,z) in mm
+    /// 4×4 affine: voxel (i,j,k) → world (x,y,z) in mm.
+    /// For NIfTI volumes this is the **canonical (RAS)** affine — the voxel
+    /// axes have been reoriented so i→R, j→A, k→S.
     let voxelToWorldMatrix: simd_double4x4
     /// Inverse: world → voxel
     let worldToVoxelMatrix: simd_double4x4
+
+    /// Original NIfTI voxel→world affine *before* canonical-RAS reorientation
+    /// (nil for volumes already built in native order, e.g. legacy DICOM).
+    /// Kept alongside `reorientation` so a segmentation mask authored in this
+    /// volume's canonical space can be written back to the original voxel grid.
+    let originalAffine: simd_double4x4?
+    /// The whole-axis relabel/flip applied to reach canonical RAS (nil = none).
+    let reorientation: CanonicalReorientation?
 
     let seriesUID: String
     let sliceCount: Int  // alias for depth
@@ -73,6 +83,8 @@ final class VolumeData {
         self.seriesUID = seriesUID
         self.sliceCount = depth
         self.sliceStride = width * height
+        self.originalAffine = nil
+        self.reorientation = nil
 
         // Build voxel-to-world matrix:
         // world = origin + i * spacingX * rowDir + j * spacingY * colDir + k * spacingZ * sliceDir
@@ -98,7 +110,9 @@ final class VolumeData {
         voxelToWorld: simd_double4x4,
         rescaleSlope: Double,
         rescaleIntercept: Double,
-        seriesUID: String
+        seriesUID: String,
+        originalAffine: simd_double4x4? = nil,
+        reorientation: CanonicalReorientation? = nil
     ) {
         self.voxels = voxels
         self.width = width
@@ -125,6 +139,8 @@ final class VolumeData {
         self.sliceStride = width * height
         self.voxelToWorldMatrix = voxelToWorld
         self.worldToVoxelMatrix = voxelToWorld.inverse
+        self.originalAffine = originalAffine
+        self.reorientation = reorientation
     }
 
     deinit {

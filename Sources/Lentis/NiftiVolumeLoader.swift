@@ -36,6 +36,11 @@ final class NiftiDataset {
     let seriesID: String
     let displayName: String
     let detectedModality: ImagingModality
+    /// Whole-axis relabel/flip that brings the NIfTI voxel grid to canonical
+    /// RAS (i→R, j→A, k→S). Applied in `makeVolume`; identity for already-RAS
+    /// data. Statistics/modality below are order-independent, so they are
+    /// computed on the source order and unaffected by reorientation.
+    let reorientation: CanonicalReorientation
 
     var timepointCount: Int { image.nt }
     var isMultiVolume: Bool { image.nt > 1 }
@@ -56,6 +61,7 @@ final class NiftiDataset {
         self.image = image
         self.seriesID = seriesID
         self.displayName = displayName
+        self.reorientation = closestCanonicalReorientation(affine: image.affine)
 
         let v0 = image.calibratedVolume(timepoint: 0)
 
@@ -119,36 +125,70 @@ final class NiftiDataset {
     /// Effective modality given an optional manual override.
     func modality(override: ImagingModality?) -> ImagingModality { override ?? detectedModality }
 
-    /// Build an Int16 VolumeData for one timepoint, preserving the NIfTI affine.
+    /// Build an Int16 VolumeData for one timepoint, reoriented to canonical RAS
+    /// (i→R, j→A, k→S). The reorder folds into the quantization pass — each
+    /// source voxel is written straight to its canonical position — so it adds
+    /// no extra buffer and (for already-RAS data) no overhead. The original
+    /// affine + reorientation are handed to VolumeData for mask write-back.
     func makeVolume(timepoint t: Int) -> VolumeData {
         let values = image.calibratedVolume(timepoint: t)
-        let n = values.count
+        let nx = image.nx, ny = image.ny, nz = image.nz
+        let srcDims = (nx, ny, nz)
+        let (cw, ch, cd) = reorientation.canonicalDims(srcDims)
+        let n = cw * ch * cd
         let buffer = UnsafeMutableBufferPointer<Int16>.allocate(capacity: n)
 
-        if storeDirect {
-            for i in 0..<n {
-                let f = values[i].isFinite ? Double(values[i]) : 0
-                let clamped = max(-32768.0, min(32767.0, f.rounded()))
-                buffer[i] = Int16(clamped)
-            }
-        } else {
-            let lo = quantLo, scale = quantScale
-            for i in 0..<n {
-                let f = values[i].isFinite ? Double(values[i]) : lo
-                let q = (((f - lo) / scale).rounded()) - 32000
-                let clamped = max(-32768.0, min(32767.0, q))
-                buffer[i] = Int16(clamped)
+        // Walk canonical voxels in storage order (i fastest) while stepping the
+        // source index incrementally: srcLin = base + cI·I + cJ·J + cK·K. For
+        // already-canonical (RAS) data this collapses to srcLin == dst.
+        let srcStride = [1, nx, nx * ny]
+        let sd = [nx, ny, nz]
+        let sa = [reorientation.sourceAxis.0, reorientation.sourceAxis.1, reorientation.sourceAxis.2]
+        let fl = [reorientation.flip.0, reorientation.flip.1, reorientation.flip.2]
+        var coef = [0, 0, 0]
+        var base = 0
+        for w in 0..<3 {
+            let stride = srcStride[sa[w]]
+            if fl[w] { coef[w] = -stride; base += stride * (sd[sa[w]] - 1) }
+            else { coef[w] = stride }
+        }
+        let (cI, cJ, cK) = (coef[0], coef[1], coef[2])
+
+        let direct = storeDirect
+        let lo = quantLo, scale = quantScale
+        var dst = 0
+        for k in 0..<cd {
+            let baseK = base + cK * k
+            for j in 0..<ch {
+                var srcLin = baseK + cJ * j   // I == 0 at row start
+                for _ in 0..<cw {
+                    let raw = values[srcLin]
+                    let q: Double
+                    if direct {
+                        let f = raw.isFinite ? Double(raw) : 0
+                        q = max(-32768.0, min(32767.0, f.rounded()))
+                    } else {
+                        let f = raw.isFinite ? Double(raw) : lo
+                        q = max(-32768.0, min(32767.0, (((f - lo) / scale).rounded()) - 32000))
+                    }
+                    buffer[dst] = Int16(q)
+                    dst += 1
+                    srcLin += cI
+                }
             }
         }
 
+        let canonicalAffine = reorientation.canonicalAffine(source: image.affine, srcDims: srcDims)
         let uid = isMultiVolume ? "\(seriesID)#t\(t)" : seriesID
         return VolumeData(
             voxels: buffer,
-            width: image.nx, height: image.ny, depth: image.nz,
-            voxelToWorld: image.affine,
+            width: cw, height: ch, depth: cd,
+            voxelToWorld: canonicalAffine,
             rescaleSlope: storeSlope,
             rescaleIntercept: storeInter,
-            seriesUID: uid
+            seriesUID: uid,
+            originalAffine: image.affine,
+            reorientation: reorientation
         )
     }
 
