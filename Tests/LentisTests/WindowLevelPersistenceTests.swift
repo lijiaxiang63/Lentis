@@ -16,14 +16,14 @@ func seriesStatesStoresWindowLevelAfterFirstLoad() {
     // Simulate what the DCMTK render branch does on first load:
     // it should write the computed W/L into seriesStates so subsequent
     // slice loads can reuse it.
-    let model = DICOMModel()
+    let model = ViewerModel()
     let uid = "test-series-uid"
 
     // Pre-condition: no entry in seriesStates
     #expect(model.seriesStates[uid] == nil)
 
     // Simulate first-load write (mirrors the code added in loadSingleFileForPanel)
-    var state = model.seriesStates[uid] ?? DICOMModel.SeriesViewState()
+    var state = model.seriesStates[uid] ?? ViewerModel.SeriesViewState()
     state.windowWidth = 1500.0
     state.windowCenter = 300.0
     model.seriesStates[uid] = state
@@ -37,18 +37,18 @@ func seriesStatesStoresWindowLevelAfterFirstLoad() {
 func seriesStatesNotOverwrittenOnSubsequentLoads() {
     // Simulate the guard introduced in the fix:
     // if seriesStates[uid]?.windowWidth != nil, don't overwrite.
-    let model = DICOMModel()
+    let model = ViewerModel()
     let uid = "test-series-uid-2"
 
     // Write initial W/L (first slice load)
-    var state = DICOMModel.SeriesViewState()
+    var state = ViewerModel.SeriesViewState()
     state.windowWidth = 2000.0
     state.windowCenter = 500.0
     model.seriesStates[uid] = state
 
     // Simulate second slice load attempting to overwrite (should be skipped)
     if model.seriesStates[uid]?.windowWidth == nil {
-        var s = model.seriesStates[uid] ?? DICOMModel.SeriesViewState()
+        var s = model.seriesStates[uid] ?? ViewerModel.SeriesViewState()
         s.windowWidth = 999.0
         s.windowCenter = 111.0
         model.seriesStates[uid] = s
@@ -64,12 +64,12 @@ func preservedWLRestoredFromSeriesStatesWhenPanelWindowWidthIsZero() {
     // Verify the look-up logic at the top of loadSingleFileForPanel:
     // when panel.windowWidth == 0 but seriesStates has a saved W/L,
     // the effective preserved values should come from seriesStates.
-    let model = DICOMModel()
+    let model = ViewerModel()
     let uid = "test-series-uid-3"
     let seriesIndex = 0
 
     // Set up a minimal series so allSeries[seriesIndex].id == uid
-    let ctx = DicomImageContext(
+    let ctx = ImageContext(
         url: URL(fileURLWithPath: "/tmp/fake.dcm"),
         seriesUID: uid,
         seriesDescription: "test",
@@ -85,10 +85,10 @@ func preservedWLRestoredFromSeriesStatesWhenPanelWindowWidthIsZero() {
         studyInstanceUID: nil,
         numberOfFrames: 1
     )
-    model.allSeries = [DicomSeries(id: uid, seriesNumber: 1, seriesDescription: "test", images: [ctx])]
+    model.allSeries = [ImageSeries(id: uid, seriesNumber: 1, seriesDescription: "test", images: [ctx])]
 
     // Pre-populate seriesStates with a known W/L (simulating a prior slice load)
-    var state = DICOMModel.SeriesViewState()
+    var state = ViewerModel.SeriesViewState()
     state.windowWidth = 1200.0
     state.windowCenter = 400.0
     model.seriesStates[uid] = state
@@ -119,11 +119,11 @@ func preservedWLRestoredFromSeriesStatesWhenPanelWindowWidthIsZero() {
 @Test
 func preservedWLNotRestoredWhenSeriesStatesEmpty() {
     // When seriesStates has no entry, preservedWW stays 0 (genuine first load).
-    let model = DICOMModel()
+    let model = ViewerModel()
     let uid = "test-series-uid-4"
     let seriesIndex = 0
 
-    let ctx = DicomImageContext(
+    let ctx = ImageContext(
         url: URL(fileURLWithPath: "/tmp/fake2.dcm"),
         seriesUID: uid,
         seriesDescription: "test",
@@ -139,7 +139,7 @@ func preservedWLNotRestoredWhenSeriesStatesEmpty() {
         studyInstanceUID: nil,
         numberOfFrames: 1
     )
-    model.allSeries = [DicomSeries(id: uid, seriesNumber: 1, seriesDescription: "test", images: [ctx])]
+    model.allSeries = [ImageSeries(id: uid, seriesNumber: 1, seriesDescription: "test", images: [ctx])]
 
     let panel = PanelState()
     panel.seriesIndex = seriesIndex
@@ -166,11 +166,11 @@ func preservedWLNotRestoredWhenSeriesStatesEmpty() {
 func adjustWindowLevelPersistsToSeriesStates() {
     // Verify that drag-based W/L adjustment (adjustWindowLevelForPanel) still
     // saves to seriesStates — ensures user adjustments persist across scroll.
-    let model = DICOMModel()
+    let model = ViewerModel()
     let uid = "test-series-uid-5"
     let seriesIndex = 0
 
-    let ctx = DicomImageContext(
+    let ctx = ImageContext(
         url: URL(fileURLWithPath: "/tmp/fake3.dcm"),
         seriesUID: uid,
         seriesDescription: "test",
@@ -186,7 +186,7 @@ func adjustWindowLevelPersistsToSeriesStates() {
         studyInstanceUID: nil,
         numberOfFrames: 1
     )
-    model.allSeries = [DicomSeries(id: uid, seriesNumber: 1, seriesDescription: "test", images: [ctx])]
+    model.allSeries = [ImageSeries(id: uid, seriesNumber: 1, seriesDescription: "test", images: [ctx])]
 
     let panel = PanelState()
     panel.seriesIndex = seriesIndex

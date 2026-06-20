@@ -13,7 +13,7 @@ import SwiftUI
 
 /// Floating toolbar for switching panel layouts and toggling synchronized scrolling.
 struct LayoutToolbar: View {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
 
     /// Shortcut label for each layout (matched to ViewerLayout.allCases order)
     private static let layoutKeys = ["1", "2", "3", "4"]

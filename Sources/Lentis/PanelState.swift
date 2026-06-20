@@ -14,7 +14,7 @@
 //                         display modifiers (invert, rotate, flip)
 //
 // PanelState is a reference type (class) so multiple views can observe the
-// same panel instance. Shared resources (caches, series data) live in DICOMModel.
+// same panel instance. Shared resources (caches, series data) live in ViewerModel.
 // Licensed under the MIT License. See LICENSE for details.
 
 import SwiftUI
@@ -130,7 +130,7 @@ struct Annotation: Identifiable {
 
 // MARK: - Panel State
 /// Per-panel observable state. Each panel in the multi-panel viewer gets its own instance.
-/// Shared resources (caches, queues, series data) remain in DICOMModel.
+/// Shared resources (caches, queues, series data) remain in ViewerModel.
 class PanelState: ObservableObject, Identifiable {
     let id: UUID = UUID()
 

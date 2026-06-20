@@ -12,7 +12,7 @@ import SwiftUI
 /// Per-panel toolbar for switching between Slice/MPR/MIP modes.
 /// Appears at the top of each panel when a series is assigned and a volume is available.
 struct VolumeToolbar: View {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
     @ObservedObject var panel: PanelState
 
     private var isVolumetric: Bool {

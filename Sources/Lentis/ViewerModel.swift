@@ -1,4 +1,4 @@
-// DICOMModel.swift
+// ViewerModel.swift
 // OpenDicomViewer
 //
 // Central model for the DICOM viewer. This is the largest file in the project
@@ -29,7 +29,7 @@ import simd
 import UniformTypeIdentifiers
 
 // MARK: - Data Structures
-struct DicomImageContext: Identifiable, Equatable {
+struct ImageContext: Identifiable, Equatable {
     var id: URL { url }
     let url: URL
     let seriesUID: String
@@ -48,7 +48,7 @@ struct DicomImageContext: Identifiable, Equatable {
     let studyInstanceUID: String?             // (0020,000D)
     let numberOfFrames: Int                   // (0028,0008) - 1 for single frame
 
-    static func == (lhs: DicomImageContext, rhs: DicomImageContext) -> Bool {
+    static func == (lhs: ImageContext, rhs: ImageContext) -> Bool {
         return lhs.url == rhs.url
     }
 
@@ -65,11 +65,11 @@ struct DicomImageContext: Identifiable, Equatable {
     }
 }
 
-struct DicomSeries: Identifiable, Equatable {
+struct ImageSeries: Identifiable, Equatable {
     let id: String // SeriesUID
     let seriesNumber: Int
     let seriesDescription: String
-    var images: [DicomImageContext]
+    var images: [ImageContext]
 
     /// Computed: dominant axis of this series (axial/sagittal/coronal) based on ImageOrientationPatient
     var dominantAxis: SliceAxis? {
@@ -103,7 +103,7 @@ func cross(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> SIMD3<Double> {
 }
 
 // MARK: - Model
-class DICOMModel: ObservableObject {
+class ViewerModel: ObservableObject {
     // Current State
     @Published var image: NSImage?
     @Published var errorMessage: String?
@@ -113,7 +113,7 @@ class DICOMModel: ObservableObject {
     @Published var activeTool: ActiveTool = .select
     
     // Series Management
-    @Published var allSeries: [DicomSeries] = []
+    @Published var allSeries: [ImageSeries] = []
     @Published var currentSeriesIndex: Int = -1 {
         didSet {
              if currentSeriesIndex != -1, let panel = activePanel {
@@ -292,7 +292,7 @@ class DICOMModel: ObservableObject {
         if let existing = allSeries.firstIndex(where: { $0.id == cacheKey }) {
             return existing
         }
-        let series = DicomSeries(id: cacheKey, seriesNumber: allSeries.count + 1,
+        let series = ImageSeries(id: cacheKey, seriesNumber: allSeries.count + 1,
                                  seriesDescription: description, images: [])
         allSeries.append(series)
         return allSeries.count - 1
@@ -362,7 +362,7 @@ class DICOMModel: ObservableObject {
         BenchmarkLogger.shared.log(event: "load_start", dataset: url.lastPathComponent, detail: url.path)
 
         // NIfTI files bypass the DICOM directory-scan path entirely.
-        if DICOMModel.isNiftiURL(url) {
+        if ViewerModel.isNiftiURL(url) {
             cachingQueue.cancelAllOperations()
             DispatchQueue.main.async {
                 self.errorMessage = nil
@@ -883,7 +883,7 @@ class DICOMModel: ObservableObject {
     }
 
     /// Find the closest volume slice index for MPR/MIP targets using spatial or proportional matching.
-    private func closestVolumeIndex(dimension: Int, targetSeries: DicomSeries, sourceZ: Double?, fallbackSource source: PanelState, sourceSeries: DicomSeries) -> Int {
+    private func closestVolumeIndex(dimension: Int, targetSeries: ImageSeries, sourceZ: Double?, fallbackSource source: PanelState, sourceSeries: ImageSeries) -> Int {
         guard dimension > 1 else { return 0 }
 
         // Spatial matching using target series z-range

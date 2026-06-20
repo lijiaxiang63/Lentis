@@ -23,7 +23,7 @@ import QuartzCore
 
 
 struct ContentView: View {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @FocusState private var isFocused: Bool
 
@@ -136,7 +136,7 @@ struct ContentView: View {
             return .handled
         }
         .onKeyPress(phases: .down) { press in
-            // Letter/number shortcuts are handled by NSEvent keyDown monitor in DICOMModel
+            // Letter/number shortcuts are handled by NSEvent keyDown monitor in ViewerModel
             // (works regardless of input method). This handler covers special keys only.
 
             // Escape = Clear group selection
@@ -182,7 +182,7 @@ struct ContentView: View {
 }
 
 struct SidebarView: View {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
     @Binding var columnVisibility: NavigationSplitViewVisibility
     
     var body: some View {
@@ -225,7 +225,7 @@ struct SidebarView: View {
 }
 
 struct SeriesListView: View {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
 
     /// The series index shown by the active panel (for highlight)
     private var activeSeriesIndex: Int {
@@ -304,8 +304,8 @@ struct SeriesListView: View {
 }
 
 struct SeriesRow: View {
-    @ObservedObject var model: DICOMModel
-    let series: DicomSeries
+    @ObservedObject var model: ViewerModel
+    let series: ImageSeries
     let isSelected: Bool
     let seriesIndex: Int
 
@@ -360,7 +360,7 @@ struct SeriesRow: View {
 /// Miniature grid icon showing which panel(s) display a given series.
 /// Each cell is a tiny rounded rectangle: filled blue if the panel shows this series, border-only otherwise.
 struct PanelPositionIndicator: View {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
     let seriesIndex: Int
 
     private let cellSize: CGFloat = 7

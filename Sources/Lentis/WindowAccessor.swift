@@ -15,7 +15,7 @@ import AppKit
 /// processes the event. This is the only reliable way to handle single-letter shortcuts
 /// when a CJK input method is active.
 private class KeyInterceptorView: NSView {
-    weak var model: DICOMModel?
+    weak var model: ViewerModel?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard let model = model else { return super.performKeyEquivalent(with: event) }
@@ -64,7 +64,7 @@ private class KeyInterceptorView: NSView {
 }
 
 struct WindowAccessor: NSViewRepresentable {
-    let model: DICOMModel
+    let model: ViewerModel
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()

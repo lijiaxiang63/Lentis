@@ -27,7 +27,7 @@ import QuartzCore
 
 /// Arranges panels in a grid based on the current ViewerLayout.
 struct MultiPanelContainer: View {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
     @FocusState.Binding var isFocused: Bool
 
     var body: some View {
@@ -117,7 +117,7 @@ struct EmptyPanelView: View {
 /// Individual panel — refactored from the original DetailView.
 /// Each panel has its own image, histogram, scrollbar, W/L, zoom/pan state.
 struct PanelView: View {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
     @ObservedObject var panel: PanelState
     let isActive: Bool
     @FocusState.Binding var isFocused: Bool
@@ -340,7 +340,7 @@ struct PanelView: View {
 // MARK: - Panel Interactive DICOM View (NSViewRepresentable)
 
 struct PanelInteractiveDICOMView: NSViewRepresentable {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
     @ObservedObject var panel: PanelState
     var image: NSImage
 
@@ -367,7 +367,7 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
     }
 
     class PanelDICOMInteractView: NSView {
-        weak var model: DICOMModel?
+        weak var model: ViewerModel?
         var panel: PanelState?
         private var imageView = NSImageView()
         private var lastDragLocation: NSPoint?
@@ -1412,7 +1412,7 @@ struct ROIOverlay: View {
 // MARK: - Panel Adjustment Toolbar
 
 struct PanelAdjustmentToolbar: View {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
     @ObservedObject var panel: PanelState
 
     var body: some View {
@@ -1514,7 +1514,7 @@ struct PanelHistogramView: View {
 // MARK: - Panel DICOM Scroller
 
 struct PanelDICOMScroller: View {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
     @ObservedObject var panel: PanelState
     @State private var isHovering = false
     @State private var hoverLocation: CGPoint = .zero
@@ -1608,7 +1608,7 @@ struct PanelDICOMScroller: View {
 // MARK: - Panel Thumbnail Popup
 
 struct PanelThumbnailPopup: View {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
     @ObservedObject var panel: PanelState
     let index: Int
     let total: Int
@@ -1970,7 +1970,7 @@ struct AnnotationOverlay: View {
 // MARK: - Tool Palette
 
 struct ToolPalette: View {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
 
     var body: some View {
         VStack(spacing: 2) {

@@ -10,7 +10,7 @@ import SwiftUI
 
 @main
 struct LentisApp: App {
-    @StateObject private var model = DICOMModel()
+    @StateObject private var model = ViewerModel()
 
     var body: some Scene {
         WindowGroup {

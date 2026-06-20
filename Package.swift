@@ -20,7 +20,7 @@ let package = Package(
             name: "Lentis"
         ),
         .testTarget(
-            name: "OpenDicomViewerTests",
+            name: "LentisTests",
             dependencies: [
                 "Lentis",
                 .product(name: "Testing", package: "swift-testing")

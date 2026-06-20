@@ -18,7 +18,7 @@ import SwiftUI
 
 /// Draws cross-reference lines showing where other panels' slices intersect this panel's image plane.
 struct CrossReferenceOverlay: View {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
     @ObservedObject var panel: PanelState
 
     /// Color per panel slot index

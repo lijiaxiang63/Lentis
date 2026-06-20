@@ -8,8 +8,8 @@ private func imageContext(
     url: URL = URL(fileURLWithPath: "/tmp/test.dcm"),
     seriesUID: String = "series-1",
     numberOfFrames: Int = 1
-) -> DicomImageContext {
-    DicomImageContext(
+) -> ImageContext {
+    ImageContext(
         url: url,
         seriesUID: seriesUID,
         seriesDescription: "test",
@@ -36,7 +36,7 @@ func crossProduct() {
 
 @Test
 func dominantAxisAxial() {
-    let series = DicomSeries(
+    let series = ImageSeries(
         id: "axial",
         seriesNumber: 1,
         seriesDescription: "axial",
@@ -47,7 +47,7 @@ func dominantAxisAxial() {
 
 @Test
 func dominantAxisCoronal() {
-    let series = DicomSeries(
+    let series = ImageSeries(
         id: "coronal",
         seriesNumber: 2,
         seriesDescription: "coronal",
@@ -58,7 +58,7 @@ func dominantAxisCoronal() {
 
 @Test
 func dominantAxisSagittal() {
-    let series = DicomSeries(
+    let series = ImageSeries(
         id: "sagittal",
         seriesNumber: 3,
         seriesDescription: "sagittal",
@@ -98,7 +98,7 @@ func groupingKeyForMultiFrameIsPerFile() {
 @Test
 func groupingBehaviorSplitsMultiFrameKeepsSingleFrame() {
     // 11 multi-frame cines sharing one SeriesUID + 2 single-frame files sharing another UID
-    var contexts: [DicomImageContext] = []
+    var contexts: [ImageContext] = []
     for i in 0..<11 {
         contexts.append(imageContext(
             orientation: [1, 0, 0, 0, 1, 0],

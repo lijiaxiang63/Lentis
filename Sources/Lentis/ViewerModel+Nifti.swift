@@ -1,4 +1,4 @@
-// DICOMModel+Nifti.swift
+// ViewerModel+Nifti.swift
 // Lentis
 //
 // NIfTI loading orchestration: reads a .nii/.nii.gz file off the main thread,
@@ -8,7 +8,7 @@
 
 import Foundation
 
-extension DICOMModel {
+extension ViewerModel {
 
     /// True if the URL looks like a NIfTI file (.nii or .nii.gz).
     static func isNiftiURL(_ url: URL) -> Bool {

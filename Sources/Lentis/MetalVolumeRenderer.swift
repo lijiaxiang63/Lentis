@@ -395,7 +395,7 @@ extension MetalVolumeRenderer {
 
 /// SwiftUI wrapper for an MTKView that displays GPU-rendered volume projections
 struct VolumeRenderView: NSViewRepresentable {
-    @ObservedObject var model: DICOMModel
+    @ObservedObject var model: ViewerModel
     @ObservedObject var panel: PanelState
     let renderer: MetalVolumeRenderer
 
