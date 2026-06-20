@@ -473,8 +473,18 @@ class ViewerModel: ObservableObject {
         guard seriesIndex >= 0, seriesIndex < allSeries.count else { return }
         panel.seriesIndex = seriesIndex
         panel.imageIndex = 0
-        panel.windowWidth = 0  // Reset W/L for new series assignment
-        panel.windowCenter = 0
+
+        // Seed modality-aware W/L (CT preset / MRI percentile, or a saved manual
+        // window) so MPR/MIP panels don't fall back to loadMPRSlice's generic
+        // 2000/500 window and render dark (e.g. the one-click quad MPR layout).
+        // Non-NIfTI series (none currently) keep the legacy reset-to-0.
+        if let (ww, wc) = seededWindow(forSeriesIndex: seriesIndex) {
+            panel.windowWidth = ww
+            panel.windowCenter = wc
+        } else {
+            panel.windowWidth = 0
+            panel.windowCenter = 0
+        }
 
         // NIfTI volumes display as an axial MPR reconstruction.
         setPanelMode(panel, mode: .mprAxial)
@@ -908,6 +918,15 @@ class ViewerModel: ObservableObject {
         return max(0, min(dimension - 1, Int(pct * Double(dimension - 1))))
     }
 
+    /// Set a panel's absolute W/L (stored units) and re-render. Routes through
+    /// `adjustWindowLevelForPanel`, so it reuses the MPR/MIP re-render path and
+    /// persists to seriesStates. Used by preset / auto / modality-toggle seeding.
+    func setPanelWindow(_ panel: PanelState, ww: Double, wc: Double) {
+        adjustWindowLevelForPanel(panel,
+                                  deltaWidth: ww - panel.windowWidth,
+                                  deltaCenter: wc - panel.windowCenter)
+    }
+
     /// Adjust W/L for a specific panel
     func adjustWindowLevelForPanel(_ panel: PanelState, deltaWidth: Double, deltaCenter: Double) {
         panel.windowWidth = max(1.0, panel.windowWidth + deltaWidth)
@@ -1242,6 +1261,14 @@ class ViewerModel: ObservableObject {
         guard seriesIndex >= 0, seriesIndex < allSeries.count else { return 1 }
         let seriesID = allSeries[seriesIndex].id
         return volumeCacheGet(seriesID)?.depth ?? 1
+    }
+
+    /// The cached volume for a series index, if present (synchronous lookup).
+    /// Lets NIfTI seeding read a volume's calibration without the async
+    /// `getVolume` path. (`volumeCacheGet` itself is file-private.)
+    func cachedVolume(forSeriesIndex idx: Int) -> VolumeData? {
+        guard idx >= 0, idx < allSeries.count else { return nil }
+        return volumeCacheGet(allSeries[idx].id)
     }
 
     // MARK: - Volume Building & MPR

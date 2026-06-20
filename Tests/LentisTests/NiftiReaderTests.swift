@@ -14,7 +14,7 @@ import Compression
 
 // MARK: - In-test NIfTI-1 writer
 
-private struct NiftiSpec {
+struct NiftiSpec {
     var nx: Int, ny: Int, nz: Int, nt: Int = 1
     var datatype: Int16          // 4=int16, 16=float32, 512=uint16
     var bitpix: Int16
@@ -48,7 +48,7 @@ private func putF32(_ b: inout [UInt8], _ o: Int, _ v: Float, _ le: Bool) {
     putI32(&b, o, Int32(bitPattern: v.bitPattern), le)
 }
 
-private func buildNifti(_ s: NiftiSpec, voxels: [Float]) -> Data {
+func buildNifti(_ s: NiftiSpec, voxels: [Float]) -> Data {
     let le = s.littleEndian
     let voxOffset = 352
     var hdr = [UInt8](repeating: 0, count: voxOffset)
@@ -99,7 +99,7 @@ private func buildNifti(_ s: NiftiSpec, voxels: [Float]) -> Data {
     return data
 }
 
-private func rampVoxels(_ nx: Int, _ ny: Int, _ nz: Int, base: Float = 0) -> [Float] {
+func rampVoxels(_ nx: Int, _ ny: Int, _ nz: Int, base: Float = 0) -> [Float] {
     var v = [Float](repeating: 0, count: nx * ny * nz)
     for i in 0..<v.count { v[i] = base + Float(i) }
     return v

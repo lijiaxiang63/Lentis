@@ -59,7 +59,9 @@ extension ViewerModel {
         let idx = registerStandaloneVolume(volume, cacheKey: dataset.seriesID, description: dataset.displayName)
         niftiSeriesIndex = idx
 
-        let (ww, wc) = initialWindow(for: dataset)
+        // Seed the modality default: CT → the Brain HU preset, MRI → percentile
+        // auto-window. (initialWindow remains a defensive fallback.)
+        let (ww, wc) = modalityDefaultWindow(forSeriesIndex: idx) ?? initialWindow(for: dataset)
 
         setLayout(.single)
         guard let panel = panels.first else { isLoading = false; return }
@@ -102,12 +104,46 @@ extension ViewerModel {
         let label = (effectiveModality == .ct ? "HU" : "Val")
         for panel in panels where panel.seriesIndex == niftiSeriesIndex {
             panel.valueUnitLabel = label
+            // The appropriate window changes with the modality (CT preset vs MRI
+            // percentile), so reseed to the new modality default and re-render.
+            if let (ww, wc) = modalityDefaultWindow(forSeriesIndex: panel.seriesIndex) {
+                setPanelWindow(panel, ww: ww, wc: wc)
+            }
         }
         objectWillChange.send()
     }
 
-    /// Initial display window (width, center) in STORED units. Uses a robust
-    /// 1–99% percentile of the data; modality-specific HU presets arrive later.
+    // MARK: - Modality-aware W/L seeding
+
+    /// The modality default W/L in STORED units, ignoring any saved manual
+    /// window: CT → the default HU preset (Brain); MRI → robust percentile
+    /// auto-window. nil unless `idx` is the loaded NIfTI series.
+    func modalityDefaultWindow(forSeriesIndex idx: Int) -> (ww: Double, wc: Double)? {
+        guard idx == niftiSeriesIndex, let dataset = niftiDataset else { return nil }
+        if effectiveModality == .ct {
+            let vol = cachedVolume(forSeriesIndex: idx)
+            let (w, c) = WindowPreset.defaultCT.storedWindow(
+                slope: vol?.rescaleSlope ?? 1, intercept: vol?.rescaleIntercept ?? 0)
+            return (w, c)
+        }
+        let (low, high) = dataset.suggestedWindow
+        return (max(high - low, 1), (high + low) / 2)
+    }
+
+    /// W/L to seed a freshly-assigned NIfTI panel: a previously-saved manual
+    /// window if present (so toggling layouts / timepoints keeps the user's
+    /// window), else the modality default. nil unless `idx` is the NIfTI series.
+    func seededWindow(forSeriesIndex idx: Int) -> (ww: Double, wc: Double)? {
+        guard idx == niftiSeriesIndex, idx >= 0, idx < allSeries.count else { return nil }
+        if let saved = seriesStates[allSeries[idx].id],
+           let ww = saved.windowWidth, let wc = saved.windowCenter, ww > 0 {
+            return (ww, wc)
+        }
+        return modalityDefaultWindow(forSeriesIndex: idx)
+    }
+
+    /// Initial display window (width, center) in STORED units. Defensive
+    /// fallback for `applyNiftiDataset`; normal seeding uses `modalityDefaultWindow`.
     private func initialWindow(for dataset: NiftiDataset) -> (Double, Double) {
         let (low, high) = dataset.suggestedWindow
         let ww = max(high - low, 1)
