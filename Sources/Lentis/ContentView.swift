@@ -208,7 +208,7 @@ struct SidebarView: View {
                     .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Open DICOM Folder")
+                .help("Open NIfTI File")
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -220,7 +220,7 @@ struct SidebarView: View {
     }
     
     private func openFile() {
-        model.openFolder()
+        model.openFile()
     }
 }
 

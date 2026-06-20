@@ -339,16 +339,17 @@ class ViewerModel: ObservableObject {
     // MARK: - Load Methods
 
     /// Show an Open panel and load the selected DICOM file or folder.
-    func openFolder() {
+    func openFile() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = true
+        panel.canChooseDirectories = false
         panel.canChooseFiles = true
-        var types: [UTType] = [.folder]
-        for ext in ["nii", "gz", "dcm"] {
+        panel.message = "Choose a NIfTI file (.nii or .nii.gz)"
+        var types: [UTType] = []
+        for ext in ["nii", "gz"] {
             if let t = UTType(filenameExtension: ext) { types.append(t) }
         }
-        panel.allowedContentTypes = types
+        if !types.isEmpty { panel.allowedContentTypes = types }
         if panel.runModal() == .OK, let url = panel.url {
             load(url: url)
         }

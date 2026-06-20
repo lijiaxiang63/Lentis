@@ -29,7 +29,7 @@ struct LentisApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Open...") {
-                    model.openFolder()
+                    model.openFile()
                 }
                 .keyboardShortcut("o", modifiers: .command)
             }
