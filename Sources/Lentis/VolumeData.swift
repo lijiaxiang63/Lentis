@@ -54,6 +54,14 @@ final class VolumeData {
     let seriesUID: String
     let sliceCount: Int  // alias for depth
 
+    /// Optional same-grid segmentation mask (Phase 7 seam; nil in normal runs).
+    /// Shares this volume's voxel grid, so a label at (i,j,k) tags the same
+    /// voxel as `voxels`; write-back to the original NIfTI grid uses this
+    /// volume's `reorientation` + `originalAffine`. Intended to be attached at
+    /// load time (so it is effectively immutable while panels render off the
+    /// background queues); live mask editing would need its own synchronization.
+    var labelMask: LabelVolume?
+
     private let sliceStride: Int  // width * height
 
     init(
@@ -160,6 +168,20 @@ final class VolumeData {
     @inline(__always)
     func calibratedValue(x: Int, y: Int, z: Int) -> Double {
         Double(voxelAt(x: x, y: y, z: z)) * rescaleSlope + rescaleIntercept
+    }
+
+    // MARK: - Segmentation Mask (seam)
+
+    /// Get-or-create the same-grid label mask for this volume (Phase 7 seam).
+    /// The mask is allocated zeroed and matches this volume's dimensions, so its
+    /// voxel indices map 1:1 to `voxels` and it inherits this volume's spatial
+    /// mapping. Nothing calls this in normal runs.
+    @discardableResult
+    func ensureLabelMask() -> LabelVolume {
+        if let mask = labelMask { return mask }
+        let mask = LabelVolume(width: width, height: height, depth: depth)
+        labelMask = mask
+        return mask
     }
 
     // MARK: - Coordinate Transforms

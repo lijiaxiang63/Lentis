@@ -28,6 +28,17 @@ struct MPRSlice {
     let pixelSpacingY: Double
 }
 
+/// A segmentation-mask slice (Phase 7 seam): one UInt8 label per displayed
+/// pixel, laid out in the SAME (col,row) order as the gray `MPRSlice` of the
+/// same plane/index — `MPREngine.maskSlice` mirrors each gray extractor's
+/// neurological flips byte-for-byte, so the colored overlay registers exactly
+/// over the image it sits on. 0 = background.
+struct MaskSlice {
+    let labels: [UInt8]
+    let width: Int
+    let height: Int
+}
+
 /// The displayed geometry of an orthogonal plane, independent of pixels:
 /// the world position of the top-left pixel and the world directions toward
 /// screen-right / screen-bottom, plus pixel spacing along each. This is the
@@ -235,6 +246,53 @@ class MPREngine {
             pixelSpacingX: g.pixelSpacingX, pixelSpacingY: g.pixelSpacingY)
     }
 
+    // MARK: - Mask Slice (segmentation seam)
+
+    /// Extract the volume's same-grid label mask for an orthogonal plane, in the
+    /// SAME displayed (col,row) layout as the gray slice of that plane/index.
+    /// Each case mirrors the matching gray extractor's neurological flip exactly
+    /// (axial: Anterior on top; sagittal/coronal: Superior on top, with the
+    /// sagittal Anterior-left flip), so a labeled voxel lands on the same pixel
+    /// as its gray counterpart — see `SegmentationSeamTests`. Returns nil when no
+    /// mask is attached, which keeps `renderSlice` on its plain grayscale path.
+    func maskSlice(mode: PanelMode, sliceIndex: Int) -> MaskSlice? {
+        guard let mask = volume.labelMask else { return nil }
+        switch mode {
+        case .mprAxial:
+            guard sliceIndex >= 0, sliceIndex < volume.depth else { return nil }
+            let w = volume.width, h = volume.height
+            var out = [UInt8](repeating: 0, count: w * h)
+            for y in 0..<h {
+                let dstRow = (h - 1 - y) * w   // Anterior (max j) at top
+                for x in 0..<w { out[dstRow + x] = mask.labelAt(x: x, y: y, z: sliceIndex) }
+            }
+            return MaskSlice(labels: out, width: w, height: h)
+        case .mprSagittal:
+            guard sliceIndex >= 0, sliceIndex < volume.width else { return nil }
+            let w = volume.height, h = volume.depth
+            var out = [UInt8](repeating: 0, count: w * h)
+            for z in 0..<volume.depth {
+                let outRow = (volume.depth - 1 - z) * w   // Superior at top
+                for y in 0..<volume.height {
+                    let outCol = (w - 1) - y               // Anterior at left
+                    out[outRow + outCol] = mask.labelAt(x: sliceIndex, y: y, z: z)
+                }
+            }
+            return MaskSlice(labels: out, width: w, height: h)
+        case .mprCoronal:
+            guard sliceIndex >= 0, sliceIndex < volume.height else { return nil }
+            let w = volume.width, h = volume.depth
+            var out = [UInt8](repeating: 0, count: w * h)
+            for z in 0..<volume.depth {
+                let outRow = (volume.depth - 1 - z) * w   // Superior at top
+                for x in 0..<volume.width { out[outRow + x] = mask.labelAt(x: x, y: sliceIndex, z: z) }
+            }
+            return MaskSlice(labels: out, width: w, height: h)
+        default:
+            return nil
+        }
+    }
+
     // MARK: - Arbitrary Oblique Slice
 
     /// Generate an oblique slice through the volume defined by origin, row/col direction, and dimensions
@@ -277,11 +335,32 @@ class MPREngine {
 
     // MARK: - Rendering MPR to NSImage
 
-    /// Render an MPR slice to a displayable image with Window/Level
-    /// The NSImage size reflects physical dimensions (mm) so non-isotropic pixels display correctly
-    static func renderSlice(_ slice: MPRSlice, ww: Double, wc: Double, invert: Bool = false) -> NSImage? {
+    /// Render an MPR slice to a displayable image with Window/Level. The NSImage
+    /// size reflects physical dimensions (mm) so non-isotropic pixels display
+    /// correctly. When a same-size `mask` is supplied (Phase 7 segmentation
+    /// seam), labeled pixels are alpha-composited with `maskColor`; otherwise the
+    /// original fast grayscale path runs unchanged.
+    ///
+    /// Metal seam: slice rendering is CPU here (see CLAUDE.md §Data & rendering).
+    /// A future live-MTKView path would upload this mask as a second R8 texture
+    /// and blend it in the W/L shader (MetalVolumeRenderer) rather than via this
+    /// CPU composite — orientation still comes from `maskSlice` mirroring
+    /// `planeGeometry`, so no flip logic moves into MSL.
+    static func renderSlice(_ slice: MPRSlice, ww: Double, wc: Double, invert: Bool = false,
+                            mask: MaskSlice? = nil,
+                            maskColor: SIMD3<Double> = SIMD3<Double>(1.0, 0.23, 0.19),
+                            maskAlpha: Double = 0.45) -> NSImage? {
         let totalPixels = slice.width * slice.height
         guard totalPixels > 0, ww > 0 else { return nil }
+
+        // Segmentation seam: take the RGBA compositing path only when a same-size
+        // mask is attached (never in normal runs); the hot grayscale path below
+        // is otherwise byte-for-byte unchanged.
+        if let mask = mask, mask.width == slice.width, mask.height == slice.height,
+           mask.labels.count == totalPixels {
+            return renderSliceMasked(slice, ww: ww, wc: wc, invert: invert,
+                                     mask: mask, maskColor: maskColor, maskAlpha: maskAlpha)
+        }
 
         let colorSpace = CGColorSpaceCreateDeviceGray()
         guard let context = CGContext(
@@ -312,19 +391,73 @@ class MPREngine {
         }
 
         guard let cgImage = context.makeImage() else { return nil }
+        return NSImage(cgImage: cgImage, size: displaySize(for: slice))
+    }
 
-        // Scale NSImage size to reflect physical dimensions so non-isotropic
-        // pixels (e.g., sagittal/coronal with thick slices) display correctly.
-        // Use the ratio of spacingY/spacingX to determine the aspect correction.
+    /// Display size (points) for a slice: pixel width, with height scaled by the
+    /// physical aspect ratio so non-isotropic (e.g. sagittal/coronal) pixels are
+    /// not squashed. Shared by the grayscale and masked render paths.
+    private static func displaySize(for slice: MPRSlice) -> NSSize {
         let physicalWidth = Double(slice.width) * slice.pixelSpacingX
         let physicalHeight = Double(slice.height) * slice.pixelSpacingY
-        let aspectRatio = physicalHeight / physicalWidth
+        let aspectRatio = physicalWidth > 0 ? physicalHeight / physicalWidth : 1
+        return NSSize(width: CGFloat(slice.width),
+                      height: CGFloat(Double(slice.width) * aspectRatio))
+    }
 
-        // Set display size: keep width as pixel width, scale height by aspect ratio
-        let displayWidth = CGFloat(slice.width)
-        let displayHeight = CGFloat(Double(slice.width) * aspectRatio)
+    /// RGBA compositing path (segmentation seam): grayscale W/L base with
+    /// `maskColor` alpha-blended over labeled pixels. Only reached when a
+    /// same-size mask is present, so it never perturbs the grayscale fast path.
+    private static func renderSliceMasked(_ slice: MPRSlice, ww: Double, wc: Double, invert: Bool,
+                                          mask: MaskSlice, maskColor: SIMD3<Double>,
+                                          maskAlpha: Double) -> NSImage? {
+        let totalPixels = slice.width * slice.height
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: slice.width,
+            height: slice.height,
+            bitsPerComponent: 8,
+            bytesPerRow: slice.width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        guard let destData = context.data else { return nil }
+        let dst = destData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
 
-        return NSImage(cgImage: cgImage, size: NSSize(width: displayWidth, height: displayHeight))
+        let windowBottom = wc - (ww / 2.0)
+        let a = max(0.0, min(1.0, maskAlpha))
+        let cr = max(0.0, min(1.0, maskColor.x))
+        let cg = max(0.0, min(1.0, maskColor.y))
+        let cb = max(0.0, min(1.0, maskColor.z))
+
+        slice.pixelData.withUnsafeBytes { rawBuf in
+            guard let src = rawBuf.baseAddress?.assumingMemoryBound(to: Int16.self),
+                  slice.pixelData.count >= totalPixels * 2 else { return }
+            for i in 0..<totalPixels {
+                var norm = (Double(src[i]) - windowBottom) / ww
+                if invert { norm = 1.0 - norm }
+                let g = max(0.0, min(1.0, norm))   // grayscale base in [0,1]
+
+                var r = g, gg = g, b = g
+                if mask.labels[i] != 0 {
+                    // Straight "over" blend of an opaque color at coverage `a`.
+                    r  = g * (1 - a) + cr * a
+                    gg = g * (1 - a) + cg * a
+                    b  = g * (1 - a) + cb * a
+                }
+                let o = i * 4
+                // Output is opaque (alpha 255); RGB already holds the blend, which
+                // equals its own premultiplied form at alpha 1 (premultipliedLast).
+                dst[o]     = UInt8(max(0, min(255, r  * 255)))
+                dst[o + 1] = UInt8(max(0, min(255, gg * 255)))
+                dst[o + 2] = UInt8(max(0, min(255, b  * 255)))
+                dst[o + 3] = 255
+            }
+        }
+
+        guard let cgImage = context.makeImage() else { return nil }
+        return NSImage(cgImage: cgImage, size: displaySize(for: slice))
     }
 }
 
