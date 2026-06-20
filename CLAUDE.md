@@ -133,6 +133,15 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 
 ## Critical gotchas (hard-won)
 
+- **`MPREngine.sagittalSlice` is a perf-sensitive parallel raw-pointer walk** (commit `cb12693`) — it is
+  the worst-case extraction (fixes i, spans j×k → cache-missing gather over the whole buffer; 1 MP on the
+  MPRAGE). It does the **same gather byte-for-byte** as a `voxelAt` loop (orientation is identical — the
+  flips still come from `planeGeometry`, guarded by `testSagittalSliceNeurologicalOrientation`) but via a
+  bounds-check-free pointer walk parallelised across z-planes (disjoint writes, read-only source). Do
+  **not** "simplify" it back to a `voxelAt` triple-loop — that re-introduces the ~15 ms / ~57-slices/s
+  fast-scroll lag. If you ever touch its flips, edit `planeGeometry` (the one orientation source), not the
+  loop. Profile with the standalone throughput harness pattern (load `NiftiDataset` → `makeVolume` → time
+  `axial/sagittal/coronalSlice` + `renderSlice`); axial/coronal are already contiguous + fast, leave them.
 - **gzip decode = pure-Swift DEFLATE.** `DeflateInflater` in `NIfTI.swift` (validated vs. real
   Python gzip: small/all-zero/70 KB multi-block + real 34 MB `.nii.gz` all match). Originally
   written because Apple `Compression` `COMPRESSION_ZLIB` *decode* was broken by DCMTK's bundled
@@ -173,16 +182,29 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 
 Ordered roughly by priority. None block the build or tests (52 green); these are quality/perf debt.
 
-1. **Residual scroll smoothness on the very large MPRAGE.** After the async+coalesced render fix the UI
-   stays responsive (main-thread `scroll_main` ~0.3 ms/tick), but under *fast continuous* scrolling the
-   on-screen image doesn't always keep up frame-for-frame on the 344×1024×1024 / 721 MB MPRAGE — both
-   single-panel and the quad-MPR + sync-scroll layout. Smaller volumes (CT, T1) scroll fine. **Cause not
-   yet diagnosed — investigate from scratch and measure** (the `--benchmark` perf probe is available;
-   see *Build / Test / Run*); don't assume a cause. Likely the biggest remaining perf item.
+1. **[FIXED — commit `cb12693`] MPRAGE fast-scroll lag = sagittal slice extraction.** Diagnosed with a
+   deterministic standalone harness over the real `MPREngine` code (differential: MPRAGE vs CT/T1). The
+   344×1024×1024 MPRAGE's **sagittal** plane is a 1-megapixel slice extracted by a cache-hostile gather
+   through `voxelAt` (688-byte stride, per-voxel bounds check + index multiply) — **~15 ms**, capping the
+   serial render queue at **~57 slices/s** so fast scroll dropped frames (both single-panel sagittal and
+   the quad where group/sync scroll re-renders it). Axial (1.3 ms) and coronal (2.3 ms) were already
+   fine — matching "CT/T1 scroll fine". Fix: `sagittalSlice` now does the **same gather byte-for-byte**
+   (orientation unchanged — guarded by `testSagittalSliceNeurologicalOrientation` corner checks + harness
+   equality) via a raw-pointer walk parallelised across z-planes (disjoint writes). **Measured: sagittal
+   extract 15.25 → 1.54 ms (10×); end-to-end 17.9 → 4.70 ms = 57 → 213 slices/s (above refresh).** App
+   cross-check: in-app axial `mpr_render` = 1.5 ms matches the harness, so harness numbers reflect the
+   real path. *(GUI scroll-feel confirmation still pending — computer-use approval timed out; relaunch
+   `open Lentis.app --args --benchmark <MPRAGE>`, scroll the sagittal panel, watch `mpr_render Sagittal`
+   in `~/Desktop/odv_benchmark.csv` — expect ~4–5 ms, was ~18 ms.)*
 2. **W/L drag re-render is still synchronous on the main thread.** `adjustWindowLevelForPanel`
    re-renders from the cached slice `rawPixelData` (megapixel W/L loop), throttled to 60 Hz. On the
    721 MB MPRAGE a hard W/L drag can feel heavy. Fix = route it through the same async+coalesced path
-   as `loadMPRSlice` (the slice is already extracted, so it's render-only).
+   as `loadMPRSlice` (the slice is already extracted, so it's render-only). **Note:** `MPREngine.renderSlice`
+   itself is also optimizable — the scalar `Double` W/L loop is ~3 ms for a 1 MP slice; a Float +
+   precomputed-reciprocal rewrite measured **3.0 → 1.9 ms serial / 0.6 ms parallel** (≈±1 gray-level
+   delta from the reassociated arithmetic, imperceptible). Deferred from the scroll fix (extraction was
+   the bottleneck; 213 slices/s already exceeds refresh) — fold in here when tackling the W/L drag, since
+   both share `renderSlice`.
 3. **GPU slice W/L deferred** (the brief's "windowing = GPU uniform only" rule). Decided against for
    now: per-slice cost is dominated by extraction + NSImage alloc, *not* the W/L arithmetic, and a full
    3D-texture sample risks the canonical-RAS orientation (which lives only in `MPREngine.planeGeometry`).
@@ -217,6 +239,10 @@ Ordered roughly by priority. None block the build or tests (52 green); these are
 > synchronous `waitUntilCompleted` blocked the main thread every tick. Measured per-tick main-thread
 > cost **~15–25 ms → 0.3 ms** (`scroll_main`, `--benchmark`). **Deferred:** GPU slice W/L (wouldn't help
 > scroll — extraction/alloc dominate, not the W/L math). Slice rendering is still CPU. Phase-4 orientation intact.
+> **Latest perf fix (commit `cb12693`):** the *residual* MPRAGE fast-scroll lag (old Known-issue #1) was
+> diagnosed to the **sagittal slice extraction** — a 1-megapixel cache-hostile `voxelAt` gather (~15 ms,
+> ~57 slices/s). `MPREngine.sagittalSlice` now uses a byte-identical parallel raw-pointer walk: **57 → 213
+> slices/s** (extract 15.25 → 1.54 ms). Orientation unchanged (corner tests + harness equality). 52 tests green.
 
 - [x] **Phase 1 — Rebrand to Lentis.** SPM/target/dir/app-struct renamed; menus/About/Help show
   Lentis; `package_app.sh` + bundle id updated; `UpdateChecker` removed (phoned home to upstream).
