@@ -1010,8 +1010,38 @@ class ViewerModel: ObservableObject {
                                   deltaCenter: wc - panel.windowCenter)
     }
 
-    /// Adjust W/L for a specific panel
+    /// Adjust W/L for a specific panel.
+    ///
+    /// The W/L *state* update (and its persistence to `seriesStates`) stays
+    /// synchronous on the main thread — the toolbar readout binds those
+    /// `@Published` values directly, so it updates instantly. The *re-render* is
+    /// pushed off the main thread by re-driving the panel's own async+coalesced
+    /// loader with the just-updated window:
+    ///   • MPR planes → `loadMPRSlice` (re-extracts the CURRENT slice fresh and
+    ///     re-renders with the new W/L). Re-extraction is cheap and off-main, and
+    ///     it makes this correct by construction — coalesced + drop-stale, and it
+    ///     can't display a stale slice even if a scroll render was still in
+    ///     flight when the drag began (a render-only path reading the cached
+    ///     `rawPixelData` could).
+    ///   • MIP → `loadMIPForPanel` (W/L is applied inside the GPU projection
+    ///     shader, so the slab is re-projected). This moves the synchronous
+    ///     `renderProjection` `waitUntilCompleted` GPU block (~15–20 ms steady on
+    ///     the 721 MB MPRAGE — the same block the scroll fix removed) off the
+    ///     main thread during a hard W/L drag.
+    /// Both loaders do only cheap setup on the main thread (cached-volume lookup
+    /// is synchronous, then enqueue); extraction/projection + the now-Float
+    /// parallel W/L render + NSImage build all run on `panel.loadingQueue`.
+    /// `wl_drag` (--benchmark) measures the remaining synchronous main-thread
+    /// cost of one flush; the off-main render shows as `mpr_render` / `mip_render`.
+    ///
+    /// Guarded on the panel already having a rendered view (`rawPixelData` for
+    /// MPR / a cached volume for MIP) so seed-time W/L (presets/auto/modality,
+    /// before the first render) stays a no-op exactly as the old synchronous path
+    /// was — the normal first-render flow draws the initial slice.
     func adjustWindowLevelForPanel(_ panel: PanelState, deltaWidth: Double, deltaCenter: Double) {
+        BenchmarkLogger.shared.start("wl_drag")
+        defer { BenchmarkLogger.shared.stop("wl_drag", detail: panel.panelMode.rawValue) }
+
         panel.windowWidth = max(1.0, panel.windowWidth + deltaWidth)
         panel.windowCenter += deltaCenter
 
@@ -1027,42 +1057,12 @@ class ViewerModel: ObservableObject {
         switch panel.panelMode {
         case .slice2D:
             break  // 2D DICOM slice path removed; NIFTI uses MPR/MIP
-        case .mprAxial, .mprSagittal, .mprCoronal, .mip:
-            // Re-render MPR/MIP slice with updated W/L
-            if panel.panelMode == .mip, panel.rawPixelData == nil,
-               let renderer = self.metalRenderer,
-               let seriesID = allSeries[safe: panel.seriesIndex]?.id,
-               let volume = volumeCacheGet(seriesID) {
-                // GPU re-render with updated W/L (volume already on GPU)
-                let slabMM = Float(panel.mipSlabThickness) * Float(volume.spacingZ)
-                let center = SIMD3<Float>(Float(volume.width) / 2.0, Float(volume.height) / 2.0, Float(panel.mipSlabPosition))
-                if let newImg = renderer.renderProjection(
-                    volume: volume, mode: .mip,
-                    viewMatrix: matrix_identity_float4x4,
-                    outputWidth: volume.width, outputHeight: volume.height,
-                    windowWidth: Float(panel.windowWidth), windowCenter: Float(panel.windowCenter),
-                    slabThickness: slabMM, slabCenterVoxel: center, invert: panel.isInverted
-                ) {
-                    let physW = Double(volume.width) * volume.spacingX
-                    let physH = Double(volume.height) * volume.spacingY
-                    newImg.size = NSSize(width: CGFloat(volume.width), height: CGFloat(Double(volume.width) * physH / physW))
-                    panel.setDisplayImage(newImg)
-                }
-            } else if let data = panel.rawPixelData {
-                // CPU fallback: re-render from raw pixel data
-                // panel.pixelSpacing stores (row_spacing, col_spacing) per DICOM convention,
-                // but MPRSlice expects (horizontal=X, vertical=Y), so swap .0↔.1
-                let slice = MPRSlice(
-                    pixelData: data, width: panel.imageWidth, height: panel.imageHeight,
-                    planeOrigin: .zero,
-                    planeRowDir: SIMD3<Double>(1, 0, 0),
-                    planeColDir: SIMD3<Double>(0, 1, 0),
-                    pixelSpacingX: panel.pixelSpacing?.1 ?? 1,
-                    pixelSpacingY: panel.pixelSpacing?.0 ?? 1
-                )
-                if let newImg = MPREngine.renderSlice(slice, ww: panel.windowWidth, wc: panel.windowCenter, invert: panel.isInverted) {
-                    panel.setDisplayImage(newImg)
-                }
+        case .mprAxial, .mprSagittal, .mprCoronal:
+            if panel.rawPixelData != nil { loadMPRSlice(for: panel) }
+        case .mip:
+            if let seriesID = allSeries[safe: panel.seriesIndex]?.id,
+               volumeCacheGet(seriesID) != nil {
+                loadMIPForPanel(panel)
             }
         }
     }
