@@ -173,11 +173,12 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 
 Ordered roughly by priority. None block the build or tests (52 green); these are quality/perf debt.
 
-1. **Sagittal megapixel render ≈ 20 ms (off-main, coalesced).** On the 344×1024×1024 MPRAGE the long
-   plane is a full 1024×1024 slice. Scrolling is now responsive (main thread 0.3 ms/tick) but under
-   *very fast continuous* scrolling that one panel's image visibly lags-then-catches-up. **Lever:**
-   render slices at *display* resolution (panels are ~500 px, not 1024) — downsample in the extractor,
-   or a low-res scrub preview + full-res on settle. Biggest remaining perf win; not yet done.
+1. **Residual scroll smoothness on the very large MPRAGE.** After the async+coalesced render fix the UI
+   stays responsive (main-thread `scroll_main` ~0.3 ms/tick), but under *fast continuous* scrolling the
+   on-screen image doesn't always keep up frame-for-frame on the 344×1024×1024 / 721 MB MPRAGE — both
+   single-panel and the quad-MPR + sync-scroll layout. Smaller volumes (CT, T1) scroll fine. **Cause not
+   yet diagnosed — investigate from scratch and measure** (the `--benchmark` perf probe is available;
+   see *Build / Test / Run*); don't assume a cause. Likely the biggest remaining perf item.
 2. **W/L drag re-render is still synchronous on the main thread.** `adjustWindowLevelForPanel`
    re-renders from the cached slice `rawPixelData` (megapixel W/L loop), throttled to 60 Hz. On the
    721 MB MPRAGE a hard W/L drag can feel heavy. Fix = route it through the same async+coalesced path
@@ -272,8 +273,8 @@ Ordered roughly by priority. None block the build or tests (52 green); these are
   background queues). Fixed laggy slice scrolling on the 721 MB MPRAGE — both single-panel and the
   quad-MPR + sync-scroll layout (where the MIP panel's synchronous `waitUntilCompleted` was the real
   blocker). **Measured:** per-tick main-thread cost ~15–25 ms → **0.3 ms** (`scroll_main`, `--benchmark`).
-  Residual (see *Known issues* #1): the 1024² sagittal still costs ~20 ms off-main; render at display
-  resolution next.
+  Residual (see *Known issues* #1): scrolling the MPRAGE still isn't perfectly smooth under fast
+  continuous scrolling — left for fresh diagnosis (don't assume a cause; measure).
 - [ ] **Phase 6 — Crosshair drag linkage.** Click/drag sets crosshair **world** coord; all three
   views relocate + draw crosshair lines. Build on `CrossReferenceOverlay` + sync-scroll. (Note: this
   also subsumes *Known issues* #4 — replace the z-only `syncScrollFromPanel` with true 3D linkage.)
