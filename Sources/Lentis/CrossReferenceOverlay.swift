@@ -1,83 +1,110 @@
 // CrossReferenceOverlay.swift
 // OpenDicomViewer
 //
-// Draws cross-reference lines on a panel showing where other panels' slice
-// planes intersect the current image plane. Uses DICOM spatial metadata
-// (ImagePositionPatient, ImageOrientationPatient, PixelSpacing) to compute
-// the geometric intersection of two image planes in 3D patient space, then
-// projects the result into 2D pixel coordinates.
+// Draws the shared 3D crosshair (Phase 6) on each MPR panel: two lines through
+// the in-plane projection of the model's crosshair world point, plus a center
+// dot. The crosshair world coordinate is set by click/drag in any panel
+// (ViewerModel.setCrosshair); every panel relocates to contain it and draws its
+// lines here, so the three orthogonal views stay linked in true 3D. This
+// replaces the earlier dashed plane-plane intersection lines.
 //
-// The overlay respects the panel's current zoom, pan, rotation, and flip
-// transforms so lines stay aligned with the displayed image.
-//
-// Each panel gets a distinct color (blue, green, yellow, red) for its
-// cross-reference line, drawn as a dashed stroke.
+// Projection uses the panel's stored plane geometry (origin / row+col dirs /
+// spacings — all sourced from MPREngine.planeGeometry) so the lines line up
+// with the displayed pixels, bridged from raw-pixel to aspect-corrected display
+// space, then run through the same zoom/pan/rotate/flip transform as the image
+// (pixelToScreen) so they track the view.
 // Licensed under the MIT License. See LICENSE for details.
 
 import SwiftUI
 
-/// Draws cross-reference lines showing where other panels' slices intersect this panel's image plane.
+/// Draws the shared 3D crosshair on this panel (set by click/drag in any panel).
 struct CrossReferenceOverlay: View {
     @ObservedObject var model: ViewerModel
     @ObservedObject var panel: PanelState
 
-    /// Color per panel slot index
-    static let panelColors: [Color] = [.blue, .green, .yellow, .red]
+    /// Single shared crosshair color (the point is one world coordinate, not
+    /// per-panel like the old plane-intersection lines).
+    static let crosshairColor = Color(red: 0.3, green: 1.0, blue: 0.5)
 
     var body: some View {
         GeometryReader { geo in
-            ForEach(model.panels.filter { $0.id != panel.id }) { otherPanel in
-                // Use a sub-view so SwiftUI observes otherPanel's @Published changes
-                CrossRefLineView(
-                    displayPanel: panel,
-                    sourcePanel: otherPanel,
-                    color: panelColor(for: otherPanel),
+            if panel.panelMode.isMPR,
+               let world = model.crosshairWorld,
+               let geometry = panel.displayedPlaneGeometry {
+                CrosshairLinesView(
+                    panel: panel,
+                    geometry: geometry,
+                    world: world,
+                    color: Self.crosshairColor,
                     viewSize: geo.size
                 )
             }
         }
         .allowsHitTesting(false)
     }
-
-    private func panelColor(for targetPanel: PanelState) -> Color {
-        guard let index = model.panels.firstIndex(where: { $0.id == targetPanel.id }) else {
-            return .white
-        }
-        return Self.panelColors[index % Self.panelColors.count]
-    }
-
 }
 
-/// Sub-view that observes BOTH display and source panels so the line updates
-/// when either panel scrolls (changes imagePositionPatient).
-private struct CrossRefLineView: View {
-    @ObservedObject var displayPanel: PanelState
-    @ObservedObject var sourcePanel: PanelState
+/// Renders the two crosshair lines + center dot for one panel, honoring the
+/// panel's zoom/pan/rotation/flip via the same transform as the displayed image.
+private struct CrosshairLinesView: View {
+    @ObservedObject var panel: PanelState
+    let geometry: PlaneGeometry
+    let world: SIMD3<Double>
     let color: Color
     let viewSize: CGSize
 
     var body: some View {
-        if let line = CrossReferenceOverlay.computeCrossReference(
-            displayPanel: displayPanel, sourcePanel: sourcePanel
-        ) {
-            let p0 = pixelToScreen(line.startPixel)
-            let p1 = pixelToScreen(line.endPixel)
+        // Project the world point onto this plane → raw pixel (col, row), then
+        // bridge to aspect-corrected display-image space (what pixelToScreen
+        // fits). The bridge is identity for isotropic in-plane voxels.
+        let center = rawToDisplay(geometry.pixel(of: world))
+        let dw = displayWidth
+        let dh = displayHeight
 
+        let vTop   = pixelToScreen(CGPoint(x: center.x, y: 0))
+        let vBot   = pixelToScreen(CGPoint(x: center.x, y: dh))
+        let hLeft  = pixelToScreen(CGPoint(x: 0,        y: center.y))
+        let hRight = pixelToScreen(CGPoint(x: dw,       y: center.y))
+        let dot    = pixelToScreen(center)
+
+        ZStack {
             Path { path in
-                path.move(to: p0)
-                path.addLine(to: p1)
+                path.move(to: vTop);  path.addLine(to: vBot)
+                path.move(to: hLeft); path.addLine(to: hRight)
             }
-            .stroke(
-                color,
-                style: StrokeStyle(lineWidth: 1.5, dash: [6, 4])
-            )
-            .opacity(0.7)
+            .stroke(color, style: StrokeStyle(lineWidth: 1.0))
+            .opacity(0.85)
+
+            Circle()
+                .fill(color)
+                .frame(width: 5, height: 5)
+                .position(dot)
+                .opacity(0.9)
         }
     }
 
+    private var displayWidth: CGFloat {
+        panel.displayImageWidth > 0 ? panel.displayImageWidth : CGFloat(max(1, panel.imageWidth))
+    }
+    private var displayHeight: CGFloat {
+        panel.displayImageHeight > 0 ? panel.displayImageHeight : CGFloat(max(1, panel.imageHeight))
+    }
+
+    /// Raw pixel coords (col, row) → aspect-corrected display-image space.
+    /// displayImageWidth/Height come from the rendered NSImage's size, which is
+    /// scaled to physical mm; raw pixel dims are imageWidth/imageHeight.
+    private func rawToDisplay(_ p: CGPoint) -> CGPoint {
+        let iw = CGFloat(max(1, panel.imageWidth))
+        let ih = CGFloat(max(1, panel.imageHeight))
+        return CGPoint(x: p.x * displayWidth / iw, y: p.y * displayHeight / ih)
+    }
+
+    /// Map display-image coordinates to screen coordinates within the panel,
+    /// applying fit + flip + rotation + zoom + pan — identical to the image's
+    /// own transform so the crosshair stays glued to the pixels.
     private func pixelToScreen(_ pixel: CGPoint) -> CGPoint {
-        let imgW = max(1, displayPanel.displayImageWidth)
-        let imgH = max(1, displayPanel.displayImageHeight)
+        let imgW = displayWidth
+        let imgH = displayHeight
         let vw = viewSize.width
         let vh = viewSize.height
 
@@ -96,11 +123,11 @@ private struct CrossRefLineView: View {
         y -= cy
 
         // Flip
-        if displayPanel.isFlippedH { x = -x }
-        if displayPanel.isFlippedV { y = -y }
+        if panel.isFlippedH { x = -x }
+        if panel.isFlippedV { y = -y }
 
         // Rotation (90° steps)
-        let steps = displayPanel.rotationSteps % 4
+        let steps = panel.rotationSteps % 4
         if steps > 0 {
             let angle = -CGFloat(steps) * .pi / 2
             let cosA = cos(angle)
@@ -112,12 +139,12 @@ private struct CrossRefLineView: View {
         }
 
         // Zoom
-        x *= displayPanel.scale
-        y *= displayPanel.scale
+        x *= panel.scale
+        y *= panel.scale
 
         // Pan (translation is screen-space; Y is inverted between NSView Y-up and SwiftUI Y-down)
-        x += displayPanel.translation.x
-        y -= displayPanel.translation.y
+        x += panel.translation.x
+        y -= panel.translation.y
 
         x += cx
         y += cy
@@ -125,139 +152,22 @@ private struct CrossRefLineView: View {
     }
 }
 
-extension CrossReferenceOverlay {
-
-    // MARK: - Cross-Reference Geometry
-
-    struct CrossReferenceLine {
-        var startPixel: CGPoint
-        var endPixel: CGPoint
-    }
-
-    /// Compute where `sourcePanel`'s slice plane intersects `displayPanel`'s image plane.
-    /// Returns pixel coordinates in the display panel's image space, or nil if planes are parallel
-    /// or spatial metadata is missing.
-    static func computeCrossReference(
-        displayPanel: PanelState,
-        sourcePanel: PanelState
-    ) -> CrossReferenceLine? {
-        guard let posA = displayPanel.imagePositionPatient,
-              let oriA = displayPanel.imageOrientationPatient, oriA.count == 6,
-              let spacingA = displayPanel.pixelSpacing,
-              let posB = sourcePanel.imagePositionPatient,
-              let oriB = sourcePanel.imageOrientationPatient, oriB.count == 6
-        else { return nil }
-
-        // Display panel basis vectors
-        let rowA = SIMD3<Double>(oriA[0], oriA[1], oriA[2])
-        let colA = SIMD3<Double>(oriA[3], oriA[4], oriA[5])
-        let normalA = cross(rowA, colA)
-
-        // Source panel normal
-        let rowB = SIMD3<Double>(oriB[0], oriB[1], oriB[2])
-        let colB = SIMD3<Double>(oriB[3], oriB[4], oriB[5])
-        let normalB = cross(rowB, colB)
-
-        // Intersection line direction (cross product of normals)
-        let lineDir = cross(normalA, normalB)
-        let lineDirLen = length(lineDir)
-        if lineDirLen < 1e-6 { return nil } // Parallel planes
-
-        // Find a point on the intersection line
-        // Project source origin onto display plane
-        let originA = SIMD3<Double>(posA.0, posA.1, posA.2)
-        let originB = SIMD3<Double>(posB.0, posB.1, posB.2)
-
-        let diff = originB - originA
-
-        // Project intersection onto display panel's 2D coordinate system
-        // The intersection of plane B with plane A forms a line.
-        // We need to find where this line is in A's image coordinates.
-
-        // For the common orthogonal case (axial/sagittal/coronal),
-        // the intersection is a straight line at a constant position along one axis.
-
-        // Project source origin onto display panel axes (in mm)
-        let u0 = dot(diff, rowA)  // mm along row direction
-        let v0 = dot(diff, colA)  // mm along column direction
-
-        // Project line direction onto display panel axes
-        let du = dot(lineDir, rowA)
-        let dv = dot(lineDir, colA)
-
-        // Convert from mm to pixels
-        // DICOM PixelSpacing: (row_spacing, col_spacing)
-        //   row_spacing = distance between rows = mm per Y pixel step
-        //   col_spacing = distance between columns = mm per X pixel step
-        let rowSpacing = spacingA.0  // mm per pixel along column direction (Y)
-        let colSpacing = spacingA.1  // mm per pixel along row direction (X)
-
-        guard colSpacing > 0 && rowSpacing > 0 else { return nil }
-
-        let u0px = u0 / colSpacing
-        let v0px = v0 / rowSpacing
-        let dupx = du / colSpacing
-        let dvpx = dv / rowSpacing
-
-        // Parameterize line: P(t) = (u0px + t*dupx, v0px + t*dvpx)
-        // Clip to image bounds [0, width] x [0, height]
-        let w = Double(displayPanel.imageWidth)
-        let h = Double(displayPanel.imageHeight)
-
-        guard w > 0 && h > 0 else { return nil }
-
-        // Find t range where line is within bounds
-        var tMin = -1e10
-        var tMax = 1e10
-
-        if abs(dupx) > 1e-10 {
-            let t1 = (0 - u0px) / dupx
-            let t2 = (w - u0px) / dupx
-            let tLo = min(t1, t2)
-            let tHi = max(t1, t2)
-            tMin = max(tMin, tLo)
-            tMax = min(tMax, tHi)
-        } else if u0px < 0 || u0px > w {
-            return nil // Line outside horizontal bounds
-        }
-
-        if abs(dvpx) > 1e-10 {
-            let t1 = (0 - v0px) / dvpx
-            let t2 = (h - v0px) / dvpx
-            let tLo = min(t1, t2)
-            let tHi = max(t1, t2)
-            tMin = max(tMin, tLo)
-            tMax = min(tMax, tHi)
-        } else if v0px < 0 || v0px > h {
-            return nil // Line outside vertical bounds
-        }
-
-        if tMin >= tMax { return nil }
-
-        let startX = u0px + tMin * dupx
-        let startY = v0px + tMin * dvpx
-        let endX = u0px + tMax * dupx
-        let endY = v0px + tMax * dvpx
-
-        return CrossReferenceLine(
-            startPixel: CGPoint(x: startX, y: startY),
-            endPixel: CGPoint(x: endX, y: endY)
-        )
-    }
-
-    private static func cross(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> SIMD3<Double> {
-        SIMD3<Double>(
-            a.y * b.z - a.z * b.y,
-            a.z * b.x - a.x * b.z,
-            a.x * b.y - a.y * b.x
-        )
-    }
-
-    private static func dot(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> Double {
-        a.x * b.x + a.y * b.y + a.z * b.z
-    }
-
-    private static func length(_ v: SIMD3<Double>) -> Double {
-        sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+extension PanelState {
+    /// Reconstruct the displayed orthogonal-plane geometry from the spatial
+    /// metadata stored after the last render (origin = imagePositionPatient,
+    /// row/col dirs = imageOrientationPatient, spacings = pixelSpacing). These
+    /// were set straight from MPREngine.planeGeometry, so the reconstructed
+    /// PlaneGeometry matches the pixels the slice was rendered from — letting
+    /// the crosshair project without re-touching the volume.
+    var displayedPlaneGeometry: PlaneGeometry? {
+        guard let ipp = imagePositionPatient,
+              let iop = imageOrientationPatient, iop.count == 6,
+              let ps = pixelSpacing else { return nil }
+        return PlaneGeometry(
+            origin: SIMD3<Double>(ipp.0, ipp.1, ipp.2),
+            rowDir: SIMD3<Double>(iop[0], iop[1], iop[2]),
+            colDir: SIMD3<Double>(iop[3], iop[4], iop[5]),
+            pixelSpacingX: ps.1,   // PanelState.pixelSpacing = (row-step mm, col-step mm)
+            pixelSpacingY: ps.0)
     }
 }
