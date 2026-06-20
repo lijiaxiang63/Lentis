@@ -955,7 +955,7 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
                 case "i": model.invertForPanel(model.activePanel); return
                 case "f": model.fitToWindowForPanel(model.activePanel); return
                 case "a":
-                    if let p = model.activePanel { model.autoWindowLevelForPanel(p) }
+                    if let p = model.activePanel { model.autoWindow(for: p) }
                     return
                 case "o": model.activeTool = .roiWL; return
                 case "s": model.activeTool = .roiStats; return
@@ -1415,6 +1415,12 @@ struct PanelAdjustmentToolbar: View {
     @ObservedObject var model: ViewerModel
     @ObservedObject var panel: PanelState
 
+    /// True when this panel shows the loaded NIfTI series (drives the
+    /// modality-aware preset/auto controls instead of the legacy Auto button).
+    private var isNiftiPanel: Bool {
+        model.niftiDataset != nil && panel.seriesIndex == model.niftiSeriesIndex
+    }
+
     var body: some View {
         HStack(spacing: 8) {
             if !panel.histogramData.isEmpty {
@@ -1430,20 +1436,11 @@ struct PanelAdjustmentToolbar: View {
                 .border(Color.white.opacity(0.2), width: 1)
             }
 
-            Button(action: { model.autoWindowLevelForPanel(panel) }) {
-                HStack(spacing: 4) {
-                    Text("Auto")
-                    Text("A")
-                        .font(.system(size: 9, weight: .medium, design: .rounded))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Color.white.opacity(0.15))
-                        .cornerRadius(3)
-                }
+            if isNiftiPanel {
+                modalityControls
+            } else {
+                autoButton
             }
-            .frame(height: 40)
-            .help("Auto W/L (A)")
-
         }
         .buttonStyle(.bordered)
         .controlSize(.regular)
@@ -1452,6 +1449,66 @@ struct PanelAdjustmentToolbar: View {
         .padding(6)
         .background(.thinMaterial)
         .cornerRadius(12)
+    }
+
+    /// Legacy generic Auto W/L (min/max of the current slice) for non-NIfTI panels.
+    private var autoButton: some View {
+        Button(action: { model.autoWindow(for: panel) }) {
+            autoLabel
+        }
+        .frame(height: 40)
+        .help("Auto W/L (A)")
+    }
+
+    /// Modality-aware W/L controls for the NIfTI series: a CT/MRI toggle plus
+    /// either the CT HU preset menu or the MRI percentile auto-window.
+    @ViewBuilder
+    private var modalityControls: some View {
+        Picker("", selection: Binding(
+            get: { model.effectiveModality ?? .mri },
+            set: { model.setModalityOverride($0) }
+        )) {
+            Text("CT").tag(ImagingModality.ct)
+            Text("MRI").tag(ImagingModality.mri)
+        }
+        .pickerStyle(.segmented)
+        .frame(width: 96)
+        .help("Imaging modality (selects CT presets vs MRI auto-window)")
+
+        if model.effectiveModality == .ct {
+            Menu {
+                ForEach(WindowPreset.ctPresets) { preset in
+                    Button("\(preset.name)  (W \(Int(preset.width)) / L \(Int(preset.center)))") {
+                        model.applyWindowPreset(preset)
+                    }
+                }
+            } label: {
+                Label("Preset", systemImage: "dial.medium")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .frame(height: 40)
+            .help("CT window presets (HU)")
+        } else {
+            Button(action: { model.applyModalityAutoWindow() }) {
+                autoLabel
+            }
+            .frame(height: 40)
+            .help("MRI percentile auto-window (A)")
+        }
+    }
+
+    /// Shared "Auto [A]" button label.
+    private var autoLabel: some View {
+        HStack(spacing: 4) {
+            Text("Auto")
+            Text("A")
+                .font(.system(size: 9, weight: .medium, design: .rounded))
+                .padding(.horizontal, 4)
+                .padding(.vertical, 1)
+                .background(Color.white.opacity(0.15))
+                .cornerRadius(3)
+        }
     }
 }
 

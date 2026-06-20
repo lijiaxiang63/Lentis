@@ -142,6 +142,40 @@ extension ViewerModel {
         return modalityDefaultWindow(forSeriesIndex: idx)
     }
 
+    // MARK: - Modality-aware W/L application (UI)
+
+    /// Apply a CT HU preset to every panel showing the NIfTI series, converting
+    /// to stored units per the volume calibration. Re-renders + persists.
+    func applyWindowPreset(_ preset: WindowPreset) {
+        guard niftiSeriesIndex >= 0 else { return }
+        let vol = cachedVolume(forSeriesIndex: niftiSeriesIndex)
+        let (ww, wc) = preset.storedWindow(slope: vol?.rescaleSlope ?? 1,
+                                           intercept: vol?.rescaleIntercept ?? 0)
+        for panel in panels where panel.seriesIndex == niftiSeriesIndex {
+            setPanelWindow(panel, ww: ww, wc: wc)
+        }
+    }
+
+    /// Reset every panel showing the NIfTI series to the modality default window
+    /// (CT → Brain preset, MRI → percentile auto-window). Re-renders + persists.
+    func applyModalityAutoWindow() {
+        guard let (ww, wc) = modalityDefaultWindow(forSeriesIndex: niftiSeriesIndex) else { return }
+        for panel in panels where panel.seriesIndex == niftiSeriesIndex {
+            setPanelWindow(panel, ww: ww, wc: wc)
+        }
+    }
+
+    /// Auto-window a panel: the modality default for the NIfTI series (applied to
+    /// all linked panels so the ortho views stay in sync), else the legacy
+    /// per-slice min/max. Backs the "Auto" button and the `A` shortcut.
+    func autoWindow(for panel: PanelState) {
+        if niftiDataset != nil, panel.seriesIndex == niftiSeriesIndex {
+            applyModalityAutoWindow()
+        } else {
+            autoWindowLevelForPanel(panel)
+        }
+    }
+
     /// Initial display window (width, center) in STORED units. Defensive
     /// fallback for `applyNiftiDataset`; normal seeding uses `modalityDefaultWindow`.
     private func initialWindow(for dataset: NiftiDataset) -> (Double, Double) {

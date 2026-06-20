@@ -117,6 +117,36 @@ func assignSeriesToPanelSeedsNonZeroWindow() throws {
 }
 
 @Test
+func applyWindowPresetAppliesToAllNiftiPanels() throws {
+    // A preset chosen in one panel's toolbar syncs every panel showing the
+    // series, so the ortho views share one window.
+    let model = ViewerModel()
+    let ds = try makeCTDataset()
+    let idx = installNifti(ds, into: model)
+    let p0 = PanelState(); p0.seriesIndex = idx
+    let p1 = PanelState(); p1.seriesIndex = idx
+    model.panels = [p0, p1]
+
+    let subdural = try #require(WindowPreset.ctPresets.first { $0.name == "Subdural" })
+    model.applyWindowPreset(subdural)
+    #expect(abs(p0.windowWidth - 215) < 0.5 && abs(p0.windowCenter - 75) < 0.5)
+    #expect(abs(p1.windowWidth - 215) < 0.5 && abs(p1.windowCenter - 75) < 0.5)
+}
+
+@Test
+func applyModalityAutoWindowResetsCTToBrain() throws {
+    let model = ViewerModel()
+    let ds = try makeCTDataset()
+    let idx = installNifti(ds, into: model)
+    let panel = PanelState(); panel.seriesIndex = idx
+    model.panels = [panel]
+    panel.windowWidth = 4000; panel.windowCenter = 1000   // user dragged away
+
+    model.applyModalityAutoWindow()
+    #expect(abs(panel.windowWidth - 80) < 0.5 && abs(panel.windowCenter - 40) < 0.5)
+}
+
+@Test
 func modalityOverrideReseedsWindow() throws {
     // Toggling CT→MRI swaps the seeded window from the Brain preset to the MRI
     // percentile window across all panels showing the series.
