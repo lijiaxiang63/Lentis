@@ -69,28 +69,8 @@ struct ContentView: View {
 
                             Spacer()
 
-                            // Layout toolbar + Tag toggle
-                            HStack(spacing: 8) {
-                                LayoutToolbar(model: model)
-
-                                Button(action: { model.showTags.toggle() }) {
-                                    ZStack(alignment: .bottomTrailing) {
-                                        Image(systemName: "tag")
-                                            .font(.system(size: 16))
-                                            .foregroundStyle(model.showTags ? .white : .secondary)
-                                            .padding(8)
-
-                                        Text("T")
-                                            .font(.system(size: 8, weight: .semibold, design: .rounded))
-                                            .foregroundStyle(.secondary)
-                                            .offset(x: -2, y: -2)
-                                    }
-                                    .background(.ultraThinMaterial)
-                                    .cornerRadius(8)
-                                }
-                                .buttonStyle(.plain)
-                                .help("Toggle Tags (T)")
-                            }
+                            // Layout toolbar
+                            LayoutToolbar(model: model)
                         }
                         .padding()
 
@@ -159,14 +139,6 @@ struct ContentView: View {
             // Letter/number shortcuts are handled by NSEvent keyDown monitor in DICOMModel
             // (works regardless of input method). This handler covers special keys only.
 
-            // Space = Toggle cine playback
-            if press.key == .space {
-                if let panel = model.activePanel, panel.isMultiFrame && panel.numberOfFrames > 1 {
-                    model.toggleCinePlayback(panel)
-                    return .handled
-                }
-            }
-
             // Escape = Clear group selection
             if press.key == .escape {
                 if model.groupSelectedPanels.count > 0 {
@@ -176,17 +148,6 @@ struct ContentView: View {
             }
 
             return .ignored
-        }
-        .inspector(isPresented: $model.showTags) {
-            Group {
-                let activeTags = model.activePanel?.tags ?? []
-                if activeTags.isEmpty {
-                    ContentUnavailableView("No Tags", systemImage: "tag.slash")
-                } else {
-                    TagView(tags: activeTags)
-                }
-            }
-            .id(model.activePanelID)
         }
         .sheet(isPresented: $model.showHelp) {
             HelpView()
@@ -381,9 +342,6 @@ struct SeriesRow: View {
                         .font(.system(size: 24))
                         .foregroundStyle(.secondary)
                         .frame(width: 40, height: 40)
-                        .onAppear {
-                            model.requestSeriesThumbnail(for: series)
-                        }
                 }
             }
             VStack(alignment: .leading) {

@@ -141,17 +141,12 @@ struct PanelView: View {
                 }
             }
 
-            // Top toolbar (Volume or Cine)
+            // Top toolbar (Volume)
             if panel.seriesIndex >= 0 && panel.image != nil {
                 VStack {
                     HStack {
-                        if panel.isMultiFrame && panel.numberOfFrames > 1 {
-                            CineToolbar(model: model, panel: panel)
-                                .padding(6)
-                        } else {
-                            VolumeToolbar(model: model, panel: panel)
-                                .padding(6)
-                        }
+                        VolumeToolbar(model: model, panel: panel)
+                            .padding(6)
                         Spacer()
                     }
                     Spacer()
@@ -618,9 +613,6 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
             case "x":
                 model.showCrossReference.toggle()
                 return true
-            case "t":
-                model.showTags.toggle()
-                return true
             case "i":
                 model.invertForPanel(model.activePanel)
                 return true
@@ -668,12 +660,6 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
             case "h":
                 model.flipHorizontalForPanel(model.activePanel)
                 return true
-            case " ":
-                if panel.isMultiFrame && panel.numberOfFrames > 1 {
-                    model.toggleCinePlayback(panel)
-                    return true
-                }
-                return false
             default:
                 return super.performKeyEquivalent(with: event)
             }
@@ -939,10 +925,6 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
             case 124: model.navigatePanel(panel, direction: .nextSeries); return
             case 126: model.navigatePanelWithGroup(panel, direction: .prevImage); return
             case 125: model.navigatePanelWithGroup(panel, direction: .nextImage); return
-            case 49: // Space
-                if panel.isMultiFrame && panel.numberOfFrames > 1 {
-                    model.toggleCinePlayback(panel); return
-                }
             case 53: // Escape
                 if !model.groupSelectedPanels.isEmpty {
                     model.clearGroupSelection(); return
@@ -970,7 +952,6 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
                 case "r": model.resetViewForPanel(model.activePanel); return
                 case "l": model.synchronizedScrolling.toggle(); return
                 case "x": model.showCrossReference.toggle(); return
-                case "t": model.showTags.toggle(); return
                 case "i": model.invertForPanel(model.activePanel); return
                 case "f": model.fitToWindowForPanel(model.activePanel); return
                 case "a":

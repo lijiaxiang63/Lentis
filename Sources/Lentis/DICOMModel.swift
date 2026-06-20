@@ -178,7 +178,6 @@ class DICOMModel: ObservableObject {
     @Published var panels: [PanelState] = []
     @Published var activePanelID: UUID = UUID()
     @Published var showCrossReference: Bool = false
-    @Published var showTags: Bool = false
     @Published var showHelp: Bool = false
     @Published var synchronizedScrolling: Bool = false {
         didSet {

@@ -79,8 +79,6 @@ struct LentisApp: App {
 
                 // ─ Overlays ─
                 Toggle("Cross-Reference Lines (X)", isOn: $model.showCrossReference)
-
-                Toggle("DICOM Tags Inspector (T)", isOn: $model.showTags)
             }
 
             CommandMenu("Layout") {

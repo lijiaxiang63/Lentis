@@ -40,7 +40,6 @@ private class KeyInterceptorView: NSView {
         case "r": model.resetViewForPanel(model.activePanel); return true
         case "l": model.synchronizedScrolling.toggle(); return true
         case "x": model.showCrossReference.toggle(); return true
-        case "t": model.showTags.toggle(); return true
         case "i": model.invertForPanel(model.activePanel); return true
         case "f": model.fitToWindowForPanel(model.activePanel); return true
         case "a":
