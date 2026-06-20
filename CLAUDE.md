@@ -159,7 +159,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
   synthetic CT (axial + scroll) and real T1 MRI (auto-window). Remaining cosmetic debt (defer):
   stale `// OpenDicomViewer` file headers, `PanelInteractive/DICOMInteractView` names, the inert
   `.slice2D` case + vestigial `ImageSeries.images`/`ImageContext` struct.
-- [x] **Phase 4 — Neurological orientation + tri-view.** Done in 5 commits on `lentis-nifti-conversion`.
+- [x] **Phase 4 — Neurological orientation + tri-view.** Done in 6 commits on `lentis-nifti-conversion`.
   Added `Orientation.swift` (RAS labels + closest-canonical reorientation); `NiftiDataset.makeVolume`
   reorients every volume to canonical RAS (i→R, j→A, k→S) — lossless, original affine + reorientation
   retained for write-back. Centralized the per-plane neurological flips + display dirs in
@@ -178,6 +178,10 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
   **Brain `(0,80)`** (low/high), bone/subdural/stroke; instant. MRI: percentile auto-window
   (`NiftiDataset.suggestedWindow` exists) + manual drag. Add CT/MRI toggle (`setModalityOverride`
   exists). UI switches preset-vs-auto by `effectiveModality`.
+  **Phase 4 observation to fix here:** the one-click **MPR quad panels render dark** — only the
+  single-panel axial gets a seeded window (`applyNiftiDataset` → `initialWindow`); `setupMPRLayout`'s
+  Sagittal/Coronal/MIP panels fall back to `loadMPRSlice`'s hardcoded `ww 2000 / wc 500`. Seed each
+  panel's W/L from `suggestedWindow` (MRI) or the HU preset (CT) on assign / mode-switch.
 - [ ] **Phase 6 — Crosshair drag linkage.** Click/drag sets crosshair **world** coord; all three
   views relocate + draw crosshair lines. Build on `CrossReferenceOverlay` + sync-scroll.
 - [ ] **Phase 7 — UI polish + segmentation seams.** Fix 4D-selector overlap with the "Auto" button;
