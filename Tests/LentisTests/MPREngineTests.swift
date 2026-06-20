@@ -345,4 +345,62 @@ final class MPREngineTests: XCTestCase {
         XCTAssertEqual(slice.pixelSpacingX, 0.5)
         XCTAssertEqual(slice.pixelSpacingY, 0.5)
     }
+
+    // MARK: - Crosshair Geometry (Phase 6)
+
+    /// `world(col:row:)` and `pixel(of:)` must be exact inverses for every
+    /// orthogonal plane (so a click maps to a world point that projects back to
+    /// the same pixel).
+    func testPlaneGeometryPixelWorldRoundTrip() {
+        let vol = makeGradientVolume(width: 8, height: 6, depth: 10)
+        let engine = MPREngine(volume: vol)
+        for mode in [PanelMode.mprAxial, .mprSagittal, .mprCoronal] {
+            guard let g = engine.planeGeometry(mode, sliceIndex: 3) else {
+                XCTFail("no plane geometry for \(mode)"); continue
+            }
+            let w = g.world(col: 2.0, row: 1.5)
+            let p = g.pixel(of: w)
+            XCTAssertEqual(p.x, 2.0, accuracy: 1e-9, "\(mode) col round-trip")
+            XCTAssertEqual(p.y, 1.5, accuracy: 1e-9, "\(mode) row round-trip")
+        }
+    }
+
+    /// With the identity-affine gradient volume, world == voxel, so a world
+    /// point maps to the obvious per-axis slice index.
+    func testOrthogonalSliceIndexFromWorld() {
+        let vol = makeGradientVolume(width: 8, height: 6, depth: 10)
+        let engine = MPREngine(volume: vol)
+        let world = SIMD3<Double>(2, 1, 3)  // x=2, y=1, z=3
+        XCTAssertEqual(engine.orthogonalSliceIndex(for: .mprAxial, containing: world), 3)     // k
+        XCTAssertEqual(engine.orthogonalSliceIndex(for: .mprSagittal, containing: world), 2)  // i
+        XCTAssertEqual(engine.orthogonalSliceIndex(for: .mprCoronal, containing: world), 1)   // j
+        XCTAssertNil(engine.orthogonalSliceIndex(for: .mip, containing: world))
+        XCTAssertNil(engine.orthogonalSliceIndex(for: .slice2D, containing: world))
+    }
+
+    func testOrthogonalSliceIndexClampsOutOfBounds() {
+        let vol = makeGradientVolume(width: 4, height: 4, depth: 4)
+        let engine = MPREngine(volume: vol)
+        let far = SIMD3<Double>(100, -100, 100)
+        XCTAssertEqual(engine.orthogonalSliceIndex(for: .mprAxial, containing: far), 3)     // depth-1
+        XCTAssertEqual(engine.orthogonalSliceIndex(for: .mprSagittal, containing: far), 3)  // width-1
+        XCTAssertEqual(engine.orthogonalSliceIndex(for: .mprCoronal, containing: far), 0)   // y<0 → 0
+    }
+
+    /// End-to-end crosshair mapping: clicking a pixel in the axial plane yields
+    /// a world point that (a) leaves the axial slice unchanged, (b) relocates
+    /// the sagittal/coronal planes to the matching indices, and (c) projects
+    /// back onto the axial plane at the same pixel.
+    func testCrosshairClickMapsAcrossPlanes() {
+        let vol = makeGradientVolume(width: 8, height: 6, depth: 10)
+        let engine = MPREngine(volume: vol)
+        guard let ax = engine.planeGeometry(.mprAxial, sliceIndex: 5) else { return XCTFail() }
+        let world = ax.world(col: 2, row: 1)  // axial top-left=(0,h-1,k); colDir=-A ⇒ y=(h-1)-row
+        XCTAssertEqual(engine.orthogonalSliceIndex(for: .mprAxial, containing: world), 5)
+        XCTAssertEqual(engine.orthogonalSliceIndex(for: .mprSagittal, containing: world), 2) // x = col
+        XCTAssertEqual(engine.orthogonalSliceIndex(for: .mprCoronal, containing: world), 4)  // y = (6-1)-1
+        let p = ax.pixel(of: world)
+        XCTAssertEqual(p.x, 2, accuracy: 1e-9)
+        XCTAssertEqual(p.y, 1, accuracy: 1e-9)
+    }
 }

@@ -42,6 +42,28 @@ struct PlaneGeometry {
     let pixelSpacingY: Double      // mm per row step (along colDir)
 }
 
+extension PlaneGeometry {
+    /// World coordinate of the (continuous) displayed pixel at `col`/`row`.
+    /// This is the forward map used by the cursor readout and the crosshair's
+    /// click→world step; `pixel(of:)` is its exact inverse.
+    func world(col: Double, row: Double) -> SIMD3<Double> {
+        origin + col * pixelSpacingX * rowDir + row * pixelSpacingY * colDir
+    }
+
+    /// Project a world point onto this plane, returning continuous pixel
+    /// coordinates (x = column, y = row). Exact inverse of `world(col:row:)`
+    /// because `rowDir ⟂ colDir` for every orthogonal MPR plane (the only
+    /// planes the crosshair draws on). Any out-of-plane component of `world`
+    /// is dropped — the crosshair always relocates each plane to contain the
+    /// point first, so in practice the point lies on the plane.
+    func pixel(of world: SIMD3<Double>) -> CGPoint {
+        let d = world - origin
+        let col = simd_dot(d, rowDir) / pixelSpacingX
+        let row = simd_dot(d, colDir) / pixelSpacingY
+        return CGPoint(x: col, y: row)
+    }
+}
+
 class MPREngine {
     let volume: VolumeData
 
@@ -93,6 +115,23 @@ class MPREngine {
                 pixelSpacingY: volume.spacingZ)
         default:
             return nil
+        }
+    }
+
+    /// The orthogonal-plane slice index (along the plane's fixed voxel axis)
+    /// whose slice passes through `world`, for the given MPR mode — i.e. the
+    /// `mprSliceIndex` a panel must show to contain that world point. Used by
+    /// the crosshair to relocate the other panels. Because volumes are
+    /// canonical RAS (i→R, j→A, k→S), each plane indexes one voxel axis:
+    /// axial→k, sagittal→i, coronal→j. Result is rounded + clamped to bounds.
+    /// Returns nil for non-orthogonal modes (e.g. `.mip`, `.slice2D`).
+    func orthogonalSliceIndex(for mode: PanelMode, containing world: SIMD3<Double>) -> Int? {
+        let v = volume.worldToVoxel(world)
+        switch mode {
+        case .mprAxial:    return min(max(0, Int(v.z.rounded())), volume.depth - 1)
+        case .mprSagittal: return min(max(0, Int(v.x.rounded())), volume.width - 1)
+        case .mprCoronal:  return min(max(0, Int(v.y.rounded())), volume.height - 1)
+        default:           return nil
         }
     }
 

@@ -162,6 +162,10 @@ class ViewerModel: ObservableObject {
     @Published var panels: [PanelState] = []
     @Published var activePanelID: UUID = UUID()
     @Published var showCrossReference: Bool = false
+    /// Shared 3D crosshair world coordinate (RAS mm). Set by click/drag in any
+    /// MPR panel (Phase 6); all panels relocate to contain it and draw crosshair
+    /// lines through its in-plane projection. nil = no crosshair placed yet.
+    @Published var crosshairWorld: SIMD3<Double>? = nil
     @Published var showHelp: Bool = false
     @Published var synchronizedScrolling: Bool = false {
         didSet {
