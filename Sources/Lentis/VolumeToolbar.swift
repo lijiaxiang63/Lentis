@@ -58,13 +58,20 @@ struct VolumeToolbar: View {
                     Text("Slab")
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
+                    // NOTE: deliberately NO `step:` here. On macOS a stepped
+                    // Slider renders a tick mark per step, so `step: 1` over
+                    // 1...maxSlabSlices emitted ~1024 tick-mark labels for the
+                    // MPRAGE. SwiftUI re-ran that ~1024-mark layout pass on every
+                    // layout invalidation of this toolbar — and a crosshair drag
+                    // invalidated it on every mouse event — costing ~2 s/event of
+                    // main-thread layout (diagnosed as the crosshair "drag lag").
+                    // The setter snaps to Int, so the slab stays integer-valued.
                     Slider(
                         value: Binding(
                             get: { Double(panel.mipSlabThickness) },
-                            set: { panel.mipSlabThickness = max(1, Int($0)) }
+                            set: { panel.mipSlabThickness = max(1, Int($0.rounded())) }
                         ),
-                        in: 1...Double(maxSlabSlices),
-                        step: 1
+                        in: 1...Double(maxSlabSlices)
                     ) {
                         Text("Slab")
                     } onEditingChanged: { editing in
