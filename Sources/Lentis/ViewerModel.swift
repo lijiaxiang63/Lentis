@@ -164,8 +164,21 @@ class ViewerModel: ObservableObject {
     @Published var showCrossReference: Bool = false
     /// Shared 3D crosshair world coordinate (RAS mm). Set by click/drag in any
     /// MPR panel (Phase 6); all panels relocate to contain it and draw crosshair
-    /// lines through its in-plane projection. nil = no crosshair placed yet.
-    @Published var crosshairWorld: SIMD3<Double>? = nil
+    /// lines through its in-plane projection.
+    ///
+    /// Held in its OWN `ObservableObject` (NOT `@Published` on the model) so a
+    /// crosshair drag — which rewrites it per mouse event — invalidates only the
+    /// `CrossReferenceOverlay`s that observe it, not every view bound to the
+    /// model. Writing it through `model.objectWillChange` re-ran the whole quad's
+    /// SwiftUI layout each drag event, which (after the Slab-Slider fix) was the
+    /// remaining crosshair-drag lag.
+    let crosshair = CrosshairState()
+    /// Back-compat accessor: existing call sites read/write `crosshairWorld`;
+    /// it forwards to the decoupled `crosshair.world`. nil = no crosshair yet.
+    var crosshairWorld: SIMD3<Double>? {
+        get { crosshair.world }
+        set { crosshair.world = newValue }
+    }
     @Published var showHelp: Bool = false
     @Published var synchronizedScrolling: Bool = false {
         didSet {
@@ -845,6 +858,9 @@ class ViewerModel: ObservableObject {
     /// `syncScrollFromPanel` proportional mapping: orthogonal planes correctly
     /// stay put unless the in-plane click actually moved their slice index.
     func setCrosshair(_ world: SIMD3<Double>, from source: PanelState) {
+        BenchmarkLogger.shared.start("crosshair_set")
+        var relocated = 0
+        defer { BenchmarkLogger.shared.stop("crosshair_set", detail: "relocated=\(relocated)") }
         crosshairWorld = world
 
         for panel in panels where panel.id != source.id {
@@ -856,6 +872,7 @@ class ViewerModel: ObservableObject {
                 guard let idx = engine.orthogonalSliceIndex(for: panel.panelMode, containing: world)
                 else { continue }
                 if idx != panel.mprSliceIndex {
+                    relocated += 1
                     panel.mprSliceIndex = idx
                     updateMPRSpatialMetadata(panel, volume: vol)
                     loadMPRSlice(for: panel)
@@ -865,6 +882,7 @@ class ViewerModel: ObservableObject {
                 guard vol.depth > 1 else { continue }
                 let z = min(max(0, Int(vol.worldToVoxel(world).z.rounded())), vol.depth - 1)
                 if z != panel.mipSlabPosition {
+                    relocated += 1
                     panel.mipSlabPosition = z
                     loadMIPForPanel(panel)
                 }
@@ -1454,8 +1472,12 @@ class ViewerModel: ObservableObject {
                     panel.pixelSpacing = (mprSlice.pixelSpacingY, mprSlice.pixelSpacingX)
 
                     panel.isLoading = false
-                    // Trigger cross-reference overlay updates on all panels.
-                    self.objectWillChange.send()
+                    // The panel @Published writes above already re-render this
+                    // panel's view AND its crosshair overlay (overlays observe the
+                    // panel + the decoupled CrosshairState, not the model). The
+                    // old model-wide objectWillChange.send() here re-laid-out the
+                    // ENTIRE quad on every settled render — a per-relocation hitch
+                    // during a crosshair drag — and is now redundant.
                     self.updatePanelInfoStrings(panel)
                 }
             }
@@ -1648,7 +1670,8 @@ class ViewerModel: ObservableObject {
                     panel.imagePositionPatient = (origin.x, origin.y, origin.z)
                     panel.imageOrientationPatient = [rowDir.x, rowDir.y, rowDir.z, colDir.x, colDir.y, colDir.z]
                     panel.isLoading = false
-                    self.objectWillChange.send()
+                    // No model-wide objectWillChange (see the MPR path above): the
+                    // panel writes above re-render this panel + its crosshair overlay.
                     self.updatePanelInfoStrings(panel)
                 }
             }

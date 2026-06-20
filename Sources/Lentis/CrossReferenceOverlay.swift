@@ -17,10 +17,21 @@
 
 import SwiftUI
 
+/// Tiny ObservableObject holding ONLY the shared crosshair world point. It lives
+/// apart from `ViewerModel` so that updating the crosshair — which happens on
+/// every mouse event during a drag — invalidates just the crosshair overlays and
+/// NOT every view that observes the heavyweight model. (Routing it through
+/// `model.objectWillChange` re-ran the entire quad's SwiftUI layout per drag
+/// event, which was the bulk of the residual crosshair-drag lag — see CLAUDE.md.)
+final class CrosshairState: ObservableObject {
+    /// Shared 3D crosshair world coordinate (RAS mm). nil = no crosshair placed.
+    @Published var world: SIMD3<Double>? = nil
+}
+
 /// Draws the shared 3D crosshair on this panel (set by click/drag in any panel).
 struct CrossReferenceOverlay: View {
-    @ObservedObject var model: ViewerModel
     @ObservedObject var panel: PanelState
+    @ObservedObject var crosshair: CrosshairState
 
     /// Single shared crosshair color (the point is one world coordinate, not
     /// per-panel like the old plane-intersection lines).
@@ -29,7 +40,7 @@ struct CrossReferenceOverlay: View {
     var body: some View {
         GeometryReader { geo in
             if panel.panelMode.isMPR,
-               let world = model.crosshairWorld,
+               let world = crosshair.world,
                let geometry = panel.displayedPlaneGeometry {
                 CrosshairLinesView(
                     panel: panel,

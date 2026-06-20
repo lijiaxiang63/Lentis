@@ -184,9 +184,10 @@ struct PanelView: View {
                 .zIndex(500)
             }
 
-            // Cross-reference lines overlay
+            // Cross-reference lines overlay. Observes the decoupled CrosshairState
+            // (not the model) so crosshair drags don't re-lay-out this whole panel.
             if panel.image != nil && model.panels.count > 1 && model.showCrossReference {
-                CrossReferenceOverlay(model: model, panel: panel)
+                CrossReferenceOverlay(panel: panel, crosshair: model.crosshair)
                     .zIndex(10)
             }
 
