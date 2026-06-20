@@ -709,6 +709,12 @@ class ViewerModel: ObservableObject {
     /// Navigate a panel, and if it's group-selected, also scroll all other
     /// group-selected panels by the same relative offset (not spatial matching).
     func navigatePanelWithGroup(_ panel: PanelState, direction: NavigationDirection) {
+        // Measures the synchronous main-thread cost of one scroll tick (active panel
+        // navigate + sync-scroll of the others). With async MPR + MIP this should be
+        // sub-millisecond even on the 721 MB MPRAGE quad layout (--benchmark only).
+        BenchmarkLogger.shared.start("scroll_main")
+        defer { BenchmarkLogger.shared.stop("scroll_main", detail: "\(panel.panelMode.rawValue) sync=\(synchronizedScrolling)") }
+
         // If the panel is group-selected, scroll all group members simultaneously
         if panel.isGroupSelected {
             let groupPanels = groupSelectedPanels
@@ -1353,6 +1359,7 @@ class ViewerModel: ObservableObject {
             let op = BlockOperation()
             op.addExecutionBlock { [weak op, weak panel] in
                 guard let op = op, !op.isCancelled, let panel = panel else { return }
+                BenchmarkLogger.shared.start("mpr_render")
                 // Strong `volume` capture keeps the buffer alive through the render
                 // even if a 4D timepoint switch replaces the cached volume meanwhile.
                 let engine = MPREngine(volume: volume)
@@ -1369,6 +1376,7 @@ class ViewerModel: ObservableObject {
                     DispatchQueue.main.async { panel.isLoading = false }
                     return
                 }
+                BenchmarkLogger.shared.stop("mpr_render", detail: "\(mode.rawValue) \(mprSlice.width)x\(mprSlice.height)")
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
                     // Drop stale results: a newer scroll target or mode switch wins.
@@ -1503,108 +1511,98 @@ class ViewerModel: ObservableObject {
                 return
             }
 
-            // Initialize slab position to center if not set
+            // --- main thread: cheap setup only (clamp slab, capture params) ---
             if panel.mipSlabPosition <= 0 || panel.mipSlabPosition >= volume.depth {
                 panel.mipSlabPosition = volume.depth / 2
             }
-
-            // Clamp slab thickness
             if panel.mipSlabThickness < 1 { panel.mipSlabThickness = 10 }
             if panel.mipSlabThickness > volume.depth { panel.mipSlabThickness = volume.depth }
 
-            // Use panel's W/L (same as axial slices), fall back to initial values
             let ww = panel.windowWidth > 0 ? panel.windowWidth : (panel.initialWindowWidth > 0 ? panel.initialWindowWidth : 2000)
-            let wc = (panel.windowWidth > 0) ? panel.windowCenter : (panel.initialWindowWidth > 0 ? panel.initialWindowCenter : 500)
+            let wc = panel.windowWidth > 0 ? panel.windowCenter : (panel.initialWindowWidth > 0 ? panel.initialWindowCenter : 500)
+            let invert = panel.isInverted
+            let slabPosition = panel.mipSlabPosition
+            let slabThickness = panel.mipSlabThickness
+            let renderer = self.metalRenderer
 
-            BenchmarkLogger.shared.start("mip_render")
+            // --- background: GPU MIP (the waitUntilCompleted GPU sync, the readback,
+            // and the NSImage build all run off the main thread) + CPU fallback.
+            // Coalesced exactly like loadMPRSlice — this was the per-tick main-thread
+            // block (~15–20 ms steady, ~170–290 ms on first GPU texture upload) that
+            // made the quad-MPR + sync-scroll layout lag on the 721 MB MPRAGE. ---
+            panel.loadingQueue.cancelAllOperations()
+            let op = BlockOperation()
+            op.addExecutionBlock { [weak op, weak panel] in
+                guard let op = op, !op.isCancelled, let panel = panel else { return }
+                let slabThicknessMM = Float(slabThickness) * Float(volume.spacingZ)
+                let slabCenter = SIMD3<Float>(Float(volume.width) / 2.0, Float(volume.height) / 2.0, Float(slabPosition))
 
-            // Try GPU (Metal) path first, fall back to CPU
-            let slabThicknessMM = Float(panel.mipSlabThickness) * Float(volume.spacingZ)
-            let slabCenter = SIMD3<Float>(
-                Float(volume.width) / 2.0,
-                Float(volume.height) / 2.0,
-                Float(panel.mipSlabPosition)
-            )
-
-            var metalImage: NSImage? = nil
-            if let renderer = self.metalRenderer {
-                metalImage = renderer.renderProjection(
-                    volume: volume,
-                    mode: mode,
-                    viewMatrix: matrix_identity_float4x4,
-                    outputWidth: volume.width,
-                    outputHeight: volume.height,
-                    windowWidth: Float(ww),
-                    windowCenter: Float(wc),
-                    slabThickness: slabThicknessMM,
-                    slabCenterVoxel: slabCenter,
-                    invert: panel.isInverted
-                )
-            }
-
-            if let image = metalImage {
-                // GPU path succeeded — apply aspect ratio correction
-                let physW = Double(volume.width) * volume.spacingX
-                let physH = Double(volume.height) * volume.spacingY
-                let aspectRatio = physH / physW
-                let displayW = CGFloat(volume.width)
-                let displayH = CGFloat(Double(volume.width) * aspectRatio)
-                image.size = NSSize(width: displayW, height: displayH)
-
-                BenchmarkLogger.shared.stop("mip_render", detail: "GPU slab=\(panel.mipSlabThickness), mode=\(mode)")
-                panel.setDisplayImage(image)
-                panel.imageWidth = volume.width
-                panel.imageHeight = volume.height
-                panel.rawPixelData = nil
-                panel.bitDepth = 16
-                panel.isSigned = true
-                panel.samples = 1
-                panel.pixelSpacing = (volume.spacingY, volume.spacingX)
-
-                // Set spatial metadata for cross-reference (axial plane at slab center)
-                let origin = volume.voxelToWorld(SIMD3<Double>(0, 0, Double(panel.mipSlabPosition)))
-                panel.imagePositionPatient = (origin.x, origin.y, origin.z)
-                panel.imageOrientationPatient = [
-                    volume.rowDirection.x, volume.rowDirection.y, volume.rowDirection.z,
-                    volume.colDirection.x, volume.colDirection.y, volume.colDirection.z
-                ]
-            } else {
-                // CPU fallback
-                let engine = MPREngine(volume: volume)
-                guard let slice = engine.axialSlabProjection(
-                    mode: mode,
-                    slabCenter: panel.mipSlabPosition,
-                    slabThickness: panel.mipSlabThickness
-                ) else {
-                    panel.isLoading = false
-                    panel.errorMessage = "Slab MIP rendering failed"
-                    return
+                BenchmarkLogger.shared.start("mip_render")
+                var metalImage: NSImage? = nil
+                if let renderer = renderer {
+                    metalImage = renderer.renderProjection(
+                        volume: volume, mode: mode, viewMatrix: matrix_identity_float4x4,
+                        outputWidth: volume.width, outputHeight: volume.height,
+                        windowWidth: Float(ww), windowCenter: Float(wc),
+                        slabThickness: slabThicknessMM, slabCenterVoxel: slabCenter, invert: invert)
                 }
 
-                if let image = MPREngine.renderSlice(slice, ww: ww, wc: wc, invert: panel.isInverted) {
-                    BenchmarkLogger.shared.stop("mip_render", detail: "CPU slab=\(panel.mipSlabThickness), mode=\(mode)")
+                // Resolve the image (GPU, else CPU fallback) + raw data for W/L re-render.
+                let resultImage: NSImage?
+                var rawData: Data? = nil
+                var imgW = volume.width, imgH = volume.height
+                if let image = metalImage {
+                    let physW = Double(volume.width) * volume.spacingX
+                    let physH = Double(volume.height) * volume.spacingY
+                    image.size = NSSize(width: CGFloat(volume.width), height: CGFloat(Double(volume.width) * physH / physW))
+                    BenchmarkLogger.shared.stop("mip_render", detail: "GPU slab=\(slabThickness), mode=\(mode)")
+                    resultImage = image
+                } else {
+                    let engine = MPREngine(volume: volume)
+                    if let slice = engine.axialSlabProjection(mode: mode, slabCenter: slabPosition, slabThickness: slabThickness),
+                       let image = MPREngine.renderSlice(slice, ww: ww, wc: wc, invert: invert) {
+                        BenchmarkLogger.shared.stop("mip_render", detail: "CPU slab=\(slabThickness), mode=\(mode)")
+                        rawData = slice.pixelData
+                        imgW = slice.width; imgH = slice.height
+                        resultImage = image
+                    } else {
+                        resultImage = nil
+                    }
+                }
+                guard !op.isCancelled else { return }
+
+                let origin = volume.voxelToWorld(SIMD3<Double>(0, 0, Double(slabPosition)))
+                let rowDir = volume.rowDirection, colDir = volume.colDirection
+
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    // Drop stale results: a newer slab position or mode switch wins.
+                    guard panel.panelMode == .mip, panel.mipSlabPosition == slabPosition else {
+                        panel.isLoading = false
+                        return
+                    }
+                    guard let image = resultImage else {
+                        panel.isLoading = false
+                        panel.errorMessage = "Slab MIP rendering failed"
+                        return
+                    }
                     panel.setDisplayImage(image)
-                    panel.imageWidth = slice.width
-                    panel.imageHeight = slice.height
-                    panel.rawPixelData = slice.pixelData
+                    panel.imageWidth = imgW
+                    panel.imageHeight = imgH
+                    panel.rawPixelData = rawData
                     panel.bitDepth = 16
                     panel.isSigned = true
                     panel.samples = 1
                     panel.pixelSpacing = (volume.spacingY, volume.spacingX)
-
-                    let origin = volume.voxelToWorld(SIMD3<Double>(0, 0, Double(panel.mipSlabPosition)))
+                    // Spatial metadata for cross-reference (axial plane at slab center).
                     panel.imagePositionPatient = (origin.x, origin.y, origin.z)
-                    panel.imageOrientationPatient = [
-                        volume.rowDirection.x, volume.rowDirection.y, volume.rowDirection.z,
-                        volume.colDirection.x, volume.colDirection.y, volume.colDirection.z
-                    ]
-                } else {
-                    panel.errorMessage = "Slab MIP rendering failed"
+                    panel.imageOrientationPatient = [rowDir.x, rowDir.y, rowDir.z, colDir.x, colDir.y, colDir.z]
+                    panel.isLoading = false
+                    self.objectWillChange.send()
+                    self.updatePanelInfoStrings(panel)
                 }
             }
-            panel.isLoading = false
-            self.objectWillChange.send()
-            self.updatePanelInfoStrings(panel)
+            panel.loadingQueue.addOperation(op)
         }
     }
 

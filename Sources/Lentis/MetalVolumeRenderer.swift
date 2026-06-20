@@ -32,6 +32,9 @@ final class MetalVolumeRenderer {
     private var mipPipeline: MTLComputePipelineState?
     private var volumeTexture: MTLTexture?
     private var outputTexture: MTLTexture?
+    /// Serializes renderProjection: it mutates shared texture state and is now
+    /// driven from panels' background queues, so concurrent MIP panels mustn't race.
+    private let renderLock = NSLock()
 
     /// Current volume dimensions (for re-creating texture if needed)
     private var currentVolumeUID: String?
@@ -123,6 +126,9 @@ final class MetalVolumeRenderer {
         thresholdMin: Float = -Float.greatestFiniteMagnitude,
         thresholdMax: Float = Float.greatestFiniteMagnitude
     ) -> NSImage? {
+        renderLock.lock()
+        defer { renderLock.unlock() }
+
         uploadVolume(volume)
         guard let volumeTex = volumeTexture, let pipeline = mipPipeline else { return nil }
 

@@ -73,8 +73,12 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
    (`loadMPRSlice` → `panel.loadingQueue`) and are coalesced** — each navigation
    `cancelAllOperations()` + enqueues, and the main-thread apply drops results whose
    `mprSliceIndex`/`panelMode` no longer match. So fast scrubbing only pays for the in-flight render
-   plus the latest target, and the main thread never blocks. **This (not GPU) fixed laggy scrolling
-   on the 344×1024×1024 / 721 MB MPRAGE**, whose long plane is a full 1024×1024 **megapixel** slice.
+   plus the latest target, and the main thread never blocks. **MIP is the same** (`loadMIPForPanel`):
+   its GPU `renderProjection` (`commandBuffer.waitUntilCompleted()` + readback) also runs on the
+   background queue — that synchronous GPU wait on the main thread was what made the **quad MPR +
+   sync-scroll** layout lag (`syncScrollFromPanel` re-renders the MIP panel every tick). **This (not GPU
+   W/L) fixed laggy scrolling on the 344×1024×1024 / 721 MB MPRAGE**, whose long plane is a full
+   1024×1024 **megapixel** slice; measured per-tick main-thread cost dropped ~15–25 ms → 0.3 ms.
    W/L drag is throttled to 60 Hz and re-renders from the cached slice `rawPixelData` (still on the
    main thread — move async too if it bites on huge volumes). The brief's "windowing = GPU uniform
    only" rule is **still NOT met for slices** — the GPU slice-W/L move was **deferred** (the W/L
@@ -142,13 +146,20 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
   labels all read it, and the corner-orientation tests in `MPREngineTests` will catch a sign error.
 - **Pure-Swift inflate is bit-by-bit** → ~1.5 s for a 35 MB `.nii.gz`, ~20 s for the 445 MB MPRAGE
   (background thread, OK for now). Optimize with table-driven Huffman if it bites.
-- **MPR slice render is async + coalesced (`loadMPRSlice`).** Extraction + W/L + NSImage build run on
-  `panel.loadingQueue` (serial, background); each navigation `cancelAllOperations()` + enqueues, and
-  the main-thread apply **drops stale results** whose `mprSliceIndex`/`panelMode` no longer match. Do
-  **not** revert to synchronous main-thread rendering — it froze scrolling on the 344×1024×1024 / 721 MB
-  MPRAGE (megapixel sagittal). The captured `volume` is held strongly through the render so it survives
-  a 4D timepoint swap. The previous slice stays on screen until the new one lands (no spinner flicker,
-  since the `isLoading` ProgressView only shows when `panel.image == nil`).
+- **MPR *and* MIP render are async + coalesced (`loadMPRSlice`, `loadMIPForPanel`).** Extraction / GPU
+  MIP + W/L + NSImage build run on `panel.loadingQueue` (serial, background); each navigation
+  `cancelAllOperations()` + enqueues, and the main-thread apply **drops stale results** whose
+  `mprSliceIndex` / `mipSlabPosition` / `panelMode` no longer match. Do **not** revert either to
+  synchronous main-thread rendering — it froze scrolling on the 344×1024×1024 / 721 MB MPRAGE. **The MIP
+  path was the subtle one:** `renderProjection` does `commandBuffer.waitUntilCompleted()` (a synchronous
+  GPU wait) + readback, and in the **quad MPR + synchronized-scroll** layout `syncScrollFromPanel`
+  re-rendered the MIP panel on the main thread *every tick* (~15–20 ms steady, ~180 ms on the first
+  721 MB→GPU upload). Off-main it's ~1–2 ms. `MetalVolumeRenderer.renderProjection` is now
+  `renderLock`-serialized since it's driven from background queues. The captured `volume` is held
+  strongly through the render (survives a 4D swap); the previous slice stays on screen until the new one
+  lands (no spinner flicker — the `isLoading` ProgressView only shows when `panel.image == nil`).
+  **Measured (`--benchmark`, `scroll_main`): per-tick main-thread cost ~15–25 ms → 0.3 ms** on the
+  MPRAGE quad layout (also `mpr_render` / `mip_render` log per-render ms).
 - **RTK shell proxy** (user's global `~/.claude`) rewrites `grep`→`rg` and can mangle
   `find … $(...)` / regex alternation. Prefer `rg`-native syntax or absolute `/usr/bin/...` paths.
 
@@ -164,11 +175,12 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 > (WL 40/WW 80) with a preset menu (Brain/Subdural/Stroke/Bone/Soft-tissue, applied to all linked
 > panels); MRI auto-detects and uses a percentile auto-window (WL 899/WW 1798 on the T1, via an
 > "Auto" button). The one-click **MPR quad no longer renders dark** — every panel is W/L-seeded by
-> modality. **Post-Phase-5 perf fix:** MPR render is now **async + coalesced** off the main thread
-> (`loadMPRSlice` → `panel.loadingQueue`) — fixed laggy scrolling on the 721 MB / megapixel-slice
-> MPRAGE (GUI-verified). **Deferred:** GPU slice W/L — extraction + NSImage alloc dominate per-slice
-> cost, not the W/L math, so a W/L-only shader wouldn't help scroll; revisit for a live MTKView /
-> mask overlay. Slice rendering is still CPU (`MPREngine.renderSlice`). Phase-4 orientation intact.
+> modality. **Post-Phase-5 perf fix:** both **MPR and MIP** render are now **async + coalesced** off the
+> main thread (`loadMPRSlice` / `loadMIPForPanel` → `panel.loadingQueue`) — fixed laggy scrolling on the
+> 721 MB / megapixel-slice MPRAGE, including the **quad-MPR + sync-scroll** case where the MIP panel's
+> synchronous `waitUntilCompleted` blocked the main thread every tick. Measured per-tick main-thread
+> cost **~15–25 ms → 0.3 ms** (`scroll_main`, `--benchmark`). **Deferred:** GPU slice W/L (wouldn't help
+> scroll — extraction/alloc dominate, not the W/L math). Slice rendering is still CPU. Phase-4 orientation intact.
 
 - [x] **Phase 1 — Rebrand to Lentis.** SPM/target/dir/app-struct renamed; menus/About/Help show
   Lentis; `package_app.sh` + bundle id updated; `UpdateChecker` removed (phoned home to upstream).
