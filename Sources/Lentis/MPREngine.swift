@@ -28,6 +28,20 @@ struct MPRSlice {
     let pixelSpacingY: Double
 }
 
+/// The displayed geometry of an orthogonal plane, independent of pixels:
+/// the world position of the top-left pixel and the world directions toward
+/// screen-right / screen-bottom, plus pixel spacing along each. This is the
+/// single source of truth for orientation — the slice extractors fill their
+/// plane fields from it, and the panel's cross-reference metadata + labels
+/// read it back, so display, overlays, and labels can never disagree.
+struct PlaneGeometry {
+    let origin: SIMD3<Double>      // world coord of displayed top-left pixel
+    let rowDir: SIMD3<Double>      // world dir toward screen-right (+column)
+    let colDir: SIMD3<Double>      // world dir toward screen-bottom (+row)
+    let pixelSpacingX: Double      // mm per column step (along rowDir)
+    let pixelSpacingY: Double      // mm per row step (along colDir)
+}
+
 class MPREngine {
     let volume: VolumeData
 
@@ -48,6 +62,40 @@ class MPREngine {
     // planeColDir (toward screen-bottom) consistent with that layout, so the
     // orientation labels and cross-reference lines derive from one source.
 
+    /// The displayed geometry for an orthogonal plane at `sliceIndex`, without
+    /// rendering pixels. Mirrors the flips applied by the extractors below, so
+    /// the synchronous cross-reference path and the rendered slice agree.
+    func planeGeometry(_ mode: PanelMode, sliceIndex: Int) -> PlaneGeometry? {
+        switch mode {
+        case .mprAxial:
+            // top-left = (i=0=L, j=h−1=Anterior); right→R, down→P
+            return PlaneGeometry(
+                origin: volume.voxelToWorld(SIMD3(0, Double(volume.height - 1), Double(sliceIndex))),
+                rowDir: volume.rowDirection,
+                colDir: -volume.colDirection,
+                pixelSpacingX: volume.spacingX,
+                pixelSpacingY: volume.spacingY)
+        case .mprSagittal:
+            // top-left = (j=h−1=Anterior, k=d−1=Superior); right→P, down→I
+            return PlaneGeometry(
+                origin: volume.voxelToWorld(SIMD3(Double(sliceIndex), Double(volume.height - 1), Double(volume.depth - 1))),
+                rowDir: -volume.colDirection,
+                colDir: -volume.sliceDirection,
+                pixelSpacingX: volume.spacingY,
+                pixelSpacingY: volume.spacingZ)
+        case .mprCoronal:
+            // top-left = (i=0=L, k=d−1=Superior); right→R, down→I
+            return PlaneGeometry(
+                origin: volume.voxelToWorld(SIMD3(0, Double(sliceIndex), Double(volume.depth - 1))),
+                rowDir: volume.rowDirection,
+                colDir: -volume.sliceDirection,
+                pixelSpacingX: volume.spacingX,
+                pixelSpacingY: volume.spacingZ)
+        default:
+            return nil
+        }
+    }
+
     /// Generate an axial slice at a given Z (Superior) voxel index.
     func axialSlice(at zIndex: Int) -> MPRSlice? {
         guard zIndex >= 0, zIndex < volume.depth else { return nil }
@@ -65,19 +113,11 @@ class MPREngine {
             }
         }
 
-        // Displayed top-left pixel = (i=0 = Left, j=h−1 = Anterior).
-        let origin = volume.voxelToWorld(SIMD3<Double>(0, Double(h - 1), Double(zIndex)))
-
+        guard let g = planeGeometry(.mprAxial, sliceIndex: zIndex) else { return nil }
         return MPRSlice(
-            pixelData: data,
-            width: w,
-            height: h,
-            planeOrigin: origin,
-            planeRowDir: volume.rowDirection,    // +col → +i → R
-            planeColDir: -volume.colDirection,   // +row (down) → −j → P
-            pixelSpacingX: volume.spacingX,
-            pixelSpacingY: volume.spacingY
-        )
+            pixelData: data, width: w, height: h,
+            planeOrigin: g.origin, planeRowDir: g.rowDir, planeColDir: g.colDir,
+            pixelSpacingX: g.pixelSpacingX, pixelSpacingY: g.pixelSpacingY)
     }
 
     /// Generate a sagittal slice at a given X (Right) voxel index.
@@ -99,19 +139,11 @@ class MPREngine {
             }
         }
 
-        // Top-left pixel = (j = height−1 = Anterior, k = depth−1 = Superior).
-        let origin = volume.voxelToWorld(SIMD3<Double>(Double(xIndex), Double(volume.height - 1), Double(volume.depth - 1)))
-
+        guard let g = planeGeometry(.mprSagittal, sliceIndex: xIndex) else { return nil }
         return MPRSlice(
-            pixelData: data,
-            width: w,
-            height: h,
-            planeOrigin: origin,
-            planeRowDir: -volume.colDirection,    // +col → −j → P (screen-right)
-            planeColDir: -volume.sliceDirection,  // +row (down) → −k → I
-            pixelSpacingX: volume.spacingY,
-            pixelSpacingY: volume.spacingZ
-        )
+            pixelData: data, width: w, height: h,
+            planeOrigin: g.origin, planeRowDir: g.rowDir, planeColDir: g.colDir,
+            pixelSpacingX: g.pixelSpacingX, pixelSpacingY: g.pixelSpacingY)
     }
 
     /// Generate a coronal slice at a given Y (Anterior) voxel index.
@@ -132,19 +164,11 @@ class MPREngine {
             }
         }
 
-        // Top-left pixel = (i = 0 = Left, k = depth−1 = Superior).
-        let origin = volume.voxelToWorld(SIMD3<Double>(0, Double(yIndex), Double(volume.depth - 1)))
-
+        guard let g = planeGeometry(.mprCoronal, sliceIndex: yIndex) else { return nil }
         return MPRSlice(
-            pixelData: data,
-            width: w,
-            height: h,
-            planeOrigin: origin,
-            planeRowDir: volume.rowDirection,     // +col → +i → R
-            planeColDir: -volume.sliceDirection,  // +row (down) → −k → I
-            pixelSpacingX: volume.spacingX,
-            pixelSpacingY: volume.spacingZ
-        )
+            pixelData: data, width: w, height: h,
+            planeOrigin: g.origin, planeRowDir: g.rowDir, planeColDir: g.colDir,
+            pixelSpacingX: g.pixelSpacingX, pixelSpacingY: g.pixelSpacingY)
     }
 
     // MARK: - Arbitrary Oblique Slice

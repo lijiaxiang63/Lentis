@@ -116,6 +116,25 @@ final class MPREngineTests: XCTestCase {
         XCTAssertEqual(pixelAt(s, col: 3, row: 3), 0)   // bot-right (y=0,z=0) Posterior/Inferior
     }
 
+    /// The slice plane directions (which drive the orientation labels) must read
+    /// as the expected anatomy for a canonical-RAS volume.
+    func testSlicePlaneDirectionsAreNeurological() {
+        let vol = makeGradientVolume(width: 4, height: 4, depth: 4)
+        let engine = MPREngine(volume: vol)
+
+        let ax = engine.axialSlice(at: 2)!
+        XCTAssertEqual(anatomicalDirection(of: ax.planeRowDir), .R)   // screen-right
+        XCTAssertEqual(anatomicalDirection(of: ax.planeColDir), .P)   // screen-down
+
+        let cor = engine.coronalSlice(at: 2)!
+        XCTAssertEqual(anatomicalDirection(of: cor.planeRowDir), .R)
+        XCTAssertEqual(anatomicalDirection(of: cor.planeColDir), .I)
+
+        let sag = engine.sagittalSlice(at: 2)!
+        XCTAssertEqual(anatomicalDirection(of: sag.planeRowDir), .P)  // anterior-left ⇒ right is P
+        XCTAssertEqual(anatomicalDirection(of: sag.planeColDir), .I)
+    }
+
     func testAxialSliceOutOfBounds() {
         let vol = makeGradientVolume(width: 4, height: 4, depth: 4)
         let engine = MPREngine(volume: vol)

@@ -1762,21 +1762,13 @@ struct OrientationLabelsOverlay: View {
     }
 
     /// Map a direction vector to its dominant anatomical label.
-    /// DICOM patient coordinate system: +x=L, -x=R, +y=P, -y=A, +z=S, -z=I
+    /// World space is NIfTI **RAS+**: +x=R, +y=A, +z=S (and negatives).
     private func dirLabel(_ v: SIMD3<Double>) -> String {
-        let ax = abs(v.x), ay = abs(v.y), az = abs(v.z)
-        if ax >= ay && ax >= az { return v.x > 0 ? "L" : "R" }
-        if ay >= ax && ay >= az { return v.y > 0 ? "P" : "A" }
-        return v.z > 0 ? "S" : "I"
+        anatomicalDirection(of: v).letter
     }
 
     private func oppositeLabel(_ l: String) -> String {
-        switch l {
-        case "L": return "R"; case "R": return "L"
-        case "A": return "P"; case "P": return "A"
-        case "S": return "I"; case "I": return "S"
-        default: return ""
-        }
+        AnatomicalDirection(rawValue: l)?.opposite.letter ?? ""
     }
 }
 

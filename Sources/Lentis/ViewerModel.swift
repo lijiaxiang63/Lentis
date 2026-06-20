@@ -1360,36 +1360,17 @@ class ViewerModel: ObservableObject {
                 panel.isSigned = true
                 panel.samples = 1
 
-                // Set spatial metadata for cross-reference lines.
-                // MPR slices flip Z (superior at top), so adjust origin and column direction.
-                switch panel.panelMode {
-                case .mprAxial:
-                    let origin = volume.voxelToWorld(SIMD3<Double>(0, 0, Double(panel.mprSliceIndex)))
-                    panel.imagePositionPatient = (origin.x, origin.y, origin.z)
-                    panel.imageOrientationPatient = [
-                        volume.rowDirection.x, volume.rowDirection.y, volume.rowDirection.z,
-                        volume.colDirection.x, volume.colDirection.y, volume.colDirection.z
-                    ]
-                    panel.pixelSpacing = (volume.spacingX, volume.spacingY)
-                case .mprSagittal:
-                    let flippedOrigin = volume.voxelToWorld(SIMD3<Double>(Double(panel.mprSliceIndex), 0, Double(volume.depth - 1)))
-                    panel.imagePositionPatient = (flippedOrigin.x, flippedOrigin.y, flippedOrigin.z)
-                    panel.imageOrientationPatient = [
-                        volume.colDirection.x, volume.colDirection.y, volume.colDirection.z,
-                        -volume.sliceDirection.x, -volume.sliceDirection.y, -volume.sliceDirection.z
-                    ]
-                    panel.pixelSpacing = (volume.spacingZ, volume.spacingY)
-                case .mprCoronal:
-                    let flippedOrigin = volume.voxelToWorld(SIMD3<Double>(0, Double(panel.mprSliceIndex), Double(volume.depth - 1)))
-                    panel.imagePositionPatient = (flippedOrigin.x, flippedOrigin.y, flippedOrigin.z)
-                    panel.imageOrientationPatient = [
-                        volume.rowDirection.x, volume.rowDirection.y, volume.rowDirection.z,
-                        -volume.sliceDirection.x, -volume.sliceDirection.y, -volume.sliceDirection.z
-                    ]
-                    panel.pixelSpacing = (volume.spacingZ, volume.spacingX)
-                default:
-                    break
-                }
+                // Spatial metadata (cross-reference lines + orientation labels)
+                // taken straight from the rendered slice, so it always matches
+                // the displayed neurologically-oriented pixels.
+                panel.imagePositionPatient = (mprSlice.planeOrigin.x, mprSlice.planeOrigin.y, mprSlice.planeOrigin.z)
+                panel.imageOrientationPatient = [
+                    mprSlice.planeRowDir.x, mprSlice.planeRowDir.y, mprSlice.planeRowDir.z,
+                    mprSlice.planeColDir.x, mprSlice.planeColDir.y, mprSlice.planeColDir.z
+                ]
+                // PanelState.pixelSpacing is (row-step mm, col-step mm) per the
+                // cross-reference convention → (colDir spacing, rowDir spacing).
+                panel.pixelSpacing = (mprSlice.pixelSpacingY, mprSlice.pixelSpacingX)
 
                 panel.isLoading = false
                 // Trigger cross-reference overlay updates on all panels
@@ -1419,29 +1400,17 @@ class ViewerModel: ObservableObject {
         }
     }
 
-    /// Update spatial metadata synchronously for MPR panels (for cross-reference lines).
-    /// Called immediately when mprSliceIndex changes, before async MPR rendering.
+    /// Update spatial metadata synchronously for MPR panels (for cross-reference
+    /// lines), before async MPR rendering. Uses the same MPREngine.planeGeometry
+    /// source as the rendered slice so the two never diverge.
     private func updateMPRSpatialMetadata(_ panel: PanelState, volume: VolumeData) {
-        switch panel.panelMode {
-        case .mprSagittal:
-            let origin = volume.voxelToWorld(SIMD3<Double>(Double(panel.mprSliceIndex), 0, Double(volume.depth - 1)))
-            panel.imagePositionPatient = (origin.x, origin.y, origin.z)
-            panel.imageOrientationPatient = [
-                volume.colDirection.x, volume.colDirection.y, volume.colDirection.z,
-                -volume.sliceDirection.x, -volume.sliceDirection.y, -volume.sliceDirection.z
-            ]
-            panel.pixelSpacing = (volume.spacingZ, volume.spacingY)
-        case .mprCoronal:
-            let origin = volume.voxelToWorld(SIMD3<Double>(0, Double(panel.mprSliceIndex), Double(volume.depth - 1)))
-            panel.imagePositionPatient = (origin.x, origin.y, origin.z)
-            panel.imageOrientationPatient = [
-                volume.rowDirection.x, volume.rowDirection.y, volume.rowDirection.z,
-                -volume.sliceDirection.x, -volume.sliceDirection.y, -volume.sliceDirection.z
-            ]
-            panel.pixelSpacing = (volume.spacingZ, volume.spacingX)
-        default:
-            break
-        }
+        guard let g = MPREngine(volume: volume).planeGeometry(panel.panelMode, sliceIndex: panel.mprSliceIndex) else { return }
+        panel.imagePositionPatient = (g.origin.x, g.origin.y, g.origin.z)
+        panel.imageOrientationPatient = [
+            g.rowDir.x, g.rowDir.y, g.rowDir.z,
+            g.colDir.x, g.colDir.y, g.colDir.z
+        ]
+        panel.pixelSpacing = (g.pixelSpacingY, g.pixelSpacingX)
     }
 
     /// Navigate MPR slice position for a panel
