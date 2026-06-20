@@ -181,7 +181,43 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 
 ## Known issues / open problems (as of HEAD)
 
-Ordered roughly by priority. None block the build or tests (52 green); these are quality/perf debt.
+Ordered roughly by priority. None block the build or tests; these are quality/perf debt.
+
+> **⚠ ACTIVE — HIGH PRIORITY: Phase-6 crosshair DRAG is laggy/janky** (user-reported, HEAD `fd55568`).
+> Single click and the *correctness* of relocation are fine (GUI-verified). What stutters is a real,
+> continuous hand-drag in an MPR panel. **NOT caught in my verification** because computer-use can only
+> synthesize one coarse `left_click_drag`, not a high-rate continuous drag (same gotcha as scroll) — so
+> reproduce/measure by hand or with a probe, NOT via computer-use drag.
+> **Most likely cause (diagnose before fixing — don't trust this blindly):** `mouseDragged` (Select tool)
+> calls `ViewerModel.setCrosshair` on *every* drag event (~60–120/s, no throttle), and the first thing it
+> does is write `crosshairWorld` (an `@Published` on the model). That fires `model.objectWillChange` →
+> **every** view holding `@ObservedObject var model` re-evaluates, including all 4 `PanelView`s → all 4
+> `PanelInteractiveDICOMView.updateNSView`, which unconditionally calls `nsView.setImage(image)` +
+> `nsView.applyFilters()` (re-applies the image + CIFilters to the NSImageView) every tick — even for
+> panels whose image didn't change. Plus `setCrosshair` relocates 3 panels/tick, each writing several more
+> `@Published` (`mprSliceIndex`, `imagePositionPatient/Orientation/pixelSpacing`, `isLoading`) and
+> enqueuing `loadMPRSlice` (its `getVolume` completion runs inline on the main thread: `cancelAllOperations`
+> + enqueue ×3/tick). The slice *extraction/render* is already off-main + coalesced (that part is fine);
+> the suspect is **main-thread SwiftUI invalidation + redundant NSView image/filter re-application**, not
+> the render. (Contrast: scroll doesn't thrash — it's threshold-gated to discrete ticks and touches one
+> panel, not `crosshairWorld` + 3 panels continuously.)
+> **Concrete leads / fix directions to evaluate:**
+> 1. **Guard `updateNSView`** (`MultiPanelContainer.swift` ~line 355) to skip `setImage`/`applyFilters`
+>    when the image instance and filter-relevant state (`isInverted`, etc.) are unchanged — track
+>    last-applied on the NSView. Likely the single highest-impact fix; stops the per-tick ×4 re-render.
+> 2. **Throttle `setCrosshairFromEvent`** in `mouseDragged` to ~60 Hz (mirror the W/L-drag
+>    `wlRenderInterval`/`flushPendingWindowLevelIfNeeded` pattern already in this same NSView), and/or
+>    only act when the target pixel actually moved ≥1 px.
+> 3. **Decouple crosshair state**: move `crosshairWorld` into its own tiny `ObservableObject` observed
+>    *only* by `CrossReferenceOverlay`, so updating it doesn't invalidate the heavy
+>    `PanelInteractiveDICOMView`. (Relocation still goes through the model, but only when an index changes —
+>    already guarded by `idx != panel.mprSliceIndex`.)
+> 4. **Profile first:** add a `scroll_main`-style `BenchmarkLogger` probe around `setCrosshair` (and/or
+>    `updateNSView`) so the main-thread cost per drag event is measured (`--benchmark` →
+>    `~/Desktop/odv_benchmark.csv`), the way the scroll-lag fix was proven. The deterministic standalone
+>    harness won't help here (this is a SwiftUI/AppKit main-thread issue, not pure extraction).
+> **Constraints:** keep orientation in `MPREngine.planeGeometry` (don't touch flips); keep the crosshair
+> *correctness* verified on T1 (patient-LEFT click → Sagittal left hemisphere); 95 tests must stay green.
 
 1. **[FIXED — commit `cb12693`] MPRAGE fast-scroll lag = sagittal slice extraction.** Diagnosed with a
    deterministic standalone harness over the real `MPREngine` code (differential: MPRAGE vs CT/T1). The
@@ -232,7 +268,9 @@ Ordered roughly by priority. None block the build or tests (52 green); these are
 > (not pushed; no remote). The app builds with **zero native deps**, runs, and renders real CT/MRI
 > in correct **neurological** orientation with **modality-aware window/level** and **3D crosshair
 > linkage**. `swift test` green (**95**: 43 XCTest + 52 swift-testing; the old doc "52" was only the
-> swift-testing line). **Next: Phase 7 — UI polish + segmentation seams.**
+> swift-testing line). **⚠ Next: FIX the Phase-6 crosshair DRAG lag** (user-reported jank on continuous
+> hand-drag; click + relocation correctness are fine) — see the **⚠ ACTIVE** callout atop *Known issues*
+> for the analysis + leads. **Then Phase 7 — UI polish + segmentation seams.**
 > Phase 5 outcome (verified in GUI on real CT + real T1): CT defaults to the **Brain** HU preset
 > (WL 40/WW 80) with a preset menu (Brain/Subdural/Stroke/Bone/Soft-tissue, applied to all linked
 > panels); MRI auto-detects and uses a percentile auto-window (WL 899/WW 1798 on the T1, via an
