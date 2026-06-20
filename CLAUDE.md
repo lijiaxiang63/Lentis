@@ -51,7 +51,8 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 |---|---|
 | `App.swift` | `@main struct LentisApp`. Menus. `--benchmark <path>` auto-open. |
 | `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/MIP, W/L, sync-scroll. DICOM ingestion removed (Phase 3). |
-| `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. |
+| `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. **Modality-aware W/L (Phase 5):** `modalityDefaultWindow`/`seededWindow` (seed), `applyWindowPreset`/`applyModalityAutoWindow`/`autoWindow(for:)` (UI). |
+| `WindowLevel.swift` | **`WindowPreset` + CT HU preset table** (Phase 5). Brain default `(0,80)`, Subdural/Stroke/Bone/Soft-tissue (HU). `storedWindow(slope:intercept:)` maps HU→stored (identity for direct-HU CT). Pure; no deps. |
 | `NIfTI.swift` | **NIFTI-1/2 reader**. Header/endianness/4D/9 dtypes, sform/qform affine, **pure-Swift DEFLATE** (`DeflateInflater`). Zero deps. |
 | `NiftiVolumeLoader.swift` | **`NiftiDataset`**: modality detection, Int16 quantization, percentile auto-window. **`makeVolume` reorients to canonical RAS** (Phase 4) — folds the relabel/flip into the quantization pass. |
 | `Orientation.swift` | **Single source of orientation truth** (Phase 4). `anatomicalDirection(of:)` (RAS labels) + `closestCanonicalReorientation(affine:)` → `CanonicalReorientation` (axis permutation + flips, lossless, invertible). Pure; no deps. |
@@ -68,9 +69,13 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 
 1. **2D slice rendering is CPU**, not GPU. Axial/sagittal/coronal go through
    `MPREngine.renderSlice` (Swift per-pixel W/L loop); **Metal is used only for MIP**.
-   W/L drag is throttled to 60 Hz. The brief's "windowing = GPU uniform only" rule is **NOT yet
-   met for slices** → that is the Phase 5 job (`MetalVolumeRenderer` already has the texture +
-   in-shader W/L for MIP; extend it to render ortho slices → NSImage, or live MTKView).
+   W/L drag is throttled to 60 Hz. The brief's "windowing = GPU uniform only" rule is **still NOT
+   met for slices** — moving slice W/L onto the GPU was **deferred out of Phase 5** (no visible
+   speedup over the sub-ms CPU loop, and it risks the canonical-RAS orientation; `MPREngine` stays
+   the single orientation source). Revisit when a live MTKView / mask overlay needs it. Clean seam:
+   keep slice *extraction* (the oriented Int16 buffer) in `MPREngine`, upload it to a 2D `.r16Sint`
+   input texture, and do W/L in a trivial shader → NSImage — **no flip logic in MSL**, so the
+   tested orientation can't drift. (`MetalVolumeRenderer` already has the texture + in-shader W/L for MIP.)
 2. **W/L units = RAW STORED Int16 values.** The shader/CPU window on stored voxels; `scl`/rescale
    is NOT applied in the window math. So presets & auto-window are expressed in **stored units**.
 3. **VolumeData stores Int16.** NIFTI float32/uint16 are **quantized to Int16** by `NiftiDataset`,
@@ -98,6 +103,12 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
    (`isSeriesVolumetric` is now a cached-volume check, so the per-panel MPR toolbar works for NIFTI.)
 6. **Modality** lives on the model: `niftiDataset.detectedModality`, `modalityOverride`,
    `effectiveModality`. Detection heuristic: `min ≤ -500 && fraction(v < -200) ≥ 2%` ⇒ CT.
+   **Modality drives W/L (Phase 5):** `modalityDefaultWindow` → CT = the Brain HU preset
+   (`WindowPreset`, converted to stored units via the volume's rescale), MRI = `suggestedWindow`
+   percentile. `seededWindow` prefers a saved manual window (`seriesStates`) over the default, and
+   `assignSeriesToPanel` / `applyNiftiDataset` seed **every** panel from it (fixes the dark quad
+   MPR). The per-panel `PanelAdjustmentToolbar` shows a CT preset menu vs an MRI "Auto" button by
+   `effectiveModality`; presets apply to all panels showing the series (`applyWindowPreset`).
 7. **Cursor readout:** `cursorHU = stored * panel.rescaleSlope + panel.rescaleIntercept`, label
    `panel.valueUnitLabel` ("HU" for CT, "Val" for MRI). (On-screen overlay needs a real
    NSTrackingArea mouse event — synthetic computer-use moves may not trigger it.)
@@ -130,14 +141,17 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 
 ## Phase status & roadmap
 
-> **▶ RESUME POINT — Phases 1–4 complete & committed** on branch `lentis-nifti-conversion`
-> (not pushed; no remote). The app builds with **zero native deps**, runs, and renders real
-> CT/MRI in correct **neurological** orientation. `swift test` green (42). **Next: Phase 5 —
-> modality-aware W/L (GPU).**
-> Phase 4 outcome (verified in GUI on `synthetic_orient` + real CT + real T1): every NIFTI is
-> reoriented to canonical RAS at load, so axial/sagittal/coronal are true anatomical planes with
-> L-on-left neurological display and correct L/R/A/P/S/I labels. The old radiological /
-> "coronal-looking" symptom is gone.
+> **▶ RESUME POINT — Phases 1–5 complete & committed** on branch `lentis-nifti-conversion`
+> (not pushed; no remote). The app builds with **zero native deps**, runs, and renders real CT/MRI
+> in correct **neurological** orientation with **modality-aware window/level**. `swift test` green
+> (52). **Next: Phase 6 — crosshair drag linkage.**
+> Phase 5 outcome (verified in GUI on real CT + real T1): CT defaults to the **Brain** HU preset
+> (WL 40/WW 80) with a preset menu (Brain/Subdural/Stroke/Bone/Soft-tissue, applied to all linked
+> panels); MRI auto-detects and uses a percentile auto-window (WL 899/WW 1798 on the T1, via an
+> "Auto" button). The one-click **MPR quad no longer renders dark** — every panel is W/L-seeded by
+> modality. **Deferred from Phase 5:** moving 2D-slice W/L onto the GPU (no visible speedup over the
+> sub-ms CPU loop, some orientation/readback risk; revisit when a live MTKView / mask overlay needs
+> it). Slice W/L is still CPU (`MPREngine.renderSlice`). Phase 4 orientation (canonical-RAS, L/R/A/P/S/I) intact.
 
 - [x] **Phase 1 — Rebrand to Lentis.** SPM/target/dir/app-struct renamed; menus/About/Help show
   Lentis; `package_app.sh` + bundle id updated; `UpdateChecker` removed (phoned home to upstream).
@@ -173,15 +187,21 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
   in all three planes; real CT (was radiological) + real T1 (was "coronal-looking") now render as
   proper neurological axial. Cosmetic debt still deferred: `// OpenDicomViewer` headers,
   `PanelDICOMInteractView` names, inert `.slice2D`, vestigial `ImageContext`/`ImageSeries.images`.
-- [ ] **Phase 5 — Modality-aware W/L (GPU).** Move 2D-slice W/L into a Metal shader (uniform-driven
-  from raw voxels) — fixes the CPU-render deviation. CT: extensible HU preset table incl.
-  **Brain `(0,80)`** (low/high), bone/subdural/stroke; instant. MRI: percentile auto-window
-  (`NiftiDataset.suggestedWindow` exists) + manual drag. Add CT/MRI toggle (`setModalityOverride`
-  exists). UI switches preset-vs-auto by `effectiveModality`.
-  **Phase 4 observation to fix here:** the one-click **MPR quad panels render dark** — only the
-  single-panel axial gets a seeded window (`applyNiftiDataset` → `initialWindow`); `setupMPRLayout`'s
-  Sagittal/Coronal/MIP panels fall back to `loadMPRSlice`'s hardcoded `ww 2000 / wc 500`. Seed each
-  panel's W/L from `suggestedWindow` (MRI) or the HU preset (CT) on assign / mode-switch.
+- [x] **Phase 5 — Modality-aware W/L (CPU; GPU slice move deferred).** Done in 2 commits on
+  `lentis-nifti-conversion`. Added `WindowLevel.swift` (`WindowPreset` + CT HU preset table: Brain
+  `(0,80)` default, Subdural, Stroke, Bone, Soft-tissue, all HU). `modalityDefaultWindow` seeds
+  CT → Brain preset (HU→stored via the volume's rescale) and MRI → `suggestedWindow` percentile;
+  `seededWindow` prefers a saved manual window; `assignSeriesToPanel` / `applyNiftiDataset` /
+  `setModalityOverride` seed/reseed through them — **fixing the dark one-click quad MPR** (Sagittal/
+  Coronal/MIP no longer fall back to the hardcoded `2000/500`). UI: per-panel CT/MRI toggle + a CT
+  preset menu or an MRI "Auto" button, chosen by `effectiveModality`; presets apply to all linked
+  panels; the `A` shortcut + Auto button route through `autoWindow(for:)`. **Verified:** 52 tests
+  green (10 new in `WindowLevelTests`); GUI on real CT (Brain default WL40/WW80, Bone preset
+  re-windows all four panels, MPR quad bright) and real T1 (auto-detected MRI, percentile
+  WL899/WW1798, MPR quad bright), Phase-4 orientation intact.
+  **Deferred:** moving 2D-slice W/L onto the GPU (the brief's "windowing = GPU uniform" rule) — no
+  visible speedup over the sub-ms CPU loop and it risks the canonical-RAS orientation; revisit when a
+  live MTKView / mask overlay needs it (clean seam noted in *Data & rendering pipeline* §1).
 - [ ] **Phase 6 — Crosshair drag linkage.** Click/drag sets crosshair **world** coord; all three
   views relocate + draw crosshair lines. Build on `CrossReferenceOverlay` + sync-scroll.
 - [ ] **Phase 7 — UI polish + segmentation seams.** Fix 4D-selector overlap with the "Auto" button;
