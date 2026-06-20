@@ -649,9 +649,9 @@ class ViewerModel: ObservableObject {
 
         guard panels.count == 4 else { return }
 
-        // Panel 0: Axial (standard 2D slice view)
+        // Panel 0: Axial MPR
         assignSeriesToPanel(panels[0], seriesIndex: seriesIdx)
-        panels[0].panelMode = .slice2D
+        setPanelMode(panels[0], mode: .mprAxial)
 
         // Panel 1: Sagittal MPR
         assignSeriesToPanel(panels[1], seriesIndex: seriesIdx)
@@ -1226,33 +1226,15 @@ class ViewerModel: ObservableObject {
         if synchronizedScrolling { syncScrollFromPanel(panel) }
     }
 
-    /// Check if a series can form a 3D volume (enough slices with consistent orientation and varying Z positions)
+    /// Whether a series supports MPR/MIP, i.e. a 3D volume with depth is
+    /// available. NIfTI registers one volume per dataset via
+    /// `registerStandaloneVolume`, so this is simply a cache lookup. (Replaces
+    /// the old per-slice DICOM heuristic, which always failed on NIfTI's empty
+    /// `images` stub.)
     func isSeriesVolumetric(seriesIndex: Int) -> Bool {
         guard seriesIndex >= 0, seriesIndex < allSeries.count else { return false }
-        let series = allSeries[seriesIndex]
-
-        // Need at least 10 images
-        guard series.images.count >= 10 else { return false }
-
-        // All images must have consistent ImageOrientationPatient
-        guard let refOrientation = series.images.first?.imageOrientation,
-              refOrientation.count == 6 else { return false }
-
-        var zValues = Set<Double>()
-        for img in series.images {
-            guard let orient = img.imageOrientation, orient.count == 6 else { return false }
-            // Check orientation consistency (tolerance for floating point)
-            let orientMatch = zip(refOrientation, orient).allSatisfy { abs($0 - $1) < 0.01 }
-            if !orientMatch { return false }
-
-            if let pos = img.imagePosition {
-                // Round to 0.1mm to avoid floating-point duplicates
-                zValues.insert((pos.z * 10).rounded() / 10)
-            }
-        }
-
-        // Need varying Z positions (at least 10 distinct values)
-        return zValues.count >= 10
+        guard let volume = volumeCacheGet(allSeries[seriesIndex].id) else { return false }
+        return volume.depth > 1
     }
 
     /// Total slice count of the cached volume (for slab thickness slider max)
