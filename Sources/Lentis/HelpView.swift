@@ -13,7 +13,7 @@ struct HelpView: View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text("OpenDicomViewer Help")
+                Text("Lentis Help")
                     .font(.title2.bold())
                 Spacer()
                 Button(action: { dismiss() }) {
@@ -32,7 +32,7 @@ struct HelpView: View {
 
                     // Overview
                     helpSection("Overview") {
-                        Text("OpenDicomViewer is a native macOS DICOM image viewer built for radiology workflows. It supports multi-panel layouts, MPR (multiplanar reconstruction), window/level adjustment, measurement annotations, and cross-reference lines.")
+                        Text("Lentis is a native macOS DICOM image viewer built for radiology workflows. It supports multi-panel layouts, MPR (multiplanar reconstruction), window/level adjustment, measurement annotations, and cross-reference lines.")
                     }
 
                     // Opening Files

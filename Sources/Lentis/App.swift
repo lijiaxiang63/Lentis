@@ -1,5 +1,5 @@
 // App.swift
-// OpenDicomViewer
+// Lentis
 //
 // Application entry point. Configures the main window with a hidden titlebar
 // and registers menu bar commands for layout switching, view operations
@@ -9,42 +9,24 @@
 import SwiftUI
 
 @main
-struct OpenDicomViewerApp: App {
+struct LentisApp: App {
     @StateObject private var model = DICOMModel()
-    @StateObject private var updateChecker = UpdateChecker()
 
     var body: some Scene {
         WindowGroup {
             ContentView(model: model)
                 .task {
-                    // Auto-open directory if passed via --benchmark /path
+                    // Auto-open a file/directory if passed via --benchmark /path
                     if let benchIdx = CommandLine.arguments.firstIndex(of: "--benchmark"),
                        benchIdx + 1 < CommandLine.arguments.count {
                         let path = CommandLine.arguments[benchIdx + 1]
                         let url = URL(fileURLWithPath: path)
                         model.load(url: url)
-                    } else {
-                        try? await Task.sleep(nanoseconds: 2_000_000_000)
-                        await updateChecker.checkForUpdates()
                     }
-                }
-                .alert(
-                    updateAlertTitle,
-                    isPresented: $updateChecker.showUpdateAlert
-                ) {
-                    updateAlertButtons
-                } message: {
-                    Text(updateAlertMessage)
                 }
         }
         .windowStyle(.hiddenTitleBar)
         .commands {
-            CommandGroup(after: .appInfo) {
-                Button("Check for Updates...") {
-                    Task { await updateChecker.checkForUpdates(userInitiated: true) }
-                }
-            }
-
             CommandGroup(replacing: .newItem) {
                 Button("Open...") {
                     model.openFolder()
@@ -157,46 +139,10 @@ struct OpenDicomViewerApp: App {
             }
 
             CommandGroup(replacing: .help) {
-                Button("OpenDicomViewer Help") {
+                Button("Lentis Help") {
                     model.showHelp = true
                 }
             }
-        }
-    }
-
-    private var updateAlertTitle: String {
-        switch updateChecker.state {
-        case .updateAvailable:
-            return "Update Available"
-        case .upToDate:
-            return "You're Up to Date"
-        default:
-            return ""
-        }
-    }
-
-    private var updateAlertMessage: String {
-        switch updateChecker.state {
-        case .updateAvailable(let version, let notes, _):
-            return "Version \(version) is available (current: \(updateChecker.currentVersion)).\n\n\(String(notes.prefix(300)))"
-        case .upToDate:
-            return "OpenDicomViewer \(updateChecker.currentVersion) is the latest version."
-        default:
-            return ""
-        }
-    }
-
-    @ViewBuilder
-    private var updateAlertButtons: some View {
-        switch updateChecker.state {
-        case .updateAvailable(let version, _, let url):
-            Button("Download") { updateChecker.openDownload(url) }
-            Button("Skip This Version") { updateChecker.skipVersion(version) }
-            Button("Later", role: .cancel) { }
-        case .upToDate:
-            Button("OK", role: .cancel) { }
-        default:
-            Button("OK", role: .cancel) { }
         }
     }
 }

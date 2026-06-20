@@ -1,16 +1,16 @@
 // swift-tools-version: 5.9
-// Package.swift — OpenDicomViewer
+// Package.swift — Lentis
 // Licensed under the MIT License. See LICENSE for details.
 
 import PackageDescription
 
 let package = Package(
-    name: "OpenDicomViewer",
+    name: "Lentis",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "OpenDicomViewer", targets: ["OpenDicomViewer"]),
+        .executable(name: "Lentis", targets: ["Lentis"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-testing.git", from: "0.12.0")
@@ -47,13 +47,13 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "OpenDicomViewer",
+            name: "Lentis",
             dependencies: ["DCMTKWrapper"]
         ),
         .testTarget(
             name: "OpenDicomViewerTests",
             dependencies: [
-                "OpenDicomViewer",
+                "Lentis",
                 .product(name: "Testing", package: "swift-testing")
             ]
         ),

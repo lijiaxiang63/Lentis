@@ -1,13 +1,14 @@
 #!/bin/bash
-# package_app.sh — OpenDicomViewer
+# package_app.sh — Lentis
 # Builds a release binary and creates the .app bundle + DMG for distribution.
 # Use --notarize to sign with Developer ID and notarize with Apple.
 # Licensed under the MIT License. See LICENSE for details.
 set -e
 
-APP_NAME="OpenDicomViewer"
-SIGNING_IDENTITY="Developer ID Application: Joon Heo (KCRAUWJ5MM)"
-NOTARY_PROFILE="OpenDicomViewer"
+APP_NAME="Lentis"
+# Set to your own "Developer ID Application: ..." identity before using --notarize.
+SIGNING_IDENTITY="Developer ID Application: CHANGE_ME"
+NOTARY_PROFILE="Lentis"
 NOTARIZE=false
 
 if [[ "$1" == "--notarize" ]]; then
@@ -49,7 +50,7 @@ cat > "${CONTENTS_DIR}/Info.plist" <<EOF
     <key>CFBundleExecutable</key>
     <string>${APP_NAME}</string>
     <key>CFBundleIdentifier</key>
-    <string>com.opendicomviewer.app</string>
+    <string>com.kalicooper.lentis</string>
     <key>CFBundleName</key>
     <string>${APP_NAME}</string>
     <key>CFBundlePackageType</key>
@@ -65,11 +66,11 @@ cat > "${CONTENTS_DIR}/Info.plist" <<EOF
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSDocumentsFolderUsageDescription</key>
-    <string>OpenDicomViewer needs access to open DICOM files.</string>
+    <string>Lentis needs access to open image files.</string>
     <key>NSDesktopFolderUsageDescription</key>
-    <string>OpenDicomViewer needs access to open DICOM files.</string>
+    <string>Lentis needs access to open image files.</string>
     <key>NSDownloadsFolderUsageDescription</key>
-    <string>OpenDicomViewer needs access to open DICOM files.</string>
+    <string>Lentis needs access to open image files.</string>
 </dict>
 </plist>
 EOF

@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import AppKit
-@testable import OpenDicomViewer
+@testable import Lentis
 
 /// Skipped when the fixture volume is not mounted so CI stays green.
 private let s42Fixture = "/Volumes/RazorDrive/Downloads/S42"

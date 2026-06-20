@@ -1,5 +1,5 @@
 import Testing
-@testable import OpenDicomViewer
+@testable import Lentis
 
 @Test
 func safeSubscriptReturnsElementInBounds() {

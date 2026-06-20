@@ -8,7 +8,7 @@
 // Licensed under the MIT License. See LICENSE for details.
 
 import XCTest
-@testable import OpenDicomViewer
+@testable import Lentis
 
 final class PanelStateTests: XCTestCase {
 
@@ -60,8 +60,9 @@ final class PanelStateTests: XCTestCase {
 
     func testPanelModeAllCases() {
         let cases = PanelMode.allCases
-        XCTAssertEqual(cases.count, 4)
+        XCTAssertEqual(cases.count, 5)
         XCTAssertTrue(cases.contains(.slice2D))
+        XCTAssertTrue(cases.contains(.mprAxial))
         XCTAssertTrue(cases.contains(.mprSagittal))
         XCTAssertTrue(cases.contains(.mprCoronal))
         XCTAssertTrue(cases.contains(.mip))
@@ -69,6 +70,7 @@ final class PanelStateTests: XCTestCase {
 
     func testPanelModeRawValues() {
         XCTAssertEqual(PanelMode.slice2D.rawValue, "Slice")
+        XCTAssertEqual(PanelMode.mprAxial.rawValue, "Axial")
         XCTAssertEqual(PanelMode.mprSagittal.rawValue, "Sagittal")
         XCTAssertEqual(PanelMode.mprCoronal.rawValue, "Coronal")
         XCTAssertEqual(PanelMode.mip.rawValue, "MIP")

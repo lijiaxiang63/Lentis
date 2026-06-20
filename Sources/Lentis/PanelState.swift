@@ -63,11 +63,15 @@ enum NavigationDirection {
 // MARK: - Panel Display Mode
 enum PanelMode: String, CaseIterable, Identifiable {
     case slice2D = "Slice"
+    case mprAxial = "Axial"
     case mprSagittal = "Sagittal"
     case mprCoronal = "Coronal"
     case mip = "MIP"
 
     var id: String { rawValue }
+
+    /// True for the three volume-based orthogonal reconstruction planes.
+    var isMPR: Bool { self == .mprAxial || self == .mprSagittal || self == .mprCoronal }
 }
 
 // MARK: - Active Tool
@@ -196,6 +200,13 @@ class PanelState: ObservableObject, Identifiable {
     var isMonochrome1: Bool = false
     var isSigned: Bool = false
     var dcmtkImage: DCMTKImageObject? = nil
+
+    // Intensity calibration: displayed value = stored * rescaleSlope + rescaleIntercept.
+    // For NIfTI this reconstructs HU (CT) or the native intensity (MRI) for readouts.
+    var rescaleSlope: Double = 1.0
+    var rescaleIntercept: Double = 0.0
+    /// Unit label shown in the cursor readout ("HU" for CT, "Val" for MRI / unitless).
+    @Published var valueUnitLabel: String = "HU"
 
     /// Whether raw pixel data is available for CPU re-rendering
     var isRawDataAvailable: Bool { rawPixelData != nil }

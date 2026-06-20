@@ -88,6 +88,45 @@ final class VolumeData {
         self.worldToVoxelMatrix = voxelToWorldMatrix.inverse
     }
 
+    /// Initialize directly from a voxel→world affine (e.g. a NIfTI sform/qform).
+    /// The matrix is preserved verbatim — including handedness — so the original
+    /// spatial mapping survives for later mask write-back. Spacing and direction
+    /// cosines are derived from the matrix columns (not re-orthogonalized).
+    init(
+        voxels: UnsafeMutableBufferPointer<Int16>,
+        width: Int, height: Int, depth: Int,
+        voxelToWorld: simd_double4x4,
+        rescaleSlope: Double,
+        rescaleIntercept: Double,
+        seriesUID: String
+    ) {
+        self.voxels = voxels
+        self.width = width
+        self.height = height
+        self.depth = depth
+
+        let c0 = SIMD3<Double>(voxelToWorld.columns.0.x, voxelToWorld.columns.0.y, voxelToWorld.columns.0.z)
+        let c1 = SIMD3<Double>(voxelToWorld.columns.1.x, voxelToWorld.columns.1.y, voxelToWorld.columns.1.z)
+        let c2 = SIMD3<Double>(voxelToWorld.columns.2.x, voxelToWorld.columns.2.y, voxelToWorld.columns.2.z)
+        let c3 = voxelToWorld.columns.3
+        let sx = simd_length(c0), sy = simd_length(c1), sz = simd_length(c2)
+
+        self.spacingX = sx == 0 ? 1 : sx
+        self.spacingY = sy == 0 ? 1 : sy
+        self.spacingZ = sz == 0 ? 1 : sz
+        self.rowDirection = sx == 0 ? SIMD3<Double>(1, 0, 0) : c0 / sx
+        self.colDirection = sy == 0 ? SIMD3<Double>(0, 1, 0) : c1 / sy
+        self.sliceDirection = sz == 0 ? SIMD3<Double>(0, 0, 1) : c2 / sz
+        self.origin = SIMD3<Double>(c3.x, c3.y, c3.z)
+        self.rescaleSlope = rescaleSlope
+        self.rescaleIntercept = rescaleIntercept
+        self.seriesUID = seriesUID
+        self.sliceCount = depth
+        self.sliceStride = width * height
+        self.voxelToWorldMatrix = voxelToWorld
+        self.worldToVoxelMatrix = voxelToWorld.inverse
+    }
+
     deinit {
         voxels.deallocate()
     }

@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import simd
-@testable import OpenDicomViewer
+@testable import Lentis
 
 private func imageContext(
     orientation: [Double],
@@ -31,7 +31,7 @@ private func imageContext(
 func crossProduct() {
     let a = SIMD3<Double>(1, 0, 0)
     let b = SIMD3<Double>(0, 1, 0)
-    #expect(OpenDicomViewer.cross(a, b) == SIMD3<Double>(0, 0, 1))
+    #expect(Lentis.cross(a, b) == SIMD3<Double>(0, 0, 1))
 }
 
 @Test

@@ -311,6 +311,33 @@ class DICOMModel: ObservableObject {
         _volumeCache[key] = value
         volumeCacheLock.unlock()
     }
+
+    // MARK: - NIfTI state
+    /// Currently loaded NIfTI dataset (drives 4D timepoint switching + modality).
+    @Published var niftiDataset: NiftiDataset? = nil
+    /// Selected timepoint for 4D NIfTI volumes.
+    @Published var currentTimepoint: Int = 0
+    /// Manual modality override (CT/MRI); nil ⇒ use the auto-detected value.
+    @Published var modalityOverride: ImagingModality? = nil
+    /// Series index of the loaded NIfTI volume (-1 if none).
+    var niftiSeriesIndex: Int = -1
+
+    /// Effective modality: manual override if set, else auto-detected.
+    var effectiveModality: ImagingModality? { modalityOverride ?? niftiDataset?.detectedModality }
+
+    /// Register a pre-built volume (e.g. from a NIfTI file) under `cacheKey` so
+    /// panels can display it without any DICOM files. Returns the series index.
+    @discardableResult
+    func registerStandaloneVolume(_ volume: VolumeData, cacheKey: String, description: String) -> Int {
+        volumeCacheSet(cacheKey, volume)
+        if let existing = allSeries.firstIndex(where: { $0.id == cacheKey }) {
+            return existing
+        }
+        let series = DicomSeries(id: cacheKey, seriesNumber: allSeries.count + 1,
+                                 seriesDescription: description, images: [])
+        allSeries.append(series)
+        return allSeries.count - 1
+    }
     /// Background queue for volume building
     private let volumeBuildQueue: OperationQueue = {
         let q = OperationQueue()
@@ -682,10 +709,11 @@ class DICOMModel: ObservableObject {
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = true
         panel.canChooseFiles = true
-        panel.allowedContentTypes = [
-            .init(filenameExtension: "dcm")!,
-            .folder
-        ]
+        var types: [UTType] = [.folder]
+        for ext in ["nii", "gz", "dcm"] {
+            if let t = UTType(filenameExtension: ext) { types.append(t) }
+        }
+        panel.allowedContentTypes = types
         if panel.runModal() == .OK, let url = panel.url {
             load(url: url)
         }
@@ -697,6 +725,25 @@ class DICOMModel: ObservableObject {
 
         BenchmarkLogger.shared.start("load_total")
         BenchmarkLogger.shared.log(event: "load_start", dataset: url.lastPathComponent, detail: url.path)
+
+        // NIfTI files bypass the DICOM directory-scan path entirely.
+        if DICOMModel.isNiftiURL(url) {
+            cachingQueue.cancelAllOperations()
+            DispatchQueue.main.async {
+                self.errorMessage = nil
+                self.image = nil
+                self.rawPixelData = nil
+                self.allSeries = []
+                self.currentSeriesIndex = -1
+                self.currentImageIndex = -1
+                self.tags = []
+                self.currentSeriesInfo = ""
+                self.currentImageInfo = ""
+                self.resetAllPanels()
+                self.loadNifti(url: url)
+            }
+            return
+        }
 
         // Cancel any pending background work
         cachingQueue.cancelAllOperations()
@@ -2599,7 +2646,7 @@ class DICOMModel: ObservableObject {
             if direction == .nextImage || direction == .prevImage { return }
         }
 
-        if panel.panelMode == .mprSagittal || panel.panelMode == .mprCoronal {
+        if panel.panelMode.isMPR {
             switch direction {
             case .nextImage: navigateMPRPanel(panel, delta: 1)
             case .prevImage: navigateMPRPanel(panel, delta: -1)
@@ -2668,7 +2715,7 @@ class DICOMModel: ObservableObject {
         }
 
         // MPR mode: navigate slice index instead of image index
-        if panel.panelMode == .mprSagittal || panel.panelMode == .mprCoronal {
+        if panel.panelMode.isMPR {
             switch direction {
             case .nextImage: navigateMPRPanel(panel, delta: 1)
             case .prevImage: navigateMPRPanel(panel, delta: -1)
@@ -2758,7 +2805,7 @@ class DICOMModel: ObservableObject {
             case .slice2D:
                 guard source.imageIndex >= 0, source.imageIndex < sourceSeries.images.count else { return nil }
                 return sourceSeries.images[source.imageIndex].zLocation
-            case .mprSagittal, .mprCoronal, .mip:
+            case .mprAxial, .mprSagittal, .mprCoronal, .mip:
                 // For MPR/MIP, use imagePositionPatient z if available
                 return source.imagePositionPatient?.2
             }
@@ -2783,6 +2830,15 @@ class DICOMModel: ObservableObject {
                     if targetIdx != panel.mipSlabPosition {
                         panel.mipSlabPosition = targetIdx
                         loadMIPForPanel(panel)
+                    }
+                }
+            case .mprAxial:
+                if let vol = volumeCacheGet(targetSeries.id), vol.depth > 1 {
+                    let targetIdx = closestVolumeIndex(dimension: vol.depth, targetSeries: targetSeries, sourceZ: sourceZ, fallbackSource: source, sourceSeries: sourceSeries)
+                    if targetIdx != panel.mprSliceIndex {
+                        panel.mprSliceIndex = targetIdx
+                        updateMPRSpatialMetadata(panel, volume: vol)
+                        loadMPRSlice(for: panel)
                     }
                 }
             case .mprSagittal:
@@ -3272,7 +3328,7 @@ class DICOMModel: ObservableObject {
                     panel.setDisplayImage(newImg)
                 }
             }
-        case .mprSagittal, .mprCoronal, .mip:
+        case .mprAxial, .mprSagittal, .mprCoronal, .mip:
             // Re-render MPR/MIP slice with updated W/L
             if panel.panelMode == .mip, panel.rawPixelData == nil,
                let renderer = self.metalRenderer,
@@ -3545,6 +3601,10 @@ class DICOMModel: ObservableObject {
                 let img = s.images[panel.imageIndex]
                 panel.currentImageInfo = "Image \(img.instanceNumber) (\(panel.imageIndex + 1)/\(s.images.count))"
             }
+        case .mprAxial:
+            if let vol = volumeCacheGet(s.id) {
+                panel.currentImageInfo = "Axial \(panel.mprSliceIndex + 1)/\(vol.depth)"
+            }
         case .mprSagittal:
             if let vol = volumeCacheGet(s.id) {
                 panel.currentImageInfo = "Sagittal \(panel.mprSliceIndex + 1)/\(vol.width)"
@@ -3575,6 +3635,8 @@ class DICOMModel: ObservableObject {
                 return panel.numberOfFrames
             }
             return s.images.count
+        case .mprAxial:
+            return volumeCacheGet(s.id)?.depth ?? 0
         case .mprSagittal:
             return volumeCacheGet(s.id)?.width ?? 0
         case .mprCoronal:
@@ -3593,7 +3655,7 @@ class DICOMModel: ObservableObject {
                 return panel.currentFrameIndex
             }
             return panel.imageIndex
-        case .mprSagittal, .mprCoronal:
+        case .mprAxial, .mprSagittal, .mprCoronal:
             return panel.mprSliceIndex
         case .mip:
             return panel.mipSlabPosition
@@ -3617,7 +3679,7 @@ class DICOMModel: ObservableObject {
                 updateSpatialMetadataFromSeries(panel)
                 loadFileForPanel(panel, imageContext: series.images[idx])
             }
-        case .mprSagittal, .mprCoronal:
+        case .mprAxial, .mprSagittal, .mprCoronal:
             let total = totalSliceCount(for: panel)
             let idx = max(0, min(index, total - 1))
             if idx != panel.mprSliceIndex {
@@ -3810,9 +3872,20 @@ class DICOMModel: ObservableObject {
             }
 
             let engine = MPREngine(volume: volume)
+            panel.rescaleSlope = volume.rescaleSlope
+            panel.rescaleIntercept = volume.rescaleIntercept
             var slice: MPRSlice?
 
             switch panel.panelMode {
+            case .mprAxial:
+                // Initialize slice index to center if not yet set
+                if panel.mprSliceIndex <= 0 || panel.mprSliceIndex >= volume.depth {
+                    panel.mprSliceIndex = volume.depth / 2
+                }
+                let maxIndex = volume.depth - 1
+                let idx = min(max(0, panel.mprSliceIndex), maxIndex)
+                slice = engine.axialSlice(at: idx)
+
             case .mprSagittal:
                 // Initialize slice index to center if not yet set
                 if panel.mprSliceIndex <= 0 || panel.mprSliceIndex >= volume.width {
@@ -3858,6 +3931,14 @@ class DICOMModel: ObservableObject {
                 // Set spatial metadata for cross-reference lines.
                 // MPR slices flip Z (superior at top), so adjust origin and column direction.
                 switch panel.panelMode {
+                case .mprAxial:
+                    let origin = volume.voxelToWorld(SIMD3<Double>(0, 0, Double(panel.mprSliceIndex)))
+                    panel.imagePositionPatient = (origin.x, origin.y, origin.z)
+                    panel.imageOrientationPatient = [
+                        volume.rowDirection.x, volume.rowDirection.y, volume.rowDirection.z,
+                        volume.colDirection.x, volume.colDirection.y, volume.colDirection.z
+                    ]
+                    panel.pixelSpacing = (volume.spacingX, volume.spacingY)
                 case .mprSagittal:
                     let flippedOrigin = volume.voxelToWorld(SIMD3<Double>(Double(panel.mprSliceIndex), 0, Double(volume.depth - 1)))
                     panel.imagePositionPatient = (flippedOrigin.x, flippedOrigin.y, flippedOrigin.z)
@@ -3939,6 +4020,7 @@ class DICOMModel: ObservableObject {
         if let volume = volumeCacheGet(series.id) {
             let maxIndex: Int
             switch panel.panelMode {
+            case .mprAxial: maxIndex = volume.depth - 1
             case .mprSagittal: maxIndex = volume.width - 1
             case .mprCoronal: maxIndex = volume.height - 1
             default: return
@@ -3972,11 +4054,7 @@ class DICOMModel: ObservableObject {
                 }
             }
 
-        case .mprSagittal:
-            panel.mprSliceIndex = 0  // Reset; loadMPRSlice will center after volume is ready
-            loadMPRSlice(for: panel)
-
-        case .mprCoronal:
+        case .mprAxial, .mprSagittal, .mprCoronal:
             panel.mprSliceIndex = 0  // Reset; loadMPRSlice will center after volume is ready
             loadMPRSlice(for: panel)
 

@@ -31,3 +31,8 @@ DerivedData/
 # IDE
 .vscode/
 .idea/
+
+# Real / patient NIFTI data — never commit (PHI + large). Synthetic fixtures (synthetic_*) are OK.
+TestData/sub-*
+TestData/*.nii
+!TestData/synthetic_*

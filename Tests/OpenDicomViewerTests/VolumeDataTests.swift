@@ -1,6 +1,6 @@
 import Testing
 import simd
-@testable import OpenDicomViewer
+@testable import Lentis
 
 private func makeTestVolume() -> VolumeData {
     let buffer = UnsafeMutableBufferPointer<Int16>.allocate(capacity: 8)

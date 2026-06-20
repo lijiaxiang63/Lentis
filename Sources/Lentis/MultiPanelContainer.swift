@@ -222,6 +222,30 @@ struct PanelView: View {
                     .zIndex(55)
             }
 
+            // 4D NIfTI timepoint selector
+            if let ds = model.niftiDataset, ds.isMultiVolume, panel.seriesIndex == model.niftiSeriesIndex {
+                VStack {
+                    Spacer()
+                    HStack(spacing: 8) {
+                        Image(systemName: "square.stack.3d.up.fill")
+                        Text("Volume \(model.currentTimepoint + 1)/\(ds.timepointCount)")
+                            .font(.system(.caption, design: .monospaced))
+                        Stepper("", value: Binding(
+                            get: { model.currentTimepoint },
+                            set: { model.selectTimepoint($0) }
+                        ), in: 0...(ds.timepointCount - 1))
+                        .labelsHidden()
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.6))
+                    .foregroundStyle(.white)
+                    .cornerRadius(8)
+                    .padding(.bottom, 10)
+                }
+                .zIndex(56)
+            }
+
             // Error Overlay
             if let error = panel.errorMessage {
                 ContentUnavailableView {
@@ -1299,7 +1323,8 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
 
             panel.cursorPixelX = px
             panel.cursorPixelY = py
-            panel.cursorHU = huValue
+            // Apply intensity calibration: stored → HU (CT) / native intensity (MRI).
+            panel.cursorHU = huValue * panel.rescaleSlope + panel.rescaleIntercept
             panel.showCursorInfo = true
 
             // Compute patient coordinates if spatial metadata available
@@ -2012,7 +2037,7 @@ struct CursorInfoOverlay: View {
                         Text(String(format: "x: %.1f  y: %.1f  z: %.1f",
                              panel.cursorPatientX, panel.cursorPatientY, panel.cursorPatientZ))
                     }
-                    Text(String(format: "HU: %.0f  [%d, %d]",
+                    Text("\(panel.valueUnitLabel): " + String(format: "%.0f  [%d, %d]",
                         panel.cursorHU, panel.cursorPixelX, panel.cursorPixelY))
                 }
                 .font(.system(.caption2, design: .monospaced))
