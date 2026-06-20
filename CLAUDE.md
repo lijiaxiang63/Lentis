@@ -17,7 +17,7 @@ This file is the working record. Update it as phases complete.
 ## Build / Test / Run
 
 ```bash
-swift build                       # debug build (first run slow: compiles DCMTK .mm)
+swift build                       # debug build (~20s clean; zero native/system deps)
 ./scripts/package_app.sh          # release build → Lentis.app + Lentis.dmg (ad-hoc signed)
 swift test                        # full suite: MIXED XCTest + swift-testing
 swift test --filter nifti --filter dataset   # just the NIFTI tests
@@ -27,10 +27,10 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 ```
 
 - Toolchain: Swift 6.3, Xcode 26.4, macOS arm64. Bundle id `com.kalicooper.lentis`.
+  **Zero native/system dependencies** — pure Swift + Metal/AppKit (DCMTK/OpenJPEG gone in Phase 3).
 - `swift build` after adding a `PanelMode` case → the compiler flags every non-exhaustive
   `switch` (~10 sites). Fix each (usually mirror `.mprCoronal` or fold into a combined case).
-- Linker warns "built for newer macOS" from the prebuilt static libs — harmless.
-- **Git state:** Phases 1–2 are committed on branch **`lentis-nifti-conversion`** (off upstream
+- **Git state:** Phases 1–3 are committed on branch **`lentis-nifti-conversion`** (off upstream
   `master`); see `git log`. Not pushed (no remote configured). Real patient data
   (`TestData/sub-*`) is gitignored — only synthetic fixtures are tracked. Commit per phase going forward.
 
@@ -38,35 +38,35 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 
 ## Repository layout
 
-- SPM package/product/executable target = **`Lentis`**, sources in `Sources/Lentis/`.
-- Test target still named `OpenDicomViewerTests` (`Tests/OpenDicomViewerTests/`), uses
-  `@testable import Lentis`. (Rename deferred to Phase 3.)
-- `DCMTKWrapper/` target = Obj-C++ wrapper linking ~30 DCMTK + OpenJPEG **static libs in `libs/`**
-  (~40 MB). **To be deleted in Phase 3.**
-- `scripts/package_app.sh` builds the bundle; still copies `libs/.../dicom.dic` (drop in Phase 3).
+- SPM package/product/executable target = **`Lentis`**, sources in `Sources/Lentis/`. Plain
+  `executableTarget`, no native deps; only the tests target alongside it.
+- Test target = **`LentisTests`** (`Tests/LentisTests/`), uses `@testable import Lentis`.
+- **DCMTK fully removed (Phase 3):** `Sources/DCMTKWrapper/` and `libs/` (~52 MB static libs)
+  are deleted; recoverable from git history (before commit `1e4f5da`) if ever needed.
+- `scripts/package_app.sh` builds the bundle (no `dicom.dic` copy anymore).
 - `TestData/` holds real + synthetic NIFTI (see bottom). Gitignored: `.build/`, `*.app`, `*.dmg`.
 
 ### Key source files
 | File | Role |
 |---|---|
 | `App.swift` | `@main struct LentisApp`. Menus. `--benchmark <path>` auto-open. |
-| `DICOMModel.swift` (~4400 lines) | **Central `@ObservableObject` model.** Still named `DICOMModel` (Phase 3 rename). Loading, panels, volume cache, MPR/MIP, W/L, sync-scroll. |
-| `DICOMModel+Nifti.swift` | **NIFTI orchestration** (added): `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. |
-| `NIfTI.swift` | **NIFTI-1/2 reader** (added). Header/endianness/4D/9 dtypes, sform/qform affine, **pure-Swift DEFLATE** (`DeflateInflater`). Zero deps. |
-| `NiftiVolumeLoader.swift` | **`NiftiDataset`** (added): modality detection, Int16 quantization, percentile auto-window. |
-| `VolumeData.swift` | 3D Int16 voxel buffer + affine. **Two inits**: direction-cosine (DICOM) and full-affine (NIFTI, preserves matrix incl. handedness). |
-| `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:)` (CPU W/L). `VolumeBuilder.build` (DICOM→VolumeData, Phase 3 removal). |
+| `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/MIP, W/L, sync-scroll. DICOM ingestion removed (Phase 3). |
+| `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. |
+| `NIfTI.swift` | **NIFTI-1/2 reader**. Header/endianness/4D/9 dtypes, sform/qform affine, **pure-Swift DEFLATE** (`DeflateInflater`). Zero deps. |
+| `NiftiVolumeLoader.swift` | **`NiftiDataset`**: modality detection, Int16 quantization, percentile auto-window. |
+| `VolumeData.swift` | 3D Int16 voxel buffer + affine. **Two inits**: direction-cosine and full-affine (NIFTI, preserves matrix incl. handedness). |
+| `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:)` (CPU W/L). (`VolumeBuilder` removed in Phase 3.) |
 | `MetalVolumeRenderer.swift` | Metal compute, **MIP/MinIP/Average only**. Inline shader strings. Texture `.r16Sint`. W/L on raw stored values. |
-| `MultiPanelContainer.swift` (~2000 lines) | Multi-panel views, gestures, overlays, cursor readout, **4D selector** (added). |
-| `PanelState.swift` | Per-panel state. `PanelMode = .slice2D/.mprAxial/.mprSagittal/.mprCoronal/.mip` (`.mprAxial` added). `isMPR` helper. `rescaleSlope/Intercept`, `valueUnitLabel` (added). |
-| `SimpleDICOM.swift`, `MultiFrameDecoder.swift`, `TagView.swift` | DICOM-specific. **Phase 3 removal.** |
+| `MultiPanelContainer.swift` (~2000 lines) | Multi-panel views, gestures, overlays, cursor readout, **4D selector**. |
+| `PanelState.swift` | Per-panel state. `PanelMode = .slice2D/.mprAxial/.mprSagittal/.mprCoronal/.mip`. `isMPR` helper. `rescaleSlope/Intercept`, `valueUnitLabel`. (`.slice2D` now inert — NIFTI uses `.mprAxial`.) |
+| `ContentView.swift` | Root split view: sidebar (series list) + multi-panel detail. (Legacy single-view subtree deleted in Phase 3.) |
 
 ---
 
 ## Data & rendering pipeline (must understand)
 
 1. **2D slice rendering is CPU**, not GPU. Axial/sagittal/coronal go through
-   `MPREngine.renderSlice` (Swift per-pixel W/L loop) or DCMTK; **Metal is used only for MIP**.
+   `MPREngine.renderSlice` (Swift per-pixel W/L loop); **Metal is used only for MIP**.
    W/L drag is throttled to 60 Hz. The brief's "windowing = GPU uniform only" rule is **NOT yet
    met for slices** → that is the Phase 5 job (`MetalVolumeRenderer` already has the texture +
    in-shader W/L for MIP; extend it to render ortho slices → NSImage, or live MTKView).
@@ -80,7 +80,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
    timepoints (so every volume displays on one scale).
 4. **Volume display path for NIFTI:** `loadNifti` → `NiftiDataset` → `makeVolume(t)` →
    `registerStandaloneVolume(volume, cacheKey: dataset.seriesID, …)` (caches under a **stable
-   key** + appends a stub `DicomSeries` with empty `images`) → panel set to `.mprAxial` →
+   key** + appends a stub `ImageSeries` with empty `images`) → panel set to `.mprAxial` →
    `loadMPRSlice` → `MPREngine.axialSlice` + `renderSlice`. 4D switch replaces the cached volume
    under the same key and re-renders. `VolumeData.seriesUID` is distinct per timepoint (for future
    Metal re-upload); the **cache key** is stable.
@@ -94,14 +94,14 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 
 ## Critical gotchas (hard-won)
 
-- **gzip + DCMTK zlib interposition.** Apple `Compression` `COMPRESSION_ZLIB` *decode* is broken
-  inside the DCMTK-linked binary (DCMTK's bundled static zlib `inflate` interposes). The fix is a
-  **pure-Swift DEFLATE decoder** (`DeflateInflater` in `NIfTI.swift`) — keep it even after Phase 3
-  removes DCMTK (validated vs. real Python gzip: small/all-zero/70 KB multi-block all match).
-  Do NOT "simplify" back to the Compression framework.
+- **gzip decode = pure-Swift DEFLATE.** `DeflateInflater` in `NIfTI.swift` (validated vs. real
+  Python gzip: small/all-zero/70 KB multi-block + real 34 MB `.nii.gz` all match). Originally
+  written because Apple `Compression` `COMPRESSION_ZLIB` *decode* was broken by DCMTK's bundled
+  static zlib `inflate` interposing. DCMTK is gone now, but keep the pure-Swift decoder — it's
+  dependency-free and correct. Do NOT "simplify" back to the Compression framework.
 - **`Data.withUnsafeBytes { $0[0] }` footgun.** The untyped closure infers `UnsafePointer<Int>`,
   so `$0[0]` reads 8 bytes as an `Int`. Always type it: `{ (raw: UnsafeRawBufferPointer) in raw[0] }`.
-- **Adding a `PanelMode` case** breaks ~10 exhaustive switches across `DICOMModel.swift`. Build,
+- **Adding a `PanelMode` case** breaks several exhaustive switches across `ViewerModel.swift`. Build,
   read the compiler notes, add the case (mirror coronal / use `vol.depth`).
 - **Pure-Swift inflate is bit-by-bit** → ~1.5 s for a 35 MB `.nii.gz`, ~20 s for the 445 MB MPRAGE
   (background thread, OK for now). Optimize with table-driven Huffman if it bites.
@@ -119,14 +119,18 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
   added (above). Verified on **real CT + real T1 MRI** (correct modality, affine, HU/intensity) and
   via GUI (CT loads/renders axial/scrolls; 4D MRI loads with auto-window + timepoint selector).
   13 NIFTI unit tests + full suite green.
-- [ ] **Phase 3 — Remove DICOM/DCMTK/OpenJPEG.** Delete `SimpleDICOM.swift`,
-  `MultiFrameDecoder.swift`, `TagView.swift`/tag inspector, `Sources/DCMTKWrapper/`, `libs/`, and
-  DCMTK-dependent tests (`SimpleDICOMTests`, `MultiFrameCineTests`, parts of `MPREngineTests`).
-  Strip DCMTK from `DICOMModel` (gut the DICOM file-loading + `VolumeBuilder.build`; keep the
-  VolumeData/MPR rendering path); drop the `DCMTKWrapper` target + linkage from `Package.swift`;
-  drop `dicom.dic` copy from `package_app.sh`. Rename `DICOMModel`→neutral (e.g. `ViewerModel`),
-  `DicomSeries`→`ImageSeries`, drop `dcmtkImage`. **Work incrementally, stay compilable.** Accept:
-  `package_app.sh` builds with NO static libs; NIFTI display unaffected.
+- [x] **Phase 3 — Remove DICOM/DCMTK/OpenJPEG.** Done in 6 commits on `lentis-nifti-conversion`.
+  Deleted: DICOM-only UI (CineToolbar, TagView, series thumbnails, the legacy single-view
+  ContentView subtree ~648 lines), `SimpleDICOM.swift`, `MultiFrameDecoder.swift`,
+  `Sources/DCMTKWrapper/`, `libs/`, DCMTK-dependent tests. Gutted DICOM ingestion from the model
+  (45 methods, ~2500 lines) and made all panel navigation volumetric-only; removed `VolumeBuilder`
+  from `MPREngine`. Unlinked DCMTK from `Package.swift`; dropped `dicom.dic` from
+  `package_app.sh`. Renamed `DICOMModel`→`ViewerModel`, `DicomSeries`→`ImageSeries`,
+  `DicomImageContext`→`ImageContext`, test target→`LentisTests`. **Verified:** clean `swift build`
+  (no static-lib warnings), 31 tests green, `otool -L` shows no DCMTK/OpenJPEG linkage, GUI renders
+  synthetic CT (axial + scroll) and real T1 MRI (auto-window). Remaining cosmetic debt (defer):
+  stale `// OpenDicomViewer` file headers, `PanelInteractive/DICOMInteractView` names, the inert
+  `.slice2D` case + vestigial `ImageSeries.images`/`ImageContext` struct.
 - [ ] **Phase 4 — Neurological orientation + tri-view.** Orient axial/sagittal/coronal from the
   affine (patient-left = screen-left; currently **radiological**, R on screen-left), L/R/A/P/S/I
   labels. Centralize voxel↔world↔screen transforms in one place. NIFTI affine is **RAS**; legacy
