@@ -30,7 +30,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
   **Zero native/system dependencies** — pure Swift + Metal/AppKit (DCMTK/OpenJPEG gone in Phase 3).
 - `swift build` after adding a `PanelMode` case → the compiler flags every non-exhaustive
   `switch` (~10 sites). Fix each (usually mirror `.mprCoronal` or fold into a combined case).
-- **Git state:** Phases 1–3 are committed on branch **`lentis-nifti-conversion`** (off upstream
+- **Git state:** Phases 1–4 are committed on branch **`lentis-nifti-conversion`** (off upstream
   `master`); see `git log`. Not pushed (no remote configured). Real patient data
   (`TestData/sub-*`) is gitignored — only synthetic fixtures are tracked. Commit per phase going forward.
 
@@ -53,11 +53,12 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 | `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/MIP, W/L, sync-scroll. DICOM ingestion removed (Phase 3). |
 | `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. |
 | `NIfTI.swift` | **NIFTI-1/2 reader**. Header/endianness/4D/9 dtypes, sform/qform affine, **pure-Swift DEFLATE** (`DeflateInflater`). Zero deps. |
-| `NiftiVolumeLoader.swift` | **`NiftiDataset`**: modality detection, Int16 quantization, percentile auto-window. |
-| `VolumeData.swift` | 3D Int16 voxel buffer + affine. **Two inits**: direction-cosine and full-affine (NIFTI, preserves matrix incl. handedness). |
-| `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:)` (CPU W/L). (`VolumeBuilder` removed in Phase 3.) |
+| `NiftiVolumeLoader.swift` | **`NiftiDataset`**: modality detection, Int16 quantization, percentile auto-window. **`makeVolume` reorients to canonical RAS** (Phase 4) — folds the relabel/flip into the quantization pass. |
+| `Orientation.swift` | **Single source of orientation truth** (Phase 4). `anatomicalDirection(of:)` (RAS labels) + `closestCanonicalReorientation(affine:)` → `CanonicalReorientation` (axis permutation + flips, lossless, invertible). Pure; no deps. |
+| `VolumeData.swift` | 3D Int16 voxel buffer + affine. **Two inits**: direction-cosine and full-affine (NIFTI). For NIFTI `voxelToWorldMatrix` is the **canonical RAS** affine; `originalAffine` + `reorientation` are retained for mask write-back. |
+| `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:)` (CPU W/L). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors + cross-ref metadata both read it. (`VolumeBuilder` removed in Phase 3.) |
 | `MetalVolumeRenderer.swift` | Metal compute, **MIP/MinIP/Average only**. Inline shader strings. Texture `.r16Sint`. W/L on raw stored values. |
-| `MultiPanelContainer.swift` (~2000 lines) | Multi-panel views, gestures, overlays, cursor readout, **4D selector**. |
+| `MultiPanelContainer.swift` (~2000 lines) | Multi-panel views, gestures, overlays, cursor readout, **4D selector**, `OrientationLabelsOverlay` (**RAS-aware** since Phase 4). |
 | `PanelState.swift` | Per-panel state. `PanelMode = .slice2D/.mprAxial/.mprSagittal/.mprCoronal/.mip`. `isMPR` helper. `rescaleSlope/Intercept`, `valueUnitLabel`. (`.slice2D` now inert — NIFTI uses `.mprAxial`.) |
 | `ContentView.swift` | Root split view: sidebar (series list) + multi-panel detail. (Legacy single-view subtree deleted in Phase 3.) |
 
@@ -78,15 +79,26 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
    fits Int16 and spans ≥256 levels → **HU presets need no conversion**. Float data with small
    range is scaled across ~64000 levels. 4D quantization uses the **global** range over all
    timepoints (so every volume displays on one scale).
-4. **Volume display path for NIFTI:** `loadNifti` → `NiftiDataset` → `makeVolume(t)` →
-   `registerStandaloneVolume(volume, cacheKey: dataset.seriesID, …)` (caches under a **stable
-   key** + appends a stub `ImageSeries` with empty `images`) → panel set to `.mprAxial` →
-   `loadMPRSlice` → `MPREngine.axialSlice` + `renderSlice`. 4D switch replaces the cached volume
-   under the same key and re-renders. `VolumeData.seriesUID` is distinct per timepoint (for future
-   Metal re-upload); the **cache key** is stable.
-5. **Modality** lives on the model: `niftiDataset.detectedModality`, `modalityOverride`,
+4. **Volume display path for NIFTI:** `loadNifti` → `NiftiDataset` → `makeVolume(t)` (**reorients
+   to canonical RAS**, see 5) → `registerStandaloneVolume(volume, cacheKey: dataset.seriesID, …)`
+   (caches under a **stable key** + appends a stub `ImageSeries` with empty `images`) → panel set
+   to `.mprAxial` → `loadMPRSlice` → `MPREngine.axialSlice` + `renderSlice`. 4D switch replaces the
+   cached volume under the same key and re-renders. `VolumeData.seriesUID` is distinct per timepoint
+   (for future Metal re-upload); the **cache key** is stable.
+5. **Orientation = canonical RAS + fixed neurological flips (Phase 4).** NIFTI world space is RAS+
+   (+x=R, +y=A, +z=S). `Orientation.closestCanonicalReorientation` computes the axis permutation +
+   flips that bring the voxel grid to closest-canonical RAS (i→R, j→A, k→S); `makeVolume` applies it
+   (lossless whole-axis relabel, **no resampling**) and stores `originalAffine` + `reorientation` for
+   mask write-back. Because every volume is then canonical, `MPREngine.planeGeometry` applies a
+   **fixed** flip per plane for the standard neurological layout (buffer row 0 = screen top, col 0 =
+   left): axial L-left/R-right, A-top/P-bottom; coronal L-left/R-right, S-top/I-bottom; sagittal
+   A-left/P-right, S-top/I-bottom. The extractors, the cross-ref/label metadata (`loadMPRSlice`,
+   `updateMPRSpatialMetadata`), and `OrientationLabelsOverlay` (RAS) all read this one definition, so
+   pixels + lines + labels can't diverge. The old `flipZ` heuristic + per-plane sign-flip blocks are gone.
+   (`isSeriesVolumetric` is now a cached-volume check, so the per-panel MPR toolbar works for NIFTI.)
+6. **Modality** lives on the model: `niftiDataset.detectedModality`, `modalityOverride`,
    `effectiveModality`. Detection heuristic: `min ≤ -500 && fraction(v < -200) ≥ 2%` ⇒ CT.
-6. **Cursor readout:** `cursorHU = stored * panel.rescaleSlope + panel.rescaleIntercept`, label
+7. **Cursor readout:** `cursorHU = stored * panel.rescaleSlope + panel.rescaleIntercept`, label
    `panel.valueUnitLabel` ("HU" for CT, "Val" for MRI). (On-screen overlay needs a real
    NSTrackingArea mouse event — synthetic computer-use moves may not trigger it.)
 
@@ -103,6 +115,12 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
   so `$0[0]` reads 8 bytes as an `Int`. Always type it: `{ (raw: UnsafeRawBufferPointer) in raw[0] }`.
 - **Adding a `PanelMode` case** breaks several exhaustive switches across `ViewerModel.swift`. Build,
   read the compiler notes, add the case (mirror coronal / use `vol.depth`).
+- **Orientation lives in ONE place: `MPREngine.planeGeometry`** (Phase 4). The render chain maps
+  **buffer row 0 → screen top, col 0 → left** (CGImage row 0 = top; NSImageView draws upright) —
+  confirmed on `synthetic_orient` octant markers. Volumes are already canonical RAS (i→R, j→A, k→S),
+  so each plane uses a *fixed* flip; do **not** reintroduce per-file/`sliceDirection` heuristics. If
+  you add or change a plane/flip, edit `planeGeometry` only — extractors, cross-ref metadata, and
+  labels all read it, and the corner-orientation tests in `MPREngineTests` will catch a sign error.
 - **Pure-Swift inflate is bit-by-bit** → ~1.5 s for a 35 MB `.nii.gz`, ~20 s for the 445 MB MPRAGE
   (background thread, OK for now). Optimize with table-driven Huffman if it bites.
 - **RTK shell proxy** (user's global `~/.claude`) rewrites `grep`→`rg` and can mangle
@@ -112,11 +130,14 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 
 ## Phase status & roadmap
 
-> **▶ RESUME POINT — Phases 1–3 complete & committed** on branch `lentis-nifti-conversion`
+> **▶ RESUME POINT — Phases 1–4 complete & committed** on branch `lentis-nifti-conversion`
 > (not pushed; no remote). The app builds with **zero native deps**, runs, and renders real
-> CT/MRI. `swift test` green (31). **Next: Phase 4 — neurological orientation + tri-view.**
-> Known issue Phase 4 fixes: real-MRI "axial" slices currently display in a coronal-looking,
-> **radiological** orientation (R on screen-left); orientation is not yet derived from the affine.
+> CT/MRI in correct **neurological** orientation. `swift test` green (42). **Next: Phase 5 —
+> modality-aware W/L (GPU).**
+> Phase 4 outcome (verified in GUI on `synthetic_orient` + real CT + real T1): every NIFTI is
+> reoriented to canonical RAS at load, so axial/sagittal/coronal are true anatomical planes with
+> L-on-left neurological display and correct L/R/A/P/S/I labels. The old radiological /
+> "coronal-looking" symptom is gone.
 
 - [x] **Phase 1 — Rebrand to Lentis.** SPM/target/dir/app-struct renamed; menus/About/Help show
   Lentis; `package_app.sh` + bundle id updated; `UpdateChecker` removed (phoned home to upstream).
@@ -138,11 +159,20 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
   synthetic CT (axial + scroll) and real T1 MRI (auto-window). Remaining cosmetic debt (defer):
   stale `// OpenDicomViewer` file headers, `PanelInteractive/DICOMInteractView` names, the inert
   `.slice2D` case + vestigial `ImageSeries.images`/`ImageContext` struct.
-- [ ] **Phase 4 — Neurological orientation + tri-view.** Orient axial/sagittal/coronal from the
-  affine (patient-left = screen-left; currently **radiological**, R on screen-left), L/R/A/P/S/I
-  labels. Centralize voxel↔world↔screen transforms in one place. NIFTI affine is **RAS**; legacy
-  world space is **LPS** — reconcile. Wire `setupMPRLayout` to use `.mprAxial` for the tri-view.
-  Verify with `TestData/synthetic_orient.nii.gz` (known octant markers).
+- [x] **Phase 4 — Neurological orientation + tri-view.** Done in 5 commits on `lentis-nifti-conversion`.
+  Added `Orientation.swift` (RAS labels + closest-canonical reorientation); `NiftiDataset.makeVolume`
+  reorients every volume to canonical RAS (i→R, j→A, k→S) — lossless, original affine + reorientation
+  retained for write-back. Centralized the per-plane neurological flips + display dirs in
+  `MPREngine.planeGeometry` (replacing the `flipZ` heuristic); `loadMPRSlice` /
+  `updateMPRSpatialMetadata` now take cross-ref/label metadata from that one source. Fixed the
+  orientation labels to **RAS** (`anatomicalDirection`, was LPS). Wired `setupMPRLayout` panel 0 →
+  `.mprAxial`; fixed `isSeriesVolumetric` (cached-volume check) so the MPR toolbar enables for NIFTI.
+  Reconciliation decision: world space stays **RAS** (NIFTI-native); only the one LPS label site was
+  fixed — no global LPS conversion. **Verified:** 42 tests green (added Orientation + canonical-volume
+  + neurological-slice tests); GUI on `synthetic_orient` shows correct octant intensities + L/R/A/P/S/I
+  in all three planes; real CT (was radiological) + real T1 (was "coronal-looking") now render as
+  proper neurological axial. Cosmetic debt still deferred: `// OpenDicomViewer` headers,
+  `PanelDICOMInteractView` names, inert `.slice2D`, vestigial `ImageContext`/`ImageSeries.images`.
 - [ ] **Phase 5 — Modality-aware W/L (GPU).** Move 2D-slice W/L into a Metal shader (uniform-driven
   from raw voxels) — fixes the CPU-render deviation. CT: extensible HU preset table incl.
   **Brain `(0,80)`** (low/high), bone/subdural/stroke; instant. MRI: percentile auto-window
@@ -165,8 +195,9 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
   calcification blob → reads as CT), `synthetic_mri.nii.gz` (non-negative → MRI),
   `synthetic_mri_4d.nii.gz` (5 timepoints), `synthetic_orient.nii.gz` (octant markers for
   orientation checks). All 64×64×48, 1 mm iso, RAS affine, origin at center.
-- Standalone reader check (no DICOM/UI deps), fast real-data validation:
+- Standalone reader check (no DICOM/UI deps), fast real-data validation (entry file must be named
+  `main.swift` for top-level code):
   ```bash
-  swiftc -O /tmp/main.swift Sources/Lentis/NIfTI.swift \
-    Sources/Lentis/NiftiVolumeLoader.swift Sources/Lentis/VolumeData.swift -o /tmp/realcheck
+  swiftc -O /tmp/main.swift Sources/Lentis/NIfTI.swift Sources/Lentis/NiftiVolumeLoader.swift \
+    Sources/Lentis/VolumeData.swift Sources/Lentis/Orientation.swift -o /tmp/realcheck
   ```
