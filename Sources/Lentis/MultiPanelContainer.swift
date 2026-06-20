@@ -56,9 +56,9 @@ struct MultiPanelContainer: View {
             let rows = layout.rows
             let cols = layout.columns
 
-            VStack(spacing: 1) {
+            VStack(spacing: 2) {
                 ForEach(0..<rows, id: \.self) { row in
-                    HStack(spacing: 1) {
+                    HStack(spacing: 2) {
                         ForEach(0..<cols, id: \.self) { col in
                             let index = row * cols + col
                             if index < model.panels.count {
@@ -103,7 +103,7 @@ struct EmptyPanelView: View {
                 Image(systemName: "rectangle.dashed")
                     .font(.system(size: 32))
                     .foregroundStyle(.tertiary)
-                Text("Drag a series here, or drop a DICOM folder")
+                Text("Drag a series here, or drop a NIfTI file")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
@@ -1868,7 +1868,9 @@ struct OrientationLabelsOverlay: View {
                     .position(x: w / 2, y: 16)
             }
             .font(.system(size: 14, weight: .bold, design: .monospaced))
-            .foregroundStyle(.yellow.opacity(0.8))
+            .foregroundStyle(.yellow)
+            // Dark halo so the letters stay legible over bright slices.
+            .shadow(color: .black.opacity(0.9), radius: 1.5)
             .allowsHitTesting(false)
         }
     }

@@ -37,8 +37,8 @@ struct HelpView: View {
 
                     // Opening Files
                     helpSection("Opening Files") {
-                        Text("Use **File > Open** (Cmd+O) or click the **Open** button in the sidebar to select a DICOM folder or file. You can also **drag and drop** a folder onto the viewer.")
-                        Text("The sidebar lists all series found in the opened folder. Click a series to display it in the active panel.")
+                        Text("Use **File > Open** (Cmd+O) or click the **Open** button in the sidebar to select a NIfTI file (`.nii` / `.nii.gz`). You can also **drag and drop** a file onto the viewer.")
+                        Text("The sidebar lists the loaded series. Click a series to display it in the active panel.")
                     }
 
                     // Panel Layouts
