@@ -456,34 +456,54 @@ class MPREngine {
         guard let destData = context.data else { return nil }
         let dst = destData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
 
-        let windowBottom = wc - (ww / 2.0)
-        let a = max(0.0, min(1.0, maskAlpha))
-        let cr = max(0.0, min(1.0, maskColor.x))
-        let cg = max(0.0, min(1.0, maskColor.y))
-        let cb = max(0.0, min(1.0, maskColor.z))
+        // Same Float + precomputed-reciprocal W/L as the grayscale path (base in
+        // [0,1] here), with the opaque-color "over" blend pre-folded: precompute
+        // `c·a` and `1−a` so each labeled pixel is `g·(1−a) + c·a` in two FMAs.
+        // Parallelised across pixel bands for megapixel slices — this is the
+        // segmentation hot path (and what --benchmark exercises via the demo mask).
+        let windowBottom = Float(wc - (ww / 2.0))
+        let scale = Float(1.0) / Float(ww)
+        let a = Float(max(0.0, min(1.0, maskAlpha)))
+        let ia = 1 - a
+        let cra = Float(max(0.0, min(1.0, maskColor.x))) * a
+        let cga = Float(max(0.0, min(1.0, maskColor.y))) * a
+        let cba = Float(max(0.0, min(1.0, maskColor.z))) * a
 
         slice.pixelData.withUnsafeBytes { rawBuf in
             guard let src = rawBuf.baseAddress?.assumingMemoryBound(to: Int16.self),
                   slice.pixelData.count >= totalPixels * 2 else { return }
-            for i in 0..<totalPixels {
-                var norm = (Double(src[i]) - windowBottom) / ww
-                if invert { norm = 1.0 - norm }
-                let g = max(0.0, min(1.0, norm))   // grayscale base in [0,1]
-
-                var r = g, gg = g, b = g
-                if mask.labels[i] != 0 {
-                    // Straight "over" blend of an opaque color at coverage `a`.
-                    r  = g * (1 - a) + cr * a
-                    gg = g * (1 - a) + cg * a
-                    b  = g * (1 - a) + cb * a
+            mask.labels.withUnsafeBufferPointer { labels in
+                @inline(__always) func composite(_ lo: Int, _ hi: Int) {
+                    var i = lo
+                    while i < hi {
+                        var g = (Float(src[i]) - windowBottom) * scale
+                        if invert { g = 1.0 - g }
+                        if g < 0 { g = 0 } else if g > 1 { g = 1 }
+                        var r = g, gg = g, b = g
+                        if labels[i] != 0 {
+                            let base = g * ia          // straight "over" blend, opaque color
+                            r = base + cra; gg = base + cga; b = base + cba
+                        }
+                        let o = i * 4
+                        // Opaque output (alpha 255); RGB already holds the blend, which
+                        // equals its premultiplied form at alpha 1 (premultipliedLast).
+                        dst[o]     = UInt8(max(0, min(255, r  * 255)))
+                        dst[o + 1] = UInt8(max(0, min(255, gg * 255)))
+                        dst[o + 2] = UInt8(max(0, min(255, b  * 255)))
+                        dst[o + 3] = 255
+                        i += 1
+                    }
                 }
-                let o = i * 4
-                // Output is opaque (alpha 255); RGB already holds the blend, which
-                // equals its own premultiplied form at alpha 1 (premultipliedLast).
-                dst[o]     = UInt8(max(0, min(255, r  * 255)))
-                dst[o + 1] = UInt8(max(0, min(255, gg * 255)))
-                dst[o + 2] = UInt8(max(0, min(255, b  * 255)))
-                dst[o + 3] = 255
+                if totalPixels >= parallelToneMapThreshold {
+                    let bands = 8
+                    let chunk = (totalPixels + bands - 1) / bands
+                    DispatchQueue.concurrentPerform(iterations: bands) { bnd in
+                        let lo = bnd * chunk, hi = min(totalPixels, lo + chunk)
+                        if lo < hi { composite(lo, hi) }
+                    }
+                } else {
+                    composite(0, totalPixels)
+                }
             }
         }
 
