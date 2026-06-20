@@ -57,11 +57,6 @@ private class KeyInterceptorView: NSView {
         case "p": model.activeTool = .pan; return true
         case "z": model.activeTool = .zoom; return true
         case "h": model.flipHorizontalForPanel(model.activePanel); return true
-        case " ":
-            if let panel = model.activePanel, panel.isMultiFrame && panel.numberOfFrames > 1 {
-                model.toggleCinePlayback(panel); return true
-            }
-            return false
         default:
             return super.performKeyEquivalent(with: event)
         }

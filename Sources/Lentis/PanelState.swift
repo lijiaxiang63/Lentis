@@ -18,7 +18,6 @@
 // Licensed under the MIT License. See LICENSE for details.
 
 import SwiftUI
-import DCMTKWrapper
 
 // MARK: - Layout Configuration
 enum ViewerLayout: String, CaseIterable, Identifiable {
@@ -181,9 +180,6 @@ class PanelState: ObservableObject, Identifiable {
     @Published var minPixelValue: Double = 0.0
     @Published var maxPixelValue: Double = 1.0
 
-    // DICOM Tags
-    @Published var tags: [DicomElement] = []
-
     // UI State
     @Published var currentSeriesInfo: String = ""
     @Published var currentImageInfo: String = ""
@@ -199,7 +195,6 @@ class PanelState: ObservableObject, Identifiable {
     var samples: Int = 1
     var isMonochrome1: Bool = false
     var isSigned: Bool = false
-    var dcmtkImage: DCMTKImageObject? = nil
 
     // Intensity calibration: displayed value = stored * rescaleSlope + rescaleIntercept.
     // For NIfTI this reconstructs HU (CT) or the native intensity (MRI) for readouts.
@@ -290,7 +285,6 @@ class PanelState: ObservableObject, Identifiable {
         histogramData = []
         minPixelValue = 0.0
         maxPixelValue = 1.0
-        tags = []
         currentSeriesInfo = ""
         currentImageInfo = ""
         errorMessage = nil
@@ -303,7 +297,6 @@ class PanelState: ObservableObject, Identifiable {
         samples = 1
         isMonochrome1 = false
         isSigned = false
-        dcmtkImage = nil
         imagePositionPatient = nil
         imageOrientationPatient = nil
         pixelSpacing = nil

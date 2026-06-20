@@ -1621,18 +1621,9 @@ struct PanelThumbnailPopup: View {
                 .background(.black.opacity(0.7))
                 .cornerRadius(4)
 
-            if let img = model.getCachedImageForPanel(panel, at: index) {
-                Image(nsImage: img)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 80, height: 80)
-                    .background(Color.black)
-                    .cornerRadius(4)
-            } else {
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.gray.opacity(0.3))
-                    .frame(width: 80, height: 80)
-            }
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Color.gray.opacity(0.3))
+                .frame(width: 80, height: 80)
         }
         .padding(4)
         .background(.ultraThinMaterial)
