@@ -828,6 +828,49 @@ class ViewerModel: ObservableObject {
         }
     }
 
+    // MARK: - Crosshair (3D linkage)
+
+    /// Place the shared 3D crosshair at `world` (RAS mm) — typically from a
+    /// click/drag in `source`. Every *other* panel relocates so its slice (or
+    /// MIP slab) passes through the point, reusing the async + coalesced MPR/MIP
+    /// render path (so drag spam costs no more than fast scrolling). The source
+    /// panel isn't moved: the click was on its displayed slice, so the point is
+    /// already on its plane. All panels redraw their crosshair lines because the
+    /// overlay observes `crosshairWorld` (@Published).
+    ///
+    /// This is the true 3D cross-panel link that replaces the old z-only
+    /// `syncScrollFromPanel` proportional mapping: orthogonal planes correctly
+    /// stay put unless the in-plane click actually moved their slice index.
+    func setCrosshair(_ world: SIMD3<Double>, from source: PanelState) {
+        crosshairWorld = world
+
+        for panel in panels where panel.id != source.id {
+            guard panel.seriesIndex >= 0, panel.seriesIndex < allSeries.count,
+                  let vol = cachedVolume(forSeriesIndex: panel.seriesIndex) else { continue }
+            let engine = MPREngine(volume: vol)
+            switch panel.panelMode {
+            case .mprAxial, .mprSagittal, .mprCoronal:
+                guard let idx = engine.orthogonalSliceIndex(for: panel.panelMode, containing: world)
+                else { continue }
+                if idx != panel.mprSliceIndex {
+                    panel.mprSliceIndex = idx
+                    updateMPRSpatialMetadata(panel, volume: vol)
+                    loadMPRSlice(for: panel)
+                }
+            case .mip:
+                // MIP is an axial slab; track the crosshair's superior (z) level.
+                guard vol.depth > 1 else { continue }
+                let z = min(max(0, Int(vol.worldToVoxel(world).z.rounded())), vol.depth - 1)
+                if z != panel.mipSlabPosition {
+                    panel.mipSlabPosition = z
+                    loadMIPForPanel(panel)
+                }
+            case .slice2D:
+                continue
+            }
+        }
+    }
+
     /// Synchronized scrolling: when one panel scrolls, sync others to the same spatial position.
     /// Uses z-location matching when available, falls back to proportional matching.
     private func syncScrollFromPanel(_ source: PanelState) {
