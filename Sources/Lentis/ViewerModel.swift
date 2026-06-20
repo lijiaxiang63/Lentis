@@ -1293,7 +1293,18 @@ class ViewerModel: ObservableObject {
         completion(nil, "Volume not available")
     }
 
-    /// Load an MPR slice for a panel (sagittal or coronal reformat)
+    /// Load an MPR slice for a panel (axial / sagittal / coronal reformat).
+    ///
+    /// The heavy work — slice extraction (a cache-hostile gather for sagittal /
+    /// coronal), the per-pixel W/L render, and the NSImage allocation — runs on
+    /// the panel's serial background queue, NOT the main thread. For a large
+    /// volume (e.g. the 344×1024×1024 MPRAGE, whose long plane is a full
+    /// 1024×1024 megapixel) doing this synchronously per scroll tick froze the
+    /// UI. Renders are coalesced: each navigation cancels queued renders, and a
+    /// finished render is dropped if the panel has since moved to another slice
+    /// or mode — so fast scrubbing only pays for the in-flight render plus the
+    /// latest target, and the main thread never blocks. The previously displayed
+    /// slice stays on screen until the new one is ready (no spinner flicker).
     func loadMPRSlice(for panel: PanelState) {
         guard panel.seriesIndex >= 0, panel.seriesIndex < allSeries.count else { return }
         panel.isLoading = true
@@ -1312,83 +1323,85 @@ class ViewerModel: ObservableObject {
                 return
             }
 
-            let engine = MPREngine(volume: volume)
+            // --- main thread: cheap setup only (pick & clamp index, capture params) ---
             panel.rescaleSlope = volume.rescaleSlope
             panel.rescaleIntercept = volume.rescaleIntercept
-            var slice: MPRSlice?
 
-            switch panel.panelMode {
-            case .mprAxial:
-                // Initialize slice index to center if not yet set
-                if panel.mprSliceIndex <= 0 || panel.mprSliceIndex >= volume.depth {
-                    panel.mprSliceIndex = volume.depth / 2
-                }
-                let maxIndex = volume.depth - 1
-                let idx = min(max(0, panel.mprSliceIndex), maxIndex)
-                slice = engine.axialSlice(at: idx)
-
-            case .mprSagittal:
-                // Initialize slice index to center if not yet set
-                if panel.mprSliceIndex <= 0 || panel.mprSliceIndex >= volume.width {
-                    panel.mprSliceIndex = volume.width / 2
-                }
-                let maxIndex = volume.width - 1
-                let idx = min(max(0, panel.mprSliceIndex), maxIndex)
-                slice = engine.sagittalSlice(at: idx)
-
-            case .mprCoronal:
-                // Initialize slice index to center if not yet set
-                if panel.mprSliceIndex <= 0 || panel.mprSliceIndex >= volume.height {
-                    panel.mprSliceIndex = volume.height / 2
-                }
-                let maxIndex = volume.height - 1
-                let idx = min(max(0, panel.mprSliceIndex), maxIndex)
-                slice = engine.coronalSlice(at: idx)
-
+            let mode = panel.panelMode
+            let maxIndex: Int
+            switch mode {
+            case .mprAxial:    maxIndex = volume.depth - 1
+            case .mprSagittal: maxIndex = volume.width - 1
+            case .mprCoronal:  maxIndex = volume.height - 1
             default:
                 panel.isLoading = false
                 return
             }
-
-            guard let mprSlice = slice else {
-                panel.isLoading = false
-                panel.errorMessage = "MPR slice extraction failed"
-                return
+            // Center on first show (index not yet set).
+            if panel.mprSliceIndex <= 0 || panel.mprSliceIndex > maxIndex {
+                panel.mprSliceIndex = (maxIndex + 1) / 2
             }
+            let targetIndex = min(max(0, panel.mprSliceIndex), maxIndex)
 
-            // Use panel's W/L, fall back to initial values from 2D slice, then hardcoded defaults
+            // W/L: panel value, else the seeded initial, else a generic fallback.
             let ww = panel.windowWidth > 0 ? panel.windowWidth : (panel.initialWindowWidth > 0 ? panel.initialWindowWidth : 2000)
-            let wc = (panel.windowWidth > 0) ? panel.windowCenter : (panel.initialWindowWidth > 0 ? panel.initialWindowCenter : 500)
+            let wc = panel.windowWidth > 0 ? panel.windowCenter : (panel.initialWindowWidth > 0 ? panel.initialWindowCenter : 500)
+            let invert = panel.isInverted
 
-            if let image = MPREngine.renderSlice(mprSlice, ww: ww, wc: wc, invert: panel.isInverted) {
-                panel.setDisplayImage(image)
-                panel.imageWidth = mprSlice.width
-                panel.imageHeight = mprSlice.height
-                panel.rawPixelData = mprSlice.pixelData
-                panel.bitDepth = 16
-                panel.isSigned = true
-                panel.samples = 1
+            // --- background: extract + render; coalesce via cancel + staleness check ---
+            panel.loadingQueue.cancelAllOperations()
+            let op = BlockOperation()
+            op.addExecutionBlock { [weak op, weak panel] in
+                guard let op = op, !op.isCancelled, let panel = panel else { return }
+                // Strong `volume` capture keeps the buffer alive through the render
+                // even if a 4D timepoint switch replaces the cached volume meanwhile.
+                let engine = MPREngine(volume: volume)
+                let slice: MPRSlice?
+                switch mode {
+                case .mprAxial:    slice = engine.axialSlice(at: targetIndex)
+                case .mprSagittal: slice = engine.sagittalSlice(at: targetIndex)
+                case .mprCoronal:  slice = engine.coronalSlice(at: targetIndex)
+                default:           slice = nil
+                }
+                guard !op.isCancelled,
+                      let mprSlice = slice,
+                      let image = MPREngine.renderSlice(mprSlice, ww: ww, wc: wc, invert: invert) else {
+                    DispatchQueue.main.async { panel.isLoading = false }
+                    return
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self = self else { return }
+                    // Drop stale results: a newer scroll target or mode switch wins.
+                    guard panel.panelMode == mode, panel.mprSliceIndex == targetIndex else {
+                        panel.isLoading = false
+                        return
+                    }
+                    panel.setDisplayImage(image)
+                    panel.imageWidth = mprSlice.width
+                    panel.imageHeight = mprSlice.height
+                    panel.rawPixelData = mprSlice.pixelData
+                    panel.bitDepth = 16
+                    panel.isSigned = true
+                    panel.samples = 1
 
-                // Spatial metadata (cross-reference lines + orientation labels)
-                // taken straight from the rendered slice, so it always matches
-                // the displayed neurologically-oriented pixels.
-                panel.imagePositionPatient = (mprSlice.planeOrigin.x, mprSlice.planeOrigin.y, mprSlice.planeOrigin.z)
-                panel.imageOrientationPatient = [
-                    mprSlice.planeRowDir.x, mprSlice.planeRowDir.y, mprSlice.planeRowDir.z,
-                    mprSlice.planeColDir.x, mprSlice.planeColDir.y, mprSlice.planeColDir.z
-                ]
-                // PanelState.pixelSpacing is (row-step mm, col-step mm) per the
-                // cross-reference convention → (colDir spacing, rowDir spacing).
-                panel.pixelSpacing = (mprSlice.pixelSpacingY, mprSlice.pixelSpacingX)
+                    // Spatial metadata straight from the rendered slice, so cross-
+                    // reference lines + orientation labels match the displayed pixels.
+                    panel.imagePositionPatient = (mprSlice.planeOrigin.x, mprSlice.planeOrigin.y, mprSlice.planeOrigin.z)
+                    panel.imageOrientationPatient = [
+                        mprSlice.planeRowDir.x, mprSlice.planeRowDir.y, mprSlice.planeRowDir.z,
+                        mprSlice.planeColDir.x, mprSlice.planeColDir.y, mprSlice.planeColDir.z
+                    ]
+                    // PanelState.pixelSpacing is (row-step mm, col-step mm) per the
+                    // cross-reference convention → (colDir spacing, rowDir spacing).
+                    panel.pixelSpacing = (mprSlice.pixelSpacingY, mprSlice.pixelSpacingX)
 
-                panel.isLoading = false
-                // Trigger cross-reference overlay updates on all panels
-                self.objectWillChange.send()
-                self.updatePanelInfoStrings(panel)
-            } else {
-                panel.isLoading = false
-                panel.errorMessage = "MPR rendering failed"
+                    panel.isLoading = false
+                    // Trigger cross-reference overlay updates on all panels.
+                    self.objectWillChange.send()
+                    self.updatePanelInfoStrings(panel)
+                }
             }
+            panel.loadingQueue.addOperation(op)
         }
     }
 

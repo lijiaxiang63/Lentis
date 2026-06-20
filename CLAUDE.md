@@ -69,12 +69,20 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 
 1. **2D slice rendering is CPU**, not GPU. Axial/sagittal/coronal go through
    `MPREngine.renderSlice` (Swift per-pixel W/L loop); **Metal is used only for MIP**.
-   W/L drag is throttled to 60 Hz. The brief's "windowing = GPU uniform only" rule is **still NOT
-   met for slices** — moving slice W/L onto the GPU was **deferred out of Phase 5** (no visible
-   speedup over the sub-ms CPU loop, and it risks the canonical-RAS orientation; `MPREngine` stays
-   the single orientation source). Revisit when a live MTKView / mask overlay needs it. Clean seam:
-   keep slice *extraction* (the oriented Int16 buffer) in `MPREngine`, upload it to a 2D `.r16Sint`
-   input texture, and do W/L in a trivial shader → NSImage — **no flip logic in MSL**, so the
+   **Extraction + render + NSImage build run on the panel's serial background queue
+   (`loadMPRSlice` → `panel.loadingQueue`) and are coalesced** — each navigation
+   `cancelAllOperations()` + enqueues, and the main-thread apply drops results whose
+   `mprSliceIndex`/`panelMode` no longer match. So fast scrubbing only pays for the in-flight render
+   plus the latest target, and the main thread never blocks. **This (not GPU) fixed laggy scrolling
+   on the 344×1024×1024 / 721 MB MPRAGE**, whose long plane is a full 1024×1024 **megapixel** slice.
+   W/L drag is throttled to 60 Hz and re-renders from the cached slice `rawPixelData` (still on the
+   main thread — move async too if it bites on huge volumes). The brief's "windowing = GPU uniform
+   only" rule is **still NOT met for slices** — the GPU slice-W/L move was **deferred** (the W/L
+   *arithmetic* is cheap; per-slice cost is dominated by extraction + the NSImage alloc, which a
+   W/L-only shader wouldn't touch, and a full 3D-texture sample risks the canonical-RAS orientation;
+   `MPREngine` stays the single source). Revisit when a live MTKView / mask overlay needs it. Clean
+   seam: keep slice *extraction* (the oriented Int16 buffer) in `MPREngine`, upload it to a 2D
+   `.r16Sint` input texture, and do W/L in a trivial shader → NSImage — **no flip logic in MSL**, so
    tested orientation can't drift. (`MetalVolumeRenderer` already has the texture + in-shader W/L for MIP.)
 2. **W/L units = RAW STORED Int16 values.** The shader/CPU window on stored voxels; `scl`/rescale
    is NOT applied in the window math. So presets & auto-window are expressed in **stored units**.
@@ -134,6 +142,13 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
   labels all read it, and the corner-orientation tests in `MPREngineTests` will catch a sign error.
 - **Pure-Swift inflate is bit-by-bit** → ~1.5 s for a 35 MB `.nii.gz`, ~20 s for the 445 MB MPRAGE
   (background thread, OK for now). Optimize with table-driven Huffman if it bites.
+- **MPR slice render is async + coalesced (`loadMPRSlice`).** Extraction + W/L + NSImage build run on
+  `panel.loadingQueue` (serial, background); each navigation `cancelAllOperations()` + enqueues, and
+  the main-thread apply **drops stale results** whose `mprSliceIndex`/`panelMode` no longer match. Do
+  **not** revert to synchronous main-thread rendering — it froze scrolling on the 344×1024×1024 / 721 MB
+  MPRAGE (megapixel sagittal). The captured `volume` is held strongly through the render so it survives
+  a 4D timepoint swap. The previous slice stays on screen until the new one lands (no spinner flicker,
+  since the `isLoading` ProgressView only shows when `panel.image == nil`).
 - **RTK shell proxy** (user's global `~/.claude`) rewrites `grep`→`rg` and can mangle
   `find … $(...)` / regex alternation. Prefer `rg`-native syntax or absolute `/usr/bin/...` paths.
 
@@ -149,9 +164,11 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 > (WL 40/WW 80) with a preset menu (Brain/Subdural/Stroke/Bone/Soft-tissue, applied to all linked
 > panels); MRI auto-detects and uses a percentile auto-window (WL 899/WW 1798 on the T1, via an
 > "Auto" button). The one-click **MPR quad no longer renders dark** — every panel is W/L-seeded by
-> modality. **Deferred from Phase 5:** moving 2D-slice W/L onto the GPU (no visible speedup over the
-> sub-ms CPU loop, some orientation/readback risk; revisit when a live MTKView / mask overlay needs
-> it). Slice W/L is still CPU (`MPREngine.renderSlice`). Phase 4 orientation (canonical-RAS, L/R/A/P/S/I) intact.
+> modality. **Post-Phase-5 perf fix:** MPR render is now **async + coalesced** off the main thread
+> (`loadMPRSlice` → `panel.loadingQueue`) — fixed laggy scrolling on the 721 MB / megapixel-slice
+> MPRAGE (GUI-verified). **Deferred:** GPU slice W/L — extraction + NSImage alloc dominate per-slice
+> cost, not the W/L math, so a W/L-only shader wouldn't help scroll; revisit for a live MTKView /
+> mask overlay. Slice rendering is still CPU (`MPREngine.renderSlice`). Phase-4 orientation intact.
 
 - [x] **Phase 1 — Rebrand to Lentis.** SPM/target/dir/app-struct renamed; menus/About/Help show
   Lentis; `package_app.sh` + bundle id updated; `UpdateChecker` removed (phoned home to upstream).
