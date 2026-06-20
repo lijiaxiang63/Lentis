@@ -112,6 +112,12 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 
 ## Phase status & roadmap
 
+> **▶ RESUME POINT — Phases 1–3 complete & committed** on branch `lentis-nifti-conversion`
+> (not pushed; no remote). The app builds with **zero native deps**, runs, and renders real
+> CT/MRI. `swift test` green (31). **Next: Phase 4 — neurological orientation + tri-view.**
+> Known issue Phase 4 fixes: real-MRI "axial" slices currently display in a coronal-looking,
+> **radiological** orientation (R on screen-left); orientation is not yet derived from the affine.
+
 - [x] **Phase 1 — Rebrand to Lentis.** SPM/target/dir/app-struct renamed; menus/About/Help show
   Lentis; `package_app.sh` + bundle id updated; `UpdateChecker` removed (phoned home to upstream).
   `DICOMModel` & test-target name intentionally kept. Builds & runs as `Lentis.app`.
@@ -126,7 +132,8 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
   (45 methods, ~2500 lines) and made all panel navigation volumetric-only; removed `VolumeBuilder`
   from `MPREngine`. Unlinked DCMTK from `Package.swift`; dropped `dicom.dic` from
   `package_app.sh`. Renamed `DICOMModel`→`ViewerModel`, `DicomSeries`→`ImageSeries`,
-  `DicomImageContext`→`ImageContext`, test target→`LentisTests`. **Verified:** clean `swift build`
+  `DicomImageContext`→`ImageContext`, test target→`LentisTests`; the file-open dialog is now
+  NIfTI-only (`openFile`, replaces `openFolder`). **Verified:** clean `swift build`
   (no static-lib warnings), 31 tests green, `otool -L` shows no DCMTK/OpenJPEG linkage, GUI renders
   synthetic CT (axial + scroll) and real T1 MRI (auto-window). Remaining cosmetic debt (defer):
   stale `// OpenDicomViewer` file headers, `PanelInteractive/DICOMInteractView` names, the inert
