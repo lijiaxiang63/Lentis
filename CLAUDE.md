@@ -26,6 +26,10 @@ swift test --filter nifti --filter dataset   # just the NIFTI tests
 open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 ```
 
+- **Perf probe:** `--benchmark` writes `~/Desktop/odv_benchmark.csv` (and `[BENCH]` to stderr).
+  Useful events: `scroll_main` (synchronous main-thread cost of one scroll tick — must stay sub-ms),
+  `mpr_render` / `mip_render` (per-slice render ms, now off-main). Used to prove the scroll-lag fix.
+
 - Toolchain: Swift 6.3, Xcode 26.4, macOS arm64. Bundle id `com.kalicooper.lentis`.
   **Zero native/system dependencies** — pure Swift + Metal/AppKit (DCMTK/OpenJPEG gone in Phase 3).
 - `swift build` after adding a `PanelMode` case → the compiler flags every non-exhaustive
@@ -165,6 +169,37 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 
 ---
 
+## Known issues / open problems (as of HEAD)
+
+Ordered roughly by priority. None block the build or tests (52 green); these are quality/perf debt.
+
+1. **Sagittal megapixel render ≈ 20 ms (off-main, coalesced).** On the 344×1024×1024 MPRAGE the long
+   plane is a full 1024×1024 slice. Scrolling is now responsive (main thread 0.3 ms/tick) but under
+   *very fast continuous* scrolling that one panel's image visibly lags-then-catches-up. **Lever:**
+   render slices at *display* resolution (panels are ~500 px, not 1024) — downsample in the extractor,
+   or a low-res scrub preview + full-res on settle. Biggest remaining perf win; not yet done.
+2. **W/L drag re-render is still synchronous on the main thread.** `adjustWindowLevelForPanel`
+   re-renders from the cached slice `rawPixelData` (megapixel W/L loop), throttled to 60 Hz. On the
+   721 MB MPRAGE a hard W/L drag can feel heavy. Fix = route it through the same async+coalesced path
+   as `loadMPRSlice` (the slice is already extracted, so it's render-only).
+3. **GPU slice W/L deferred** (the brief's "windowing = GPU uniform only" rule). Decided against for
+   now: per-slice cost is dominated by extraction + NSImage alloc, *not* the W/L arithmetic, and a full
+   3D-texture sample risks the canonical-RAS orientation (which lives only in `MPREngine.planeGeometry`).
+   Clean re-entry seam documented in *Data & rendering pipeline* §1. Revisit for a live MTKView / mask overlay.
+4. **Quad-MPR synchronized scroll is z-only.** `syncScrollFromPanel` maps the source world-z to each
+   panel via `closestVolumeIndex`; for orthogonal planes (sagittal = L/R, coronal = A/P) that usually
+   doesn't move them, so they look "stuck" when you scroll the axial. True 3D crosshair linkage is the
+   Phase 6 job (`CrossReferenceOverlay` exists).
+5. **`--benchmark` instrumentation left in** (`scroll_main`, `mpr_render`; `mip_render` pre-existing).
+   Gated behind `--benchmark` so it's inert in normal runs, but in benchmark mode it logs to
+   `~/Desktop/odv_benchmark.csv` per scroll tick (each `log()` also takes a `task_info` memory snapshot).
+   Keep as a perf probe, or strip `scroll_main`/`mpr_render` once perf work settles.
+6. **Cosmetic debt (deferred since Phase 3):** stale `// OpenDicomViewer` file headers;
+   `PanelDICOMInteractView` / `PanelInteractiveDICOMView` names; the inert `.slice2D` `PanelMode` case;
+   vestigial `ImageContext` struct + `ImageSeries.images` (NIfTI series carry an empty `images` stub).
+
+---
+
 ## Phase status & roadmap
 
 > **▶ RESUME POINT — Phases 1–5 complete & committed** on branch `lentis-nifti-conversion`
@@ -231,8 +266,17 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
   **Deferred:** moving 2D-slice W/L onto the GPU (the brief's "windowing = GPU uniform" rule) — no
   visible speedup over the sub-ms CPU loop and it risks the canonical-RAS orientation; revisit when a
   live MTKView / mask overlay needs it (clean seam noted in *Data & rendering pipeline* §1).
+- [x] **Perf — async MPR/MIP rendering (post-Phase-5).** 2 commits (`d98fc58`, `f78b51f`). `loadMPRSlice`
+  *and* `loadMIPForPanel` now render off the main thread on `panel.loadingQueue`, coalesced (cancel +
+  drop-stale); `MetalVolumeRenderer.renderProjection` is `renderLock`-serialized (now called from
+  background queues). Fixed laggy slice scrolling on the 721 MB MPRAGE — both single-panel and the
+  quad-MPR + sync-scroll layout (where the MIP panel's synchronous `waitUntilCompleted` was the real
+  blocker). **Measured:** per-tick main-thread cost ~15–25 ms → **0.3 ms** (`scroll_main`, `--benchmark`).
+  Residual (see *Known issues* #1): the 1024² sagittal still costs ~20 ms off-main; render at display
+  resolution next.
 - [ ] **Phase 6 — Crosshair drag linkage.** Click/drag sets crosshair **world** coord; all three
-  views relocate + draw crosshair lines. Build on `CrossReferenceOverlay` + sync-scroll.
+  views relocate + draw crosshair lines. Build on `CrossReferenceOverlay` + sync-scroll. (Note: this
+  also subsumes *Known issues* #4 — replace the z-only `syncScrollFromPanel` with true 3D linkage.)
 - [ ] **Phase 7 — UI polish + segmentation seams.** Fix 4D-selector overlap with the "Auto" button;
   modality badge; orientation labels; spacing. Seams (don't implement seg now): same-grid
   mask/label volume in `VolumeData`; Metal mask overlay (color+alpha); keep Eraser/ROI; preserve
