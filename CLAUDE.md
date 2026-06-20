@@ -34,9 +34,10 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
   **Zero native/system dependencies** — pure Swift + Metal/AppKit (DCMTK/OpenJPEG gone in Phase 3).
 - `swift build` after adding a `PanelMode` case → the compiler flags every non-exhaustive
   `switch` (~10 sites). Fix each (usually mirror `.mprCoronal` or fold into a combined case).
-- **Git state:** Phases 1–4 are committed on branch **`lentis-nifti-conversion`** (off upstream
-  `master`); see `git log`. Not pushed (no remote configured). Real patient data
-  (`TestData/sub-*`) is gitignored — only synthetic fixtures are tracked. Commit per phase going forward.
+- **Git state:** Phases 1–6 **+ the crosshair-drag-lag fix** are committed on branch
+  **`lentis-nifti-conversion`** (off upstream `master`); HEAD `d472c51`, see `git log`. Not pushed
+  (no remote configured). Real patient data (`TestData/sub-*`) is gitignored — only synthetic fixtures
+  are tracked. Commit per phase/logical step going forward.
 
 ---
 
