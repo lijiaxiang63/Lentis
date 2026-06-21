@@ -83,9 +83,11 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:mask:…)` (CPU W/L — **Float + precomputed-reciprocal, parallelised across 8 bands** for ≥512² slices, `parallelToneMapThreshold`; RGBA composite when a mask is present). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors, cross-ref metadata, **and `maskSlice` (Phase 7 seam)** all read it. **Crosshair geometry (Phase 6):** `PlaneGeometry.world(col:row:)`/`pixel(of:)` (exact-inverse pixel↔world) + `orthogonalSliceIndex(for:containing:)` (world→slice index). (`VolumeBuilder` removed in Phase 3.) |
 | `CrossReferenceOverlay.swift` | **3D crosshair overlay (Phase 6, rewritten).** Draws two lines + center dot through `crosshair.world`'s in-plane projection, on MPR panels only; bridges raw→display pixels then reuses the image's `pixelToScreen` transform. `PanelState.displayedPlaneGeometry` helper. **Hosts `CrosshairState`** (tiny ObservableObject) and observes **it** (not the model) — so a crosshair drag invalidates only this overlay, not the whole quad (drag-lag fix). (Replaced the old `computeCrossReference` lines.) |
 | `MetalVolumeRenderer.swift` | Metal compute, **MIP/MinIP/Average only**. Inline shader strings. Texture `.r16Sint`. W/L on raw stored values. |
-| `MultiPanelContainer.swift` (~2100 lines) | Multi-panel views, gestures, overlays, cursor readout, `OrientationLabelsOverlay` (**RAS-aware** since Phase 4; dark-halo letters Phase 7). **Phase 7 UI:** `PanelStatusCluster` + `ModalityBadge` (top-leading modality badge — now the interactive CT/MRI **toggle** (UI clarity pass) — + 4D timepoint stepper, stacked under `VolumeToolbar`; replaces the old bottom-center 4D pill). **Crosshair (Phase 6):** Select-tool `mouseDown`/`mouseDragged` → `crosshairWorld(at:)` → `model.setCrosshair`. **Seg seam:** Eraser/ROI retained as the future mask-edit surface (seam comment at the `.eraser` handler). |
-| `PanelState.swift` | Per-panel state. `PanelMode = .slice2D/.mprAxial/.mprSagittal/.mprCoronal/.mip`. `isMPR` helper. `rescaleSlope/Intercept`, `valueUnitLabel`. UI-clarity additions: `ActiveTool.displayName` + `ViewerLayout.description` (tooltips), `mipProjection` (MIP menu label). (`.slice2D` inert — NIFTI uses `.mprAxial`; now hidden in the per-panel toolbar.) |
-| `ContentView.swift` | Root split view: sidebar + multi-panel detail. Sidebar row shows the NIfTI **file name** + `modality · WxHxD` + brain icon (UI clarity pass; `model.loadedFileName`). Shows a system-material `NiftiLoadingOverlay` (indeterminate progress + loading copy) over the viewer while `ViewerModel.isLoading`; the sidebar Open action is disabled during the load. (Legacy single-view subtree deleted in Phase 3.) |
+| `MultiPanelContainer.swift` (~1960 lines) | Multi-panel views + gestures. **Panels now hold ONLY pixel-bound overlays** (UI-unify pass): `OrientationLabelsOverlay` (**RAS-aware** since Phase 4; dark-halo letters Phase 7), `CrossReferenceOverlay`, ROI/ruler/angle annotations, group-select chrome, right-edge `PanelDICOMScroller`, active/group border. All control toolbars + textual readouts moved OFF the image into the docked bars below. **Still hosts** `ModalityBadge` (CT/MRI capsule, reused by `ViewerControlBar`) + `PanelHistogramView`. **Crosshair (Phase 6):** Select-tool `mouseDown`/`mouseDragged` → `crosshairWorld(at:)` → `model.setCrosshair`. **Seg seam:** Eraser/ROI retained as the future mask-edit surface. (Removed: `VolumeToolbar`/`PanelAdjustmentToolbar`/`PanelStatusCluster`/`CursorInfoOverlay` — folded into the docked bars.) |
+| `ViewerControlBar.swift` | **The single docked top control bar (UI-unify pass).** Replaces every toolbar that used to float over the image (`LayoutToolbar`, per-panel `VolumeToolbar`, bottom-center `PanelAdjustmentToolbar`, `PanelStatusCluster`). Groups: sidebar toggle · layout + MPR · sync/crosshair · plane (Axial/Sag/Cor/MIP)+MIP slab/projection · modality badge + histogram + CT preset / MRI Auto · rotate/flip/fullscreen · 4D stepper. **Per-panel groups act on `model.activePanel`** and are wrapped in `ControlBarActivePanelGroups` (`@ObservedObject panel`) so they appear when the panel's async render lands its image — a guard in the model-observing parent would stay stuck at the initial nil. Slab `Slider` keeps the **no-`step:`** rule (perf). Modality uses fixed-size `Button`/`Menu`, never an AppKit segmented `Picker` (relayout perf). |
+| `ViewerStatusBar.swift` | **The single docked bottom status bar (UI-unify pass).** Active-panel readout shown ONCE (de-dupes the old per-panel ×4 bottom-left text + histogram): file name · slice position · `WL/WW` (+`HU` for CT). Cursor readout (RAS mm / HU / px, from the removed `CursorInfoOverlay`) **follows the hovered panel** via `ForEach(model.panels)` of `StatusBarCursorInfo` (`@ObservedObject panel`, shows only while `showCursorInfo`). `StatusBarPanelInfo` also observes the panel so it updates when the async image arrives. |
+| `PanelState.swift` | Per-panel state. `PanelMode = .slice2D/.mprAxial/.mprSagittal/.mprCoronal/.mip`. `isMPR` helper. `rescaleSlope/Intercept`, `valueUnitLabel`. `ActiveTool.displayName` + `ViewerLayout.description` (tooltips), `mipProjection` (MIP menu label). (`.slice2D` inert — NIFTI uses `.mprAxial`; hidden in the control-bar plane group.) |
+| `ContentView.swift` | Root split view: sidebar + detail. **Detail = left `ToolPalette` column + a `VStack`{ `ViewerControlBar` · panel grid (`ZStack` with the `NiftiLoadingOverlay`) · `ViewerStatusBar` }** (UI-unify pass — nothing floats over the image; the old floating `LayoutToolbar`/sidebar-toggle overlay is gone, the toggle now lives in `ViewerControlBar`). Sidebar row shows the NIfTI **file name** + `modality · WxHxD` + brain icon (`model.loadedFileName`). |
 
 ---
 
@@ -149,13 +151,15 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
    (`WindowPreset`, converted to stored units via the volume's rescale), MRI = `suggestedWindow`
    percentile. `seededWindow` prefers a saved manual window (`seriesStates`) over the default, and
    `assignSeriesToPanel` / `applyNiftiDataset` seed **every** panel from it (fixes the dark quad
-   MPR). The CT/MRI switch lives on the top-leading `ModalityBadge` (click to swap modality + reseed
-   W/L); the per-panel `PanelAdjustmentToolbar` then shows a CT preset menu vs an MRI "Auto" button by
-   `effectiveModality`; presets apply to all panels showing the series (`applyWindowPreset`).
+   MPR). The CT/MRI switch is the `ModalityBadge` in the docked `ViewerControlBar` (click to swap
+   modality + reseed W/L); the bar's window control then shows a CT preset menu vs an MRI "Auto" button
+   by `effectiveModality` — all acting on `model.activePanel`; presets apply to all panels showing the
+   series (`applyWindowPreset`). (UI-unify pass: these moved off the per-panel floating toolbars.)
 7. **Cursor readout:** `cursorHU = stored * panel.rescaleSlope + panel.rescaleIntercept`, label
-   `panel.valueUnitLabel` ("HU" for CT, "Intensity" for MRI); shows `px [col,row]` + RAS `mm`. The
-   bottom-left W/L readout appends `HU` for CT (dropped for MRI). (On-screen overlay needs a real
-   NSTrackingArea mouse event — synthetic computer-use moves may not trigger it.)
+   `panel.valueUnitLabel` ("HU" for CT, "Intensity" for MRI); shows `px [col,row]` + RAS `mm`. Now
+   rendered in the docked `ViewerStatusBar` (was the floating `CursorInfoOverlay`), following the
+   hovered panel; the status bar's W/L readout appends `HU` for CT (dropped for MRI). (Readout still
+   needs a real NSTrackingArea mouse event — synthetic computer-use moves may not trigger it.)
 8. **Segmentation mask overlay (Phase 7 seam; dormant).** A same-grid `LabelVolume` rides on
    `VolumeData.labelMask` (UInt8, identical voxel grid → write-back via the volume's `reorientation`
    + `originalAffine`). `MPREngine.maskSlice(mode:sliceIndex:)` extracts it in the **same (col,row)
@@ -333,10 +337,10 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
    Gated behind `--benchmark` so it's inert in normal runs, but in benchmark mode it logs to
    `~/Desktop/odv_benchmark.csv` per scroll tick (each `log()` also takes a `task_info` memory snapshot).
    Keep as a perf probe, or strip `scroll_main`/`mpr_render` once perf work settles.
-6. **Cosmetic debt (deferred since Phase 3):** stale `// OpenDicomViewer` file headers (fixed in the
-   4 UI-clarity-touched views — Help/Content/Volume/Layout; others remain);
+6. **Cosmetic debt (deferred since Phase 3):** stale `// OpenDicomViewer` file headers (fixed in
+   Help/Content/MultiPanelContainer + the now-deleted Volume/Layout toolbars; others remain);
    `PanelDICOMInteractView` / `PanelInteractiveDICOMView` names; the inert `.slice2D` `PanelMode` case
-   (now hidden in the per-panel toolbar for NIfTI, enum case kept);
+   (now hidden in the `ViewerControlBar` plane group for NIfTI, enum case kept);
    vestigial `ImageContext` struct + `ImageSeries.images` (NIfTI series carry an empty `images` stub).
 
 ---
@@ -349,6 +353,26 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 > renders real CT/MRI in correct **neurological** orientation with **modality-aware window/level**, a
 > now-smooth **3D crosshair** linkage, **off-main W/L drag**, and **Phase-7 UI polish + dormant
 > segmentation seams**. `swift test` green (**109**: 50 XCTest + 59 swift-testing).
+> **UI unify + default MPR (2026-06-21) — DONE, GUI-verified, committed on `lentis-nifti-conversion`.** Collapsed
+> the 8 floating per-panel/over-image toolbars into **one docked top `ViewerControlBar`** + **one docked
+> bottom `ViewerStatusBar`** (nothing floats over the image now); the bottom-left readout is shown
+> ONCE for the active panel (was repeated ×4 across the quad, plus text+histogram dup). Opening a file
+> now lands directly in the **MPR quad** (`applyNiftiDataset` → `setupMPRLayout(seriesIndex: idx)`; the
+> new optional param pins the just-loaded series). Removed `LayoutToolbar.swift`, `VolumeToolbar.swift`
+> and the `PanelAdjustmentToolbar`/`PanelStatusCluster`/`CursorInfoOverlay` structs; kept + reused
+> `ModalityBadge` + `PanelHistogramView`. **Key reactivity lesson:** the bars observe `model`, but a
+> panel's image/W-L are `@Published` on `PanelState` and fire the *panel's* `objectWillChange`, not the
+> model's — so panel-dependent content lives in child views that take `@ObservedObject var panel`
+> (`ControlBarActivePanelGroups`, `StatusBarPanelInfo`, `StatusBarCursorInfo`); a guard in the
+> model-observing parent stayed stuck at the initial nil image (caught in GUI: "No volume loaded" + a
+> bar missing its plane group — fixed). **GUI-verified (real app, synthetic CT):** default MPR quad,
+> no floating menus, status bar shows `synthetic_ct.nii.gz Axial 25/48 WL 40 WW 80 HU` once; clicking
+> the Sagittal panel updated the bar's plane group → **Sagittal** + status → `Sagittal 33/64`; the
+> `CT⇄`→`MRI` badge swapped the window control Preset→Auto; crosshair + orientation intact. `swift test`
+> **109** green. Preserved: slab `Slider` no-`step:`, fixed-size modality buttons (no AppKit segmented
+> `Picker`), and all orientation/crosshair/async-render code. **macOS menu bar kept** as the
+> shortcut/command entry. (Cursor RAS/HU/px readout not GUI-verifiable — needs a real NSTrackingArea
+> event, as before.)
 > **W/L-drag perf (2026-06-21) — DONE** (commits `de07903` renderSlice Float+parallel, `9399a6a` async
 > W/L, `8804548` regression test, `8b9919b` masked composite, `a67be70` `--perf-stress` harness). The
 > W/L re-render no longer blocks the main thread (MPR `renderSlice` was on main; **MIP ran a
@@ -586,6 +610,31 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   fullscreen, right-drag W/L). `// OpenDicomViewer` headers fixed in the 4 touched views. Orientation,
   crosshair, and async-render code untouched. **Deferred:** remaining cosmetic debt (other
   `// OpenDicomViewer` headers, `PanelDICOMInteractView` names, the `.slice2D` enum case, `ImageContext`).
+- [x] **UI unify — one docked toolbar + status bar, default MPR (post-clarity).** Committed on
+  `lentis-nifti-conversion`. The image had **8 floating control/readout clusters**, most repeated per-panel in the
+  quad (`VolumeToolbar`, `PanelStatusCluster`/`ModalityBadge`, `PanelAdjustmentToolbar`, the bottom-left
+  Info text, the bottom-right slice text, `CursorInfoOverlay`, the top-right `LayoutToolbar`). Collapsed
+  them into **one docked top `ViewerControlBar`** (`ViewerControlBar.swift`) + **one docked bottom
+  `ViewerStatusBar`** (`ViewerStatusBar.swift`); the panel `ZStack` now holds only pixel-bound overlays.
+  Per-panel controls/readouts act on / show `model.activePanel` (shown once, killing the ×4 quad
+  repetition + the W/L text-vs-histogram dup the user flagged). Opening a file lands in the **MPR quad**
+  (`applyNiftiDataset` → `setupMPRLayout(seriesIndex: idx)`; added the optional `seriesIndex` param so a
+  2nd open can't pick a stale series, since `registerStandaloneVolume` *appends* per load) + broadcasts
+  `rescaleSlope/Intercept/valueUnitLabel` to all 4 panels. Deleted `LayoutToolbar.swift` +
+  `VolumeToolbar.swift` and the 3 now-unused structs; kept/reused `ModalityBadge` + `PanelHistogramView`;
+  removed dead `initialWindow(for:)`. Left `ToolPalette` (left tool column) and the macOS menu bar as-is
+  (per user: menu bar = shortcut entry). **Reactivity gotcha (caught only in GUI):** the bars
+  `@ObservedObject` the *model*, but `PanelState` is its own `ObservableObject` — a panel's async image /
+  W-L fires the *panel's* `objectWillChange`, not the model's — so gating panel content with
+  `panel.image != nil` in the model-observing parent left it stuck on the initial nil ("No volume loaded"
+  + missing plane group). Fix: panel-dependent content lives in child views that take
+  `@ObservedObject var panel` (`ControlBarActivePanelGroups`, `StatusBarPanelInfo`, `StatusBarCursorInfo`).
+  **GUI-verified** (real app, synthetic CT): default MPR quad, nothing floating, status `…Axial 25/48 WL
+  40 WW 80 HU` once; Sagittal-panel click → bar **Sagittal** + status `Sagittal 33/64`; `CT⇄`→`MRI`
+  swapped Preset→Auto; crosshair/orientation intact. `swift build` clean, **109** tests green. Preserved
+  the slab `Slider` no-`step:` + fixed-size modality buttons (both perf-critical) and all
+  orientation/crosshair/async-render code. **Deferred:** cursor RAS/HU/px not GUI-verifiable (real
+  NSTrackingArea event needed); same older cosmetic debt.
 
 ---
 

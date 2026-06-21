@@ -38,51 +38,31 @@ struct ContentView: View {
                 ToolPalette(model: model)
                     .padding(.vertical, 8)
 
-                // Main viewer area
-                ZStack(alignment: .topLeading) {
-                    // Multi-panel container replaces old single DetailView
-                    MultiPanelContainer(model: model, isFocused: $isFocused)
-                        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                            _ = handleDrop(providers: providers)
-                            return true
-                        }
-                        .onTapGesture {
-                            isFocused = true
-                        }
+                // Main viewer area: one docked control bar on top, the panel grid
+                // in the middle, one docked status bar at the bottom. Nothing
+                // floats over the image any more.
+                VStack(spacing: 0) {
+                    ViewerControlBar(model: model, columnVisibility: $columnVisibility)
 
-                    // Floating controls overlay
-                    VStack {
-                        HStack(alignment: .top) {
-                            // Sidebar toggle (when hidden)
-                            if columnVisibility == .detailOnly {
-                                Button(action: { columnVisibility = .all }) {
-                                    Image(systemName: "sidebar.right")
-                                        .font(.system(size: 16))
-                                        .foregroundStyle(.secondary)
-                                        .padding(8)
-                                        .background(.ultraThinMaterial)
-                                        .cornerRadius(8)
-                                }
-                                .buttonStyle(.plain)
-                                .help("Show Sidebar")
+                    ZStack {
+                        MultiPanelContainer(model: model, isFocused: $isFocused)
+                            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                                _ = handleDrop(providers: providers)
+                                return true
+                            }
+                            .onTapGesture {
+                                isFocused = true
                             }
 
-                            Spacer()
-
-                            // Layout toolbar
-                            LayoutToolbar(model: model)
+                        if model.isLoading {
+                            NiftiLoadingOverlay()
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .transition(.opacity)
+                                .zIndex(1_000)
                         }
-                        .padding()
-
-                        Spacer()
                     }
 
-                    if model.isLoading {
-                        NiftiLoadingOverlay()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .transition(.opacity)
-                            .zIndex(1_000)
-                    }
+                    ViewerStatusBar(model: model)
                 }
             }
         }

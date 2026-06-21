@@ -68,21 +68,22 @@ extension ViewerModel {
             installDemoSphereMask(on: volume)
         }
 
-        // Seed the modality default: CT → the Brain HU preset, MRI → percentile
-        // auto-window. (initialWindow remains a defensive fallback.)
-        let (ww, wc) = modalityDefaultWindow(forSeriesIndex: idx) ?? initialWindow(for: dataset)
+        // Open directly into the tri-planar MPR layout (Axial + Sagittal + Coronal
+        // + MIP, synchronized, crosshair on). setupMPRLayout assigns the series to
+        // every panel and seeds each panel's W/L by modality (assignSeriesToPanel →
+        // seededWindow), so no panel renders dark. Pass `idx` explicitly so a second
+        // open can't resolve to a previously-loaded series.
+        setupMPRLayout(seriesIndex: idx)
 
-        setLayout(.single)
-        guard let panel = panels.first else { isLoading = false; return }
-        panel.reset()
-        panel.seriesIndex = idx
-        panel.windowWidth = ww
-        panel.windowCenter = wc
-        panel.rescaleSlope = volume.rescaleSlope
-        panel.rescaleIntercept = volume.rescaleIntercept
-        panel.valueUnitLabel = (dataset.detectedModality == .ct ? "HU" : "Intensity")
-        setPanelMode(panel, mode: .mprAxial)   // centers + renders axial via loadMPRSlice
-        activePanelID = panel.id
+        // assignSeriesToPanel seeds W/L but not the rescale calibration or value
+        // unit label — broadcast those to every panel showing the new series so the
+        // cursor/HU readout and value units are correct in all four planes.
+        let unit = (dataset.detectedModality == .ct ? "HU" : "Intensity")
+        for panel in panels where panel.seriesIndex == idx {
+            panel.rescaleSlope = volume.rescaleSlope
+            panel.rescaleIntercept = volume.rescaleIntercept
+            panel.valueUnitLabel = unit
+        }
 
         isLoading = false
         isScanning = false
@@ -207,14 +208,5 @@ extension ViewerModel {
         }
         BenchmarkLogger.shared.log(event: "demo_mask",
                                    detail: "sphere r=\(radius) labeled=\(mask.labeledVoxelCount)")
-    }
-
-    /// Initial display window (width, center) in STORED units. Defensive
-    /// fallback for `applyNiftiDataset`; normal seeding uses `modalityDefaultWindow`.
-    private func initialWindow(for dataset: NiftiDataset) -> (Double, Double) {
-        let (low, high) = dataset.suggestedWindow
-        let ww = max(high - low, 1)
-        let wc = (high + low) / 2
-        return (ww, wc)
     }
 }

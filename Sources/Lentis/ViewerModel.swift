@@ -675,13 +675,19 @@ class ViewerModel: ObservableObject {
     }
 
     /// One-click MPR layout: switches to 2x2 and configures panels as Axial + Sagittal + Coronal + MIP.
-    /// Uses the active panel's series (or first available series) for all four panels.
-    func setupMPRLayout() {
+    /// Pass `seriesIndex` to pin a specific series (e.g. a freshly-loaded volume on
+    /// open); otherwise it uses the active panel's series (or first available).
+    func setupMPRLayout(seriesIndex: Int? = nil) {
         setLayout(.quad)
 
-        // Determine series to use (active panel's series or first available)
+        // Determine series to use. An explicit index wins (the file-open path
+        // passes the just-registered volume; registerStandaloneVolume *appends*
+        // a series per load, so "active panel / first" can resolve to a stale
+        // one on a second open). Otherwise fall back to active / first.
         let seriesIdx: Int
-        if let active = activePanel, active.seriesIndex >= 0 {
+        if let s = seriesIndex, s >= 0, s < allSeries.count {
+            seriesIdx = s
+        } else if let active = activePanel, active.seriesIndex >= 0 {
             seriesIdx = active.seriesIndex
         } else if !allSeries.isEmpty {
             seriesIdx = 0

@@ -1,22 +1,21 @@
 // MultiPanelContainer.swift
-// OpenDicomViewer
+// Lentis
 //
 // The main viewer area that arranges panels in a grid (1x1 to 2x2).
-// Each panel is a self-contained DICOM image viewer with:
-//   - Image display with aspect-ratio-preserving fit
-//   - Mouse gesture handling: right-drag for W/L, scroll for navigation,
-//     pinch-to-zoom, two-finger pan, click to activate
-//   - Drag-and-drop series assignment from the sidebar
-//   - Overlay layers: info strings, orientation labels, cross-reference
-//     lines, ROI rectangle, cursor readout, cache progress bar
-//   - Bottom toolbar: histogram, Auto W/L, ROI mode buttons
+// Each panel shows an image plus only the overlays that are bound to the
+// pixels — orientation labels, the 3D crosshair, ROI / ruler / angle
+// annotations, the group-selection chrome, and the right-edge slice scroller.
+// All control toolbars and textual readouts now live OFF the image in the
+// docked ViewerControlBar (top) and ViewerStatusBar (bottom).
+//
+// Mouse handling per panel: right-drag for W/L, scroll for navigation,
+// pinch-to-zoom, two-finger pan, click to activate, Select-tool click/drag to
+// move the crosshair; drag-and-drop assigns a series from the sidebar.
 //
 // Key types:
 //   MultiPanelContainer      — Grid layout that creates PanelView per slot
-//   PanelView                — Single panel: image + all overlays + gestures
-//   InteractiveDICOMView     — NSViewRepresentable wrapping NSImageView with
-//                              gesture recognizers for W/L, zoom, pan, scroll
-//   PanelAdjustmentToolbar   — Bottom bar with histogram + Auto/ROI buttons
+//   PanelView                — Single panel: image + pixel-bound overlays + gestures
+//   ModalityBadge            — CT/MRI capsule toggle (reused by ViewerControlBar)
 //   PanelHistogramView       — Miniature histogram with W/L window indicator
 // Licensed under the MIT License. See LICENSE for details.
 
@@ -152,27 +151,8 @@ struct PanelView: View {
                 }
             }
 
-            // Top toolbar (Volume) + NIfTI status cluster (modality badge + 4D
-            // timepoint selector), stacked top-leading beneath the mode toolbar
-            // so neither collides with the bottom W/L adjustment toolbar.
-            if panel.seriesIndex >= 0 && panel.image != nil {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        VolumeToolbar(model: model, panel: panel)
-                        Spacer()
-                    }
-                    if panel.seriesIndex == model.niftiSeriesIndex,
-                       let modality = model.effectiveModality {
-                        HStack {
-                            PanelStatusCluster(model: model, panel: panel, modality: modality)
-                            Spacer()
-                        }
-                    }
-                    Spacer()
-                }
-                .padding(6)
-                .zIndex(5)
-            }
+            // (Per-panel control toolbars — plane/MIP/modality/window/transform/4D —
+            // moved off the image into the docked ViewerControlBar at the top.)
 
             // Shift-overlay for group selection (multi-panel only)
             if model.isShiftHeld && model.panels.count > 1 {
@@ -232,14 +212,8 @@ struct PanelView: View {
                     .zIndex(15)
             }
 
-            // Cursor info (HU readout)
-            if panel.showCursorInfo {
-                CursorInfoOverlay(panel: panel)
-                    .zIndex(55)
-            }
-
-            // (4D NIfTI timepoint selector moved into the top-leading
-            // PanelStatusCluster, alongside the modality badge.)
+            // (Cursor HU/RAS/pixel readout moved off the image into the docked
+            // ViewerStatusBar at the bottom; it follows the hovered panel.)
 
             // Error Overlay
             if let error = panel.errorMessage {
@@ -252,59 +226,9 @@ struct PanelView: View {
                 .zIndex(200)
             }
 
-            // Info Overlay (bottom)
-            if panel.image != nil {
-                VStack {
-                    Spacer()
-                    HStack {
-                        VStack(alignment: .leading) {
-                            if !panel.currentSeriesInfo.isEmpty {
-                                Text(panel.currentSeriesInfo).padding(4)
-                            }
-                            if panel.windowWidth != 0 {
-                                Text(String(format: "WL: %.0f  WW: %.0f", panel.windowCenter, panel.windowWidth)
-                                     + (panel.valueUnitLabel == "HU" ? " HU" : ""))
-                                    .padding(4)
-                                    .font(.system(.caption, design: .monospaced))
-                            }
-                        }
-                        .background(.thinMaterial)
-                        .cornerRadius(8)
-
-                        Spacer()
-
-                        if !panel.currentImageInfo.isEmpty {
-                            HStack {
-                                if panel.cacheProgress < 1.0 && panel.cacheProgress > 0 {
-                                    Text(String(format: "Loading: %.0f%%", panel.cacheProgress * 100))
-                                        .font(.caption)
-                                        .padding(6)
-                                        .background(.thinMaterial)
-                                        .cornerRadius(8)
-                                        .transition(.opacity)
-                                }
-                                Text(panel.currentImageInfo)
-                                    .padding(8)
-                                    .background(.thinMaterial)
-                                    .cornerRadius(8)
-                            }
-                            .animation(.easeInOut, value: panel.cacheProgress < 1.0)
-                        }
-                    }
-                    .padding()
-                }
-                .zIndex(50)
-            }
-
-            // Adjustment Toolbar (bottom center)
-            if panel.image != nil {
-                VStack {
-                    Spacer()
-                    PanelAdjustmentToolbar(model: model, panel: panel)
-                        .padding(.bottom, 20)
-                }
-                .zIndex(60)
-            }
+            // (File name + slice position + W/L readout, and the histogram +
+            // preset/Auto adjustment toolbar, moved off the image: readouts into
+            // the docked ViewerStatusBar, controls into the docked ViewerControlBar.)
 
             // Right Side Scroller (always visible when series assigned)
             if panel.seriesIndex >= 0 {
@@ -1458,143 +1382,11 @@ struct ROIOverlay: View {
     }
 }
 
-// MARK: - Panel Adjustment Toolbar
-
-struct PanelAdjustmentToolbar: View {
-    @ObservedObject var model: ViewerModel
-    @ObservedObject var panel: PanelState
-
-    /// True when this panel shows the loaded NIfTI series (drives the
-    /// modality-aware preset/auto controls instead of the legacy Auto button).
-    private var isNiftiPanel: Bool {
-        model.niftiDataset != nil && panel.seriesIndex == model.niftiSeriesIndex
-    }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            if !panel.histogramData.isEmpty {
-                PanelHistogramView(
-                    data: panel.histogramData,
-                    minVal: panel.minPixelValue,
-                    maxVal: panel.maxPixelValue,
-                    windowWidth: panel.windowWidth,
-                    windowCenter: panel.windowCenter
-                )
-                .frame(width: 100, height: 40)
-                .background(Color.black.opacity(0.5))
-                .border(Color.white.opacity(0.2), width: 1)
-                .help("Intensity histogram — yellow band = current window, white line = level (center)")
-            }
-
-            if isNiftiPanel {
-                modalityControls
-            } else {
-                autoButton
-            }
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.regular)
-        .foregroundStyle(.white)
-        .fixedSize(horizontal: false, vertical: true)
-        .padding(6)
-        .background(.thinMaterial)
-        .cornerRadius(12)
-    }
-
-    /// Legacy generic Auto W/L (min/max of the current slice) for non-NIfTI panels.
-    private var autoButton: some View {
-        Button(action: { model.autoWindow(for: panel) }) {
-            autoLabel
-        }
-        .frame(height: 40)
-        .help("Auto W/L (A)")
-    }
-
-    /// Modality-aware W/L controls for the NIfTI series: a CT/MRI toggle plus
-    /// either the CT HU preset menu or the MRI percentile auto-window.
-    @ViewBuilder
-    private var modalityControls: some View {
-        // The CT/MRI switch now lives on the top-leading modality badge
-        // (ModalityBadge); here we show only the modality-specific window control:
-        // the CT HU preset menu, or the MRI percentile auto-window.
-        if model.effectiveModality == .ct {
-            Menu {
-                ForEach(WindowPreset.ctPresets) { preset in
-                    Button("\(preset.name)  (W \(Int(preset.width)) / L \(Int(preset.center)))") {
-                        model.applyWindowPreset(preset)
-                    }
-                }
-            } label: {
-                Label("Preset", systemImage: "dial.medium")
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .frame(height: 40)
-            .help("CT window presets (HU)")
-        } else {
-            Button(action: { model.applyModalityAutoWindow() }) {
-                autoLabel
-            }
-            .frame(height: 40)
-            .help("MRI percentile auto-window (A)")
-        }
-    }
-
-    /// Shared "Auto [A]" button label.
-    private var autoLabel: some View {
-        HStack(spacing: 4) {
-            Text("Auto")
-            Text("A")
-                .font(.system(size: 9, weight: .medium, design: .rounded))
-                .padding(.horizontal, 4)
-                .padding(.vertical, 1)
-                .background(Color.white.opacity(0.15))
-                .cornerRadius(3)
-        }
-    }
-}
-
-// MARK: - Panel Status Cluster (modality badge + 4D timepoint)
-
-/// Top-leading status chip for the loaded NIfTI series: a color-coded modality
-/// badge plus, for 4D volumes, a compact timepoint stepper. The badge is
-/// read-only — the CT/MRI *toggle* lives in the bottom adjustment toolbar — and
-/// the cluster sits just below the VolumeToolbar so it never overlaps the
-/// bottom W/L toolbar (Phase 7; replaces the old bottom-center 4D pill).
-struct PanelStatusCluster: View {
-    @ObservedObject var model: ViewerModel
-    @ObservedObject var panel: PanelState
-    let modality: ImagingModality
-
-    var body: some View {
-        HStack(spacing: 8) {
-            ModalityBadge(model: model, modality: modality)
-
-            if let ds = model.niftiDataset, ds.isMultiVolume {
-                HStack(spacing: 6) {
-                    Image(systemName: "square.stack.3d.up.fill")
-                        .font(.caption2)
-                    Text("Vol \(model.currentTimepoint + 1)/\(ds.timepointCount)")
-                        .font(.system(.caption, design: .monospaced))
-                    Stepper("", value: Binding(
-                        get: { model.currentTimepoint },
-                        set: { model.selectTimepoint($0) }
-                    ), in: 0...(ds.timepointCount - 1))
-                    .labelsHidden()
-                    .controlSize(.small)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(.black.opacity(0.55), in: Capsule())
-                .foregroundStyle(.white)
-            }
-        }
-    }
-}
+// MARK: - Modality Badge
 
 /// Color-coded modality control: CT = amber, MRI = teal. Click to switch the
-/// modality (which reseeds the window to that modality's default). This is the
-/// single CT/MRI control — there is no longer a separate toggle in the bottom toolbar.
+/// modality (which reseeds the window to that modality's default). Reused by the
+/// docked ViewerControlBar — this is the single CT/MRI control.
 struct ModalityBadge: View {
     @ObservedObject var model: ViewerModel
     let modality: ImagingModality
@@ -2166,32 +1958,5 @@ struct ToolPalette: View {
     }
 }
 
-// MARK: - Cursor Info Overlay (HU Readout)
-
-struct CursorInfoOverlay: View {
-    @ObservedObject var panel: PanelState
-
-    var body: some View {
-        VStack {
-            HStack {
-                Spacer()
-                VStack(alignment: .trailing, spacing: 2) {
-                    if panel.hasCursorPatientPosition {
-                        Text(String(format: "RAS  %.1f, %.1f, %.1f mm",
-                             panel.cursorPatientX, panel.cursorPatientY, panel.cursorPatientZ))
-                    }
-                    Text("\(panel.valueUnitLabel): " + String(format: "%.0f   px [%d, %d]",
-                        panel.cursorHU, panel.cursorPixelX, panel.cursorPixelY))
-                }
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundStyle(.white)
-                .padding(4)
-                .background(.black.opacity(0.6))
-                .cornerRadius(4)
-                .padding(8)
-            }
-            Spacer()
-        }
-        .allowsHitTesting(false)
-    }
-}
+// (CursorInfoOverlay removed — the HU/RAS/pixel readout now lives in the docked
+// ViewerStatusBar at the bottom of the viewer, following the hovered panel.)
