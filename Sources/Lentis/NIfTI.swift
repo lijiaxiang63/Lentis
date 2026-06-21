@@ -234,6 +234,84 @@ final class NiftiImage {
         return out
     }
 
+    /// Double-precision extraction for categorical label volumes. Unlike the
+    /// display-oriented Float path above, this preserves every Int32 label ID
+    /// exactly before optional NIfTI scaling is applied.
+    func calibratedDoubleVolume(timepoint t: Int) -> [Double] {
+        let n = voxelsPerVolume
+        let tp = min(max(0, t), nt - 1)
+        let elem = header.datatype.byteCount
+        let base = header.voxOffset + tp * n * elem
+        let fileLE = header.littleEndian
+        var out = [Double](repeating: 0, count: n)
+
+        out.withUnsafeMutableBufferPointer { dst in
+            payload.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                switch header.datatype {
+                case .uint8:
+                    for i in 0..<n { dst[i] = Double(raw.loadUnaligned(fromByteOffset: base + i, as: UInt8.self)) }
+                case .int8:
+                    for i in 0..<n { dst[i] = Double(raw.loadUnaligned(fromByteOffset: base + i, as: Int8.self)) }
+                case .int16:
+                    for i in 0..<n {
+                        var v = raw.loadUnaligned(fromByteOffset: base + i * 2, as: Int16.self)
+                        if !fileLE { v = v.byteSwapped }
+                        dst[i] = Double(v)
+                    }
+                case .uint16:
+                    for i in 0..<n {
+                        var v = raw.loadUnaligned(fromByteOffset: base + i * 2, as: UInt16.self)
+                        if !fileLE { v = v.byteSwapped }
+                        dst[i] = Double(v)
+                    }
+                case .int32:
+                    for i in 0..<n {
+                        var v = raw.loadUnaligned(fromByteOffset: base + i * 4, as: Int32.self)
+                        if !fileLE { v = v.byteSwapped }
+                        dst[i] = Double(v)
+                    }
+                case .uint32:
+                    for i in 0..<n {
+                        var v = raw.loadUnaligned(fromByteOffset: base + i * 4, as: UInt32.self)
+                        if !fileLE { v = v.byteSwapped }
+                        dst[i] = Double(v)
+                    }
+                case .int64:
+                    for i in 0..<n {
+                        var v = raw.loadUnaligned(fromByteOffset: base + i * 8, as: Int64.self)
+                        if !fileLE { v = v.byteSwapped }
+                        dst[i] = Double(v)
+                    }
+                case .uint64:
+                    for i in 0..<n {
+                        var v = raw.loadUnaligned(fromByteOffset: base + i * 8, as: UInt64.self)
+                        if !fileLE { v = v.byteSwapped }
+                        dst[i] = Double(v)
+                    }
+                case .float32:
+                    for i in 0..<n {
+                        var b = raw.loadUnaligned(fromByteOffset: base + i * 4, as: UInt32.self)
+                        if !fileLE { b = b.byteSwapped }
+                        dst[i] = Double(Float(bitPattern: b))
+                    }
+                case .float64:
+                    for i in 0..<n {
+                        var b = raw.loadUnaligned(fromByteOffset: base + i * 8, as: UInt64.self)
+                        if !fileLE { b = b.byteSwapped }
+                        dst[i] = Double(bitPattern: b)
+                    }
+                }
+            }
+        }
+
+        let slope = header.sclSlope == 0 ? 1.0 : header.sclSlope
+        let inter = header.sclInter
+        if !(slope == 1.0 && inter == 0.0) {
+            for i in 0..<n { out[i] = out[i] * slope + inter }
+        }
+        return out
+    }
+
     // MARK: - Affine
 
     private static func makeAffine(_ h: NiftiHeader) -> (simd_double4x4, AffineSource) {

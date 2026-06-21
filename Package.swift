@@ -17,7 +17,10 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "Lentis"
+            name: "Lentis",
+            resources: [
+                .copy("Resources")
+            ]
         ),
         .testTarget(
             name: "LentisTests",
