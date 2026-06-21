@@ -307,6 +307,10 @@ class ViewerModel: ObservableObject {
     var effectiveModality: ImagingModality? { modalityOverride ?? niftiDataset?.detectedModality }
 
     // MARK: - Segmentation mask overlay (seam)
+    /// Session-scoped external mask/atlas layers. This is a separate observable
+    /// object so continuous opacity edits do not invalidate the whole viewer.
+    let layerStore = LayerStore()
+
     /// Whether the MPR render path composites a panel volume's `labelMask` over
     /// the slice (Phase 7 seam). A future Eraser/ROI segmentation UI flips this;
     /// inert in normal runs because no volume carries a mask. Color defaults to
@@ -343,6 +347,12 @@ class ViewerModel: ObservableObject {
         let firstPanel = PanelState()
         self.panels = [firstPanel]
         self.activePanelID = firstPanel.id
+
+        layerStore.onRenderChange = { [weak self] in
+            guard let self else { return }
+            if Thread.isMainThread { self.refreshLayerRendering() }
+            else { DispatchQueue.main.async { [weak self] in self?.refreshLayerRendering() } }
+        }
 
         // Monitor Shift key globally for group selection overlay
         flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
@@ -406,6 +416,7 @@ class ViewerModel: ObservableObject {
                 self.currentSeriesInfo = ""
                 self.currentImageInfo = ""
                 self.loadedFileName = url.lastPathComponent
+                self.layerStore.removeAll()
                 self.resetAllPanels()
                 self.loadNifti(url: url)
             }
@@ -1417,6 +1428,7 @@ class ViewerModel: ObservableObject {
             let showMask = self.showMaskOverlay
             let maskColor = self.maskOverlayColor
             let maskAlpha = self.maskOverlayAlpha
+            let layerSnapshot = self.layerStore.renderSnapshot()
 
             // --- background: extract + render; coalesce via cancel + staleness check ---
             panel.loadingQueue.cancelAllOperations()
@@ -1435,10 +1447,14 @@ class ViewerModel: ObservableObject {
                 default:           slice = nil
                 }
                 let maskSlice = showMask ? engine.maskSlice(mode: mode, sliceIndex: targetIndex) : nil
+                let layerSlices = layerSnapshot.layers.compactMap {
+                    engine.layerSlice($0, mode: mode, sliceIndex: targetIndex)
+                }
                 guard !op.isCancelled,
                       let mprSlice = slice,
                       let image = MPREngine.renderSlice(mprSlice, ww: ww, wc: wc, invert: invert,
-                                                        mask: maskSlice, maskColor: maskColor, maskAlpha: maskAlpha) else {
+                                                        mask: maskSlice, maskColor: maskColor, maskAlpha: maskAlpha,
+                                                        layers: layerSlices) else {
                     DispatchQueue.main.async { panel.isLoading = false }
                     return
                 }
@@ -1446,7 +1462,8 @@ class ViewerModel: ObservableObject {
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
                     // Drop stale results: a newer scroll target or mode switch wins.
-                    guard panel.panelMode == mode, panel.mprSliceIndex == targetIndex else {
+                    guard panel.panelMode == mode, panel.mprSliceIndex == targetIndex,
+                          self.layerStore.revision == layerSnapshot.revision else {
                         panel.isLoading = false
                         return
                     }
@@ -1480,6 +1497,19 @@ class ViewerModel: ObservableObject {
                 }
             }
             panel.loadingQueue.addOperation(op)
+        }
+    }
+
+    /// Re-render only orthogonal MPR panels. Layer state itself lives outside
+    /// ViewerModel, so this method doesn't publish a model-wide change.
+    func refreshLayerRendering() {
+        for panel in panels {
+            switch panel.panelMode {
+            case .mprAxial, .mprSagittal, .mprCoronal:
+                if panel.seriesIndex == niftiSeriesIndex { loadMPRSlice(for: panel) }
+            case .slice2D, .volume3D:
+                break
+            }
         }
     }
 

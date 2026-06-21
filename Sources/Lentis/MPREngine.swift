@@ -39,6 +39,18 @@ struct MaskSlice {
     let height: Int
 }
 
+/// One immutable external layer slice plus the colors resolved on the main
+/// thread for its current LUT/visibility state. Labels use Int32 so FreeSurfer
+/// IDs above 255 remain exact.
+struct LayerRenderSlice: Sendable {
+    let labels: [Int32]
+    let width: Int
+    let height: Int
+    let kind: OverlayLayerKind
+    let maskColor: LayerRGBA
+    let atlasColors: [Int32: LayerRGBA]
+}
+
 /// The displayed geometry of an orthogonal plane, independent of pixels:
 /// the world position of the top-left pixel and the world directions toward
 /// screen-right / screen-bottom, plus pixel spacing along each. This is the
@@ -293,6 +305,57 @@ class MPREngine {
         }
     }
 
+    /// Extract an external layer in exactly the same displayed pixel layout as
+    /// the gray MPR slice. The integer voxel origin/steps are derived from
+    /// `planeGeometry`, keeping neurological orientation in one place rather
+    /// than duplicating the per-plane flips for every overlay type.
+    func layerSlice(_ descriptor: LayerRenderDescriptor, mode: PanelMode, sliceIndex: Int) -> LayerRenderSlice? {
+        guard descriptor.volume.width == volume.width,
+              descriptor.volume.height == volume.height,
+              descriptor.volume.depth == volume.depth,
+              let geometry = planeGeometry(mode, sliceIndex: sliceIndex) else { return nil }
+
+        let size: (width: Int, height: Int)
+        switch mode {
+        case .mprAxial: size = (volume.width, volume.height)
+        case .mprSagittal: size = (volume.height, volume.depth)
+        case .mprCoronal: size = (volume.width, volume.depth)
+        default: return nil
+        }
+
+        func transformed(_ point: SIMD4<Double>) -> SIMD3<Double> {
+            let value = volume.worldToVoxelMatrix * point
+            return SIMD3(value.x, value.y, value.z)
+        }
+        let origin = transformed(SIMD4(geometry.origin.x, geometry.origin.y, geometry.origin.z, 1))
+        let columnWorld = geometry.rowDir * geometry.pixelSpacingX
+        let rowWorld = geometry.colDir * geometry.pixelSpacingY
+        let columnStep = transformed(SIMD4(columnWorld.x, columnWorld.y, columnWorld.z, 0))
+        let rowStep = transformed(SIMD4(rowWorld.x, rowWorld.y, rowWorld.z, 0))
+        let o = SIMD3<Int>(Int(origin.x.rounded()), Int(origin.y.rounded()), Int(origin.z.rounded()))
+        let dc = SIMD3<Int>(Int(columnStep.x.rounded()), Int(columnStep.y.rounded()), Int(columnStep.z.rounded()))
+        let dr = SIMD3<Int>(Int(rowStep.x.rounded()), Int(rowStep.y.rounded()), Int(rowStep.z.rounded()))
+
+        var labels = [Int32](repeating: 0, count: size.width * size.height)
+        for row in 0..<size.height {
+            let rowStart = o &+ dr &* SIMD3<Int>(repeating: row)
+            var voxel = rowStart
+            let outputStart = row * size.width
+            for column in 0..<size.width {
+                labels[outputStart + column] = descriptor.volume.labelAt(x: voxel.x, y: voxel.y, z: voxel.z)
+                voxel = voxel &+ dc
+            }
+        }
+        return LayerRenderSlice(
+            labels: labels,
+            width: size.width,
+            height: size.height,
+            kind: descriptor.kind,
+            maskColor: descriptor.maskColor,
+            atlasColors: descriptor.atlasColors
+        )
+    }
+
     // MARK: - Arbitrary Oblique Slice
 
     /// Generate an oblique slice through the volume defined by origin, row/col direction, and dimensions
@@ -354,17 +417,34 @@ class MPREngine {
     static func renderSlice(_ slice: MPRSlice, ww: Double, wc: Double, invert: Bool = false,
                             mask: MaskSlice? = nil,
                             maskColor: SIMD3<Double> = SIMD3<Double>(1.0, 0.23, 0.19),
-                            maskAlpha: Double = 0.45) -> NSImage? {
+                            maskAlpha: Double = 0.45,
+                            layers: [LayerRenderSlice] = []) -> NSImage? {
         let totalPixels = slice.width * slice.height
         guard totalPixels > 0, ww > 0 else { return nil }
 
-        // Segmentation seam: take the RGBA compositing path only when a same-size
-        // mask is attached (never in normal runs); the hot grayscale path below
-        // is otherwise byte-for-byte unchanged.
+        var compositeLayers = layers.filter {
+            $0.width == slice.width && $0.height == slice.height && $0.labels.count == totalPixels
+        }
+        // Compatibility adapter for the existing editable UInt8 segmentation
+        // seam. It becomes an ordinary top layer without copying the 3D mask.
         if let mask = mask, mask.width == slice.width, mask.height == slice.height,
            mask.labels.count == totalPixels {
-            return renderSliceMasked(slice, ww: ww, wc: wc, invert: invert,
-                                     mask: mask, maskColor: maskColor, maskAlpha: maskAlpha)
+            compositeLayers.append(LayerRenderSlice(
+                labels: mask.labels.map(Int32.init),
+                width: mask.width,
+                height: mask.height,
+                kind: .mask,
+                maskColor: LayerRGBA(
+                    red: Float(max(0, min(1, maskColor.x))),
+                    green: Float(max(0, min(1, maskColor.y))),
+                    blue: Float(max(0, min(1, maskColor.z))),
+                    alpha: Float(max(0, min(1, maskAlpha)))
+                ),
+                atlasColors: [:]
+            ))
+        }
+        if !compositeLayers.isEmpty {
+            return renderSliceLayered(slice, ww: ww, wc: wc, invert: invert, layers: compositeLayers)
         }
 
         let colorSpace = CGColorSpaceCreateDeviceGray()
@@ -436,12 +516,10 @@ class MPREngine {
                       height: CGFloat(Double(slice.width) * aspectRatio))
     }
 
-    /// RGBA compositing path (segmentation seam): grayscale W/L base with
-    /// `maskColor` alpha-blended over labeled pixels. Only reached when a
-    /// same-size mask is present, so it never perturbs the grayscale fast path.
-    private static func renderSliceMasked(_ slice: MPRSlice, ww: Double, wc: Double, invert: Bool,
-                                          mask: MaskSlice, maskColor: SIMD3<Double>,
-                                          maskAlpha: Double) -> NSImage? {
+    /// RGBA compositing path for zero or more ordered mask/atlas layers. Layer
+    /// zero is the bottom overlay and the last layer is composited last.
+    private static func renderSliceLayered(_ slice: MPRSlice, ww: Double, wc: Double, invert: Bool,
+                                           layers: [LayerRenderSlice]) -> NSImage? {
         let totalPixels = slice.width * slice.height
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let context = CGContext(
@@ -456,54 +534,52 @@ class MPREngine {
         guard let destData = context.data else { return nil }
         let dst = destData.bindMemory(to: UInt8.self, capacity: totalPixels * 4)
 
-        // Same Float + precomputed-reciprocal W/L as the grayscale path (base in
-        // [0,1] here), with the opaque-color "over" blend pre-folded: precompute
-        // `c·a` and `1−a` so each labeled pixel is `g·(1−a) + c·a` in two FMAs.
-        // Parallelised across pixel bands for megapixel slices — this is the
-        // segmentation hot path (and what --benchmark exercises via the demo mask).
+        // Same Float + precomputed-reciprocal W/L as the grayscale path. Layer
+        // dictionaries are immutable snapshots, so concurrent reads are safe.
         let windowBottom = Float(wc - (ww / 2.0))
         let scale = Float(1.0) / Float(ww)
-        let a = Float(max(0.0, min(1.0, maskAlpha)))
-        let ia = 1 - a
-        let cra = Float(max(0.0, min(1.0, maskColor.x))) * a
-        let cga = Float(max(0.0, min(1.0, maskColor.y))) * a
-        let cba = Float(max(0.0, min(1.0, maskColor.z))) * a
 
         slice.pixelData.withUnsafeBytes { rawBuf in
             guard let src = rawBuf.baseAddress?.assumingMemoryBound(to: Int16.self),
                   slice.pixelData.count >= totalPixels * 2 else { return }
-            mask.labels.withUnsafeBufferPointer { labels in
-                @inline(__always) func composite(_ lo: Int, _ hi: Int) {
-                    var i = lo
-                    while i < hi {
-                        var g = (Float(src[i]) - windowBottom) * scale
-                        if invert { g = 1.0 - g }
-                        if g < 0 { g = 0 } else if g > 1 { g = 1 }
-                        var r = g, gg = g, b = g
-                        if labels[i] != 0 {
-                            let base = g * ia          // straight "over" blend, opaque color
-                            r = base + cra; gg = base + cga; b = base + cba
+            @inline(__always) func composite(_ lo: Int, _ hi: Int) {
+                var i = lo
+                while i < hi {
+                    var g = (Float(src[i]) - windowBottom) * scale
+                    if invert { g = 1.0 - g }
+                    if g < 0 { g = 0 } else if g > 1 { g = 1 }
+                    var r = g, green = g, b = g
+                    for layer in layers {
+                        let label = layer.labels[i]
+                        guard label != 0 else { continue }
+                        let color: LayerRGBA?
+                        switch layer.kind {
+                        case .mask: color = layer.maskColor
+                        case .atlas: color = layer.atlasColors[label]
                         }
-                        let o = i * 4
-                        // Opaque output (alpha 255); RGB already holds the blend, which
-                        // equals its premultiplied form at alpha 1 (premultipliedLast).
-                        dst[o]     = UInt8(max(0, min(255, r  * 255)))
-                        dst[o + 1] = UInt8(max(0, min(255, gg * 255)))
-                        dst[o + 2] = UInt8(max(0, min(255, b  * 255)))
-                        dst[o + 3] = 255
-                        i += 1
+                        guard let color, color.alpha > 0 else { continue }
+                        let inverseAlpha = 1 - color.alpha
+                        r = r * inverseAlpha + color.red * color.alpha
+                        green = green * inverseAlpha + color.green * color.alpha
+                        b = b * inverseAlpha + color.blue * color.alpha
                     }
+                    let output = i * 4
+                    dst[output] = UInt8(max(0, min(255, r * 255)))
+                    dst[output + 1] = UInt8(max(0, min(255, green * 255)))
+                    dst[output + 2] = UInt8(max(0, min(255, b * 255)))
+                    dst[output + 3] = 255
+                    i += 1
                 }
-                if totalPixels >= parallelToneMapThreshold {
-                    let bands = 8
-                    let chunk = (totalPixels + bands - 1) / bands
-                    DispatchQueue.concurrentPerform(iterations: bands) { bnd in
-                        let lo = bnd * chunk, hi = min(totalPixels, lo + chunk)
-                        if lo < hi { composite(lo, hi) }
-                    }
-                } else {
-                    composite(0, totalPixels)
+            }
+            if totalPixels >= parallelToneMapThreshold {
+                let bands = 8
+                let chunk = (totalPixels + bands - 1) / bands
+                DispatchQueue.concurrentPerform(iterations: bands) { band in
+                    let lo = band * chunk, hi = min(totalPixels, lo + chunk)
+                    if lo < hi { composite(lo, hi) }
                 }
+            } else {
+                composite(0, totalPixels)
             }
         }
 
