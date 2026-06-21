@@ -183,7 +183,7 @@ struct PanelView: View {
                             Image(systemName: "checkmark.circle.fill")
                                 .font(.system(size: 36))
                                 .foregroundStyle(.orange)
-                            Text("Selected")
+                            Text("Linked")
                                 .font(.headline)
                                 .foregroundStyle(.orange)
                         }
@@ -193,7 +193,7 @@ struct PanelView: View {
                             Image(systemName: "hand.tap")
                                 .font(.system(size: 36))
                                 .foregroundStyle(.white.opacity(0.7))
-                            Text("Click to select for\nsimultaneous scrolling")
+                            Text("Click to link\nfor group scrolling")
                                 .font(.subheadline)
                                 .foregroundStyle(.white.opacity(0.7))
                                 .multilineTextAlignment(.center)
@@ -262,7 +262,8 @@ struct PanelView: View {
                                 Text(panel.currentSeriesInfo).padding(4)
                             }
                             if panel.windowWidth != 0 {
-                                Text(String(format: "WL: %.0f WW: %.0f", panel.windowCenter, panel.windowWidth))
+                                Text(String(format: "WL: %.0f  WW: %.0f", panel.windowCenter, panel.windowWidth)
+                                     + (panel.valueUnitLabel == "HU" ? " HU" : ""))
                                     .padding(4)
                                     .font(.system(.caption, design: .monospaced))
                             }
@@ -621,7 +622,8 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
                 return true
             case "a":
                 if let p = model.activePanel {
-                    model.autoWindowLevelForPanel(p)
+                    // Modality-aware auto-window — same path as the Auto button.
+                    model.autoWindow(for: p)
                 }
                 return true
             case "o":
@@ -1481,6 +1483,7 @@ struct PanelAdjustmentToolbar: View {
                 .frame(width: 100, height: 40)
                 .background(Color.black.opacity(0.5))
                 .border(Color.white.opacity(0.2), width: 1)
+                .help("Intensity histogram — yellow band = current window, white line = level (center)")
             }
 
             if isNiftiPanel {
@@ -1511,32 +1514,9 @@ struct PanelAdjustmentToolbar: View {
     /// either the CT HU preset menu or the MRI percentile auto-window.
     @ViewBuilder
     private var modalityControls: some View {
-        // Do not use a segmented Picker here. Its AppKit-backed
-        // SystemSegmentedControl recursively measured an embedded SwiftUI graph
-        // whenever W/L changed, dominating the main thread during a drag. These
-        // fixed-size buttons keep the same two-state control without an intrinsic
-        // size query in the hot layout path.
-        HStack(spacing: 0) {
-            ForEach(ImagingModality.allCases) { modality in
-                Button(modality.rawValue) {
-                    if model.effectiveModality != modality {
-                        model.setModalityOverride(modality)
-                    }
-                }
-                .buttonStyle(.plain)
-                .font(.system(.caption, design: .rounded, weight: .medium))
-                .foregroundStyle(model.effectiveModality == modality ? .white : .secondary)
-                .frame(width: 48, height: 28)
-                .background(model.effectiveModality == modality
-                            ? Color.accentColor.opacity(0.55) : Color.clear)
-                .contentShape(Rectangle())
-            }
-        }
-        .background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6)
-            .strokeBorder(Color.white.opacity(0.2), lineWidth: 1))
-        .help("Imaging modality (selects CT presets vs MRI auto-window)")
-
+        // The CT/MRI switch now lives on the top-leading modality badge
+        // (ModalityBadge); here we show only the modality-specific window control:
+        // the CT HU preset menu, or the MRI percentile auto-window.
         if model.effectiveModality == .ct {
             Menu {
                 ForEach(WindowPreset.ctPresets) { preset in
@@ -1588,7 +1568,7 @@ struct PanelStatusCluster: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            ModalityBadge(modality: modality)
+            ModalityBadge(model: model, modality: modality)
 
             if let ds = model.niftiDataset, ds.isMultiVolume {
                 HStack(spacing: 6) {
@@ -1612,19 +1592,36 @@ struct PanelStatusCluster: View {
     }
 }
 
-/// Small color-coded modality pill: CT = amber, MRI = teal.
+/// Color-coded modality control: CT = amber, MRI = teal. Click to switch the
+/// modality (which reseeds the window to that modality's default). This is the
+/// single CT/MRI control — there is no longer a separate toggle in the bottom toolbar.
 struct ModalityBadge: View {
+    @ObservedObject var model: ViewerModel
     let modality: ImagingModality
 
     var body: some View {
-        Text(modality.rawValue)
+        // Plain Button (not Menu) so the color-coded capsule renders — a
+        // borderlessButton Menu strips the label background. Two modalities, so
+        // a click simply toggles to the other; the swap glyph signals it's live.
+        Button(action: {
+            let next: ImagingModality = (model.effectiveModality == .ct) ? .mri : .ct
+            model.setModalityOverride(next)
+        }) {
+            HStack(spacing: 3) {
+                Text(modality.rawValue)
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 7, weight: .bold))
+                    .opacity(0.85)
+            }
             .font(.system(size: 11, weight: .bold, design: .rounded))
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(badgeColor.opacity(0.9), in: Capsule())
             .overlay(Capsule().strokeBorder(.white.opacity(0.3), lineWidth: 0.5))
             .foregroundStyle(.white)
-            .help("Detected modality: \(modality.rawValue). Change it with the CT/MRI toggle in the bottom toolbar.")
+        }
+        .buttonStyle(.plain)
+        .help("Modality: \(modality.rawValue) (auto-detected) — click to switch CT/MRI")
     }
 
     private var badgeColor: Color {
@@ -2160,7 +2157,7 @@ struct ToolPalette: View {
                         .foregroundStyle(model.activeTool == tool ? .white : .secondary)
                 }
                 .buttonStyle(.plain)
-                .help("\(tool.rawValue) (\(tool.shortcutHint))")
+                .help("\(tool.displayName) (\(tool.shortcutHint))")
             }
         }
         .padding(4)
@@ -2180,10 +2177,10 @@ struct CursorInfoOverlay: View {
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
                     if panel.hasCursorPatientPosition {
-                        Text(String(format: "x: %.1f  y: %.1f  z: %.1f",
+                        Text(String(format: "RAS  %.1f, %.1f, %.1f mm",
                              panel.cursorPatientX, panel.cursorPatientY, panel.cursorPatientZ))
                     }
-                    Text("\(panel.valueUnitLabel): " + String(format: "%.0f  [%d, %d]",
+                    Text("\(panel.valueUnitLabel): " + String(format: "%.0f   px [%d, %d]",
                         panel.cursorHU, panel.cursorPixelX, panel.cursorPixelY))
                 }
                 .font(.system(.caption2, design: .monospaced))

@@ -1,9 +1,9 @@
 // ContentView.swift
-// OpenDicomViewer
+// Lentis
 //
 // Root view of the application. Implements a NavigationSplitView with:
 //   - Sidebar: file open button, series list with thumbnails and panel indicators
-//   - Detail: multi-panel DICOM viewer with floating layout toolbar
+//   - Detail: multi-panel NIfTI viewer with floating layout toolbar
 //
 // Also handles all keyboard shortcuts and file drag-and-drop.
 //
@@ -75,6 +75,13 @@ struct ContentView: View {
                         .padding()
 
                         Spacer()
+                    }
+
+                    if model.isLoading {
+                        NiftiLoadingOverlay()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .transition(.opacity)
+                            .zIndex(1_000)
                     }
                 }
             }
@@ -152,6 +159,7 @@ struct ContentView: View {
         .sheet(isPresented: $model.showHelp) {
             HelpView()
         }
+        .animation(.easeInOut(duration: 0.2), value: model.isLoading)
         .preferredColorScheme(.dark)
         .background(WindowAccessor(model: model))
     }
@@ -178,6 +186,37 @@ struct ContentView: View {
             let nextIndex = (currentIndex + 1) % model.panels.count
             model.activePanelID = model.panels[nextIndex].id
         }
+    }
+}
+
+/// Window-level feedback while a NIfTI file is decompressed, analysed, and
+/// converted into the canonical display volume. The loader cannot report
+/// byte-accurate progress, so this deliberately uses an indeterminate system
+/// progress indicator rather than presenting a misleading percentage.
+private struct NiftiLoadingOverlay: View {
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.5)
+
+            VStack(spacing: 14) {
+                ProgressView()
+                    .controlSize(.large)
+
+                VStack(spacing: 4) {
+                    Text("Loading NIfTI…")
+                        .font(.headline)
+                    Text("Decompressing and preparing the volume")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 22)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .shadow(radius: 12)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Loading NIfTI file")
     }
 }
 
@@ -209,6 +248,7 @@ struct SidebarView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Open NIfTI File")
+                .disabled(model.isLoading)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
@@ -269,34 +309,14 @@ struct SeriesListView: View {
                 .listRowBackground(rowBackground(for: index))
             }
             
-            if model.isScanning && !model.allSeries.isEmpty {
-                 HStack {
-                     Spacer()
-                     ProgressView()
-                         .controlSize(.small)
-                     Text("Scanning...")
-                         .font(.caption)
-                         .foregroundStyle(.secondary)
-                     Spacer()
-                 }
-                 .listRowSeparator(.hidden)
-                 .padding(.vertical, 8)
-            }
         }
         .listStyle(.sidebar)
         .overlay {
              if model.allSeries.isEmpty {
-                 if model.isScanning {
-                     VStack {
-                         ProgressView("Scanning Directory...")
-                             .controlSize(.regular)
-                     }
-                 } else {
-                     ContentUnavailableView {
-                         Label("No Series Found", systemImage: "folder.badge.questionmark")
-                     } description: {
-                         Text("Drag a FOLDER to this window to scan for all series.")
-                     }
+                 ContentUnavailableView {
+                     Label("No file open", systemImage: "doc.badge.plus")
+                 } description: {
+                     Text("Click Open above, or drag a .nii / .nii.gz file here.")
                  }
              }
         }
@@ -314,11 +334,27 @@ struct SeriesRow: View {
         model.panels.contains { $0.seriesIndex == seriesIndex }
     }
 
-    private var seriesCountLabel: String {
-        if series.images.count == 1, let nf = series.images.first?.numberOfFrames, nf > 1 {
-            return "\(nf) Frames"
+    /// True when this row is the loaded NIfTI volume (the only series in NIfTI mode).
+    private var isNiftiSeries: Bool {
+        model.niftiDataset != nil && seriesIndex == model.niftiSeriesIndex
+    }
+
+    /// Row title: the file name for a NIfTI volume, else the legacy series label.
+    private var rowTitle: String {
+        if isNiftiSeries, !model.loadedFileName.isEmpty { return model.loadedFileName }
+        return "Series \(series.seriesNumber)"
+    }
+
+    /// Row subtitle: "CT · 512×512×221" for a NIfTI volume, else its description.
+    private var rowSubtitle: String {
+        if isNiftiSeries, let vol = model.cachedVolume(forSeriesIndex: seriesIndex) {
+            let dims = "\(vol.width)×\(vol.height)×\(vol.depth)"
+            if let modality = model.effectiveModality?.rawValue {
+                return "\(modality) · \(dims)"
+            }
+            return dims
         }
-        return "\(series.images.count) Images"
+        return series.seriesDescription
     }
 
     var body: some View {
@@ -331,23 +367,22 @@ struct SeriesRow: View {
                         .frame(width: 40, height: 40)
                         .cornerRadius(4)
                 } else {
-                    Image(systemName: "folder")
+                    Image(systemName: isNiftiSeries ? "brain.head.profile" : "folder")
                         .font(.system(size: 24))
                         .foregroundStyle(.secondary)
                         .frame(width: 40, height: 40)
                 }
             }
-            VStack(alignment: .leading) {
-                Text("Series \(series.seriesNumber)")
+            VStack(alignment: .leading, spacing: 2) {
+                Text(rowTitle)
                     .font(.headline)
-                if !series.seriesDescription.isEmpty {
-                    Text(series.seriesDescription)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if !rowSubtitle.isEmpty {
+                    Text(rowSubtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text(seriesCountLabel)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
             }
             Spacer()
             if isInAnyPanel {

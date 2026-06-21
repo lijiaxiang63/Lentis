@@ -1,5 +1,5 @@
 // LayoutToolbar.swift
-// OpenDicomViewer
+// Lentis
 //
 // Floating toolbar overlay in the top-right corner of the detail area.
 // Provides buttons for:
@@ -47,8 +47,20 @@ struct LayoutToolbar: View {
                     .cornerRadius(4)
                 }
                 .buttonStyle(.plain)
-                .help("\(layout.rawValue) (\(Self.layoutKeys[idx]))")
+                .help("\(layout.description) — \(layout.rawValue) (\(Self.layoutKeys[idx]))")
             }
+
+            // MPR tri-planar quad — was menu-only (Cmd+Shift+M) before.
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.25)) { model.setupMPRLayout() }
+            }) {
+                Image(systemName: "cube.transparent")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .help("MPR Tri-Planar Layout (⌘⇧M)")
 
             Divider()
                 .frame(height: 20)

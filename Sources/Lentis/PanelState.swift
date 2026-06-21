@@ -52,6 +52,16 @@ enum ViewerLayout: String, CaseIterable, Identifiable {
         case .quad:            return "rectangle.split.2x2"
         }
     }
+
+    /// Human-readable layout name (matches the Layout menu) for toolbar tooltips.
+    var description: String {
+        switch self {
+        case .single:        return "Single Panel"
+        case .twoHorizontal: return "Side by Side"
+        case .twoVertical:   return "Stacked"
+        case .quad:          return "Four Panels"
+        }
+    }
 }
 
 // MARK: - Navigation Direction
@@ -114,6 +124,14 @@ enum ActiveTool: String, CaseIterable, Identifiable {
         case .eraser: return "E"
         }
     }
+
+    /// Full name for tooltips and menus. rawValue stays the compact identity ("W/L").
+    var displayName: String {
+        switch self {
+        case .windowLevel: return "Window/Level"
+        default:           return rawValue
+        }
+    }
 }
 
 // MARK: - Annotations
@@ -147,6 +165,8 @@ class PanelState: ObservableObject, Identifiable {
     // MIP slab projection
     @Published var mipSlabPosition: Int = 0    // center slice index (scrollable)
     @Published var mipSlabThickness: Int = 10  // number of slices in the slab
+    /// Current projection mode for MIP panels (drives the toolbar menu label).
+    @Published var mipProjection: ProjectionMode = .mip
 
     // Rendered Image
     @Published var image: NSImage? = nil
@@ -200,7 +220,7 @@ class PanelState: ObservableObject, Identifiable {
     // For NIfTI this reconstructs HU (CT) or the native intensity (MRI) for readouts.
     var rescaleSlope: Double = 1.0
     var rescaleIntercept: Double = 0.0
-    /// Unit label shown in the cursor readout ("HU" for CT, "Val" for MRI / unitless).
+    /// Unit label shown in the cursor readout ("HU" for CT, "Intensity" for MRI).
     @Published var valueUnitLabel: String = "HU"
 
     /// Whether raw pixel data is available for CPU re-rendering

@@ -1,9 +1,9 @@
 // VolumeToolbar.swift
-// OpenDicomViewer
+// Lentis
 //
 // Per-panel toolbar that appears at the top of each panel when a 3D volume
 // is available. Provides controls for switching between display modes
-// (2D Slice, Sagittal MPR, Coronal MPR, MIP) and adjusting MIP-specific
+// (Axial/Sagittal/Coronal MPR, MIP) and adjusting MIP-specific
 // parameters like slab thickness, projection type, and rotation.
 // Licensed under the MIT License. See LICENSE for details.
 
@@ -26,7 +26,9 @@ struct VolumeToolbar: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            ForEach(PanelMode.allCases) { mode in
+            // Hide the inert 2D "Slice" mode on volumetric (NIfTI) panels —
+            // NIfTI uses .mprAxial as its axial view, so Slice renders nothing.
+            ForEach(PanelMode.allCases.filter { !($0 == .slice2D && isVolumetric) }) { mode in
                 modeButton(mode)
             }
 
@@ -42,7 +44,7 @@ struct VolumeToolbar: View {
                         }
                     }
                 } label: {
-                    Text("MIP")
+                    Text(panel.mipProjection.rawValue)
                         .font(.system(.caption2, design: .monospaced))
                         .padding(.horizontal, 4)
                         .padding(.vertical, 2)
@@ -128,6 +130,21 @@ struct VolumeToolbar: View {
             }
             .buttonStyle(.plain)
             .help("Flip vertical")
+
+            Divider().frame(height: 16)
+
+            // Fullscreen toggle — surfaces the otherwise-hidden double-click gesture.
+            Button(action: {
+                model.toggleFullscreen(for: panel)
+            }) {
+                Image(systemName: model.fullscreenPanelID == panel.id
+                      ? "arrow.down.right.and.arrow.up.left"
+                      : "arrow.up.left.and.arrow.down.right")
+                    .font(.system(.caption))
+                    .foregroundStyle(model.fullscreenPanelID == panel.id ? Color.accentColor : .secondary)
+            }
+            .buttonStyle(.plain)
+            .help(model.fullscreenPanelID == panel.id ? "Exit fullscreen (double-click)" : "Fullscreen (double-click)")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)

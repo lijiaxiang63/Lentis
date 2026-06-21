@@ -1,5 +1,5 @@
 // HelpView.swift
-// OpenDicomViewer
+// Lentis
 //
 // In-app help viewer showing usage guide, tools reference, and keyboard shortcuts.
 // Licensed under the MIT License. See LICENSE for details.
@@ -32,13 +32,13 @@ struct HelpView: View {
 
                     // Overview
                     helpSection("Overview") {
-                        Text("Lentis is a native macOS DICOM image viewer built for radiology workflows. It supports multi-panel layouts, MPR (multiplanar reconstruction), window/level adjustment, measurement annotations, and cross-reference lines.")
+                        Text("Lentis is a native macOS viewer for 3D brain NIfTI images (`.nii` / `.nii.gz`), supporting both CT and MRI. It displays images in neurological orientation with modality-aware window/level, multi-panel and MPR (multiplanar reconstruction) layouts, a linked 3D crosshair, and measurement annotations.")
                     }
 
                     // Opening Files
                     helpSection("Opening Files") {
                         Text("Use **File > Open** (Cmd+O) or click the **Open** button in the sidebar to select a NIfTI file (`.nii` / `.nii.gz`). You can also **drag and drop** a file onto the viewer.")
-                        Text("The sidebar lists the loaded series. Click a series to display it in the active panel.")
+                        Text("The sidebar lists the open file. Click it to show it in the active panel.")
                     }
 
                     // Panel Layouts
@@ -50,7 +50,8 @@ struct HelpView: View {
                             shortcutRow("Cmd+4", "Four panels (2x2)")
                             shortcutRow("Cmd+Shift+M", "MPR layout")
                         }
-                        Text("Click a panel to make it the active panel. Press **Tab** to cycle through panels. Drag a series from the sidebar onto a panel to assign it.")
+                        Text("Click a panel to make it the active panel. Press **Tab** to cycle through panels. Drag the file from the sidebar onto a panel to show it there.")
+                        Text("**Double-click** a panel to toggle fullscreen for that panel (or use the fullscreen button in the panel's top toolbar).")
                     }
 
                     // Tools
@@ -67,7 +68,7 @@ struct HelpView: View {
                             toolRow("N", "angle", "Angle", "Click three points (vertex, arm1, arm2) to measure an angle. Dashed preview lines follow the cursor between clicks.")
                             toolRow("E", "eraser", "Eraser", "Click an annotation to delete it")
                         }
-                        Text("Hold **Shift** to reveal a selection overlay on each panel. Click panels to toggle them for synchronized scrolling (orange = linked). Press **Escape** to clear.")
+                        Text("Hold **Shift** to reveal a selection overlay, then click panels to **link** them so they scroll together (orange = linked). Press **Escape** to clear. This is separate from **L** Synchronized Scrolling, which links *all* panels' scroll positions.")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
@@ -100,6 +101,7 @@ struct HelpView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             shortcutRow("A", "Auto window/level")
                             shortcutRow("I", "Invert (negate) the image")
+                            shortcutRow("Right-drag", "Adjust Window/Level (works with any tool)")
                             Text("With the **W/L tool** active, drag horizontally to adjust window width and vertically to adjust window center.")
                                 .foregroundStyle(.secondary)
                         }
@@ -118,14 +120,24 @@ struct HelpView: View {
 
                     // MPR Views
                     helpSection("MPR (Multiplanar Reconstruction)") {
-                        Text("MPR mode reconstructs sagittal and coronal views from an axial volume. Use **Layout > MPR Layout** (Cmd+Shift+M) to enter MPR mode. The viewer automatically builds a 3D volume from the active series and displays axial, sagittal, and coronal planes.")
+                        Text("MPR mode reconstructs orthogonal planes from the 3D volume. Use **Layout > MPR Layout** (Cmd+Shift+M) or the MPR button in the top-right layout toolbar to show axial, sagittal, coronal, and MIP panels together, linked by a 3D crosshair.")
+                    }
+
+                    // Display guide (legends for on-screen overlays)
+                    helpSection("Display Guide") {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("**Orientation letters** at the panel edges mark patient directions: **R**ight, **L**eft, **A**nterior, **P**osterior, **S**uperior, **I**nferior. Images use the **neurological** convention — patient-left is screen-left.")
+                            Text("**Modality badge** (top-left): **CT** = amber, **MRI** = teal. It is auto-detected; click it to switch.")
+                            Text("**Histogram** (bottom): the yellow band is the current window; the white line is the level (center).")
+                            Text("**Cursor readout** (top-right): the value is **HU** for CT or **Intensity** (arbitrary units) for MRI, with the pixel column/row in brackets; **RAS** coordinates are in millimetres.")
+                            Text("**WL / WW** (bottom-left) are the window level and width in stored units (HU for CT).")
+                        }
                     }
 
                     // Overlays & Panels
                     helpSection("Overlays & Other Features") {
                         VStack(alignment: .leading, spacing: 6) {
                             shortcutRow("X", "Toggle cross-reference lines")
-                            shortcutRow("T", "Toggle DICOM tags inspector")
                             shortcutRow("L", "Toggle synchronized scrolling and zoom")
                             shortcutRow("Shift (hold)", "Show group selection overlay")
                             shortcutRow("Escape", "Clear group selection")
@@ -158,7 +170,6 @@ struct HelpView: View {
                             }
                             Divider().padding(.vertical, 4)
                             Group {
-                                shortcutCompact("T", "DICOM tags")
                                 shortcutCompact("X", "Cross-reference lines")
                                 shortcutCompact("L", "Synchronized scrolling & zoom")
                                 shortcutCompact("Shift", "Group selection overlay")

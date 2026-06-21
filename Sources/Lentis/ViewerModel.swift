@@ -223,6 +223,11 @@ class ViewerModel: ObservableObject {
     /// When non-nil, the given panel fills the entire view (double-click toggle)
     @Published var fullscreenPanelID: UUID? = nil
 
+    /// File name (last path component) of the currently loaded NIfTI file.
+    /// Shown in the sidebar row and the per-panel info overlay in place of the
+    /// vestigial "Series 1/1" label (a NIfTI is always a single series).
+    @Published var loadedFileName: String = ""
+
     /// Toggle fullscreen for a panel (double-click behavior)
     func toggleFullscreen(for panel: PanelState) {
         if fullscreenPanelID == panel.id {
@@ -400,6 +405,7 @@ class ViewerModel: ObservableObject {
                 self.currentImageIndex = -1
                 self.currentSeriesInfo = ""
                 self.currentImageInfo = ""
+                self.loadedFileName = url.lastPathComponent
                 self.resetAllPanels()
                 self.loadNifti(url: url)
             }
@@ -1256,7 +1262,15 @@ class ViewerModel: ObservableObject {
             return
         }
         let s = allSeries[panel.seriesIndex]
-        panel.currentSeriesInfo = "Series \(panel.seriesIndex + 1)/\(allSeries.count)"
+        // A NIfTI is always a single series, so "Series 1/1" is noise — show the
+        // file name instead. Keep "Series N/M" only when there are multiple series.
+        if panel.seriesIndex == niftiSeriesIndex, !loadedFileName.isEmpty {
+            panel.currentSeriesInfo = loadedFileName
+        } else if allSeries.count > 1 {
+            panel.currentSeriesInfo = "Series \(panel.seriesIndex + 1)/\(allSeries.count)"
+        } else {
+            panel.currentSeriesInfo = ""
+        }
 
         switch panel.panelMode {
         case .slice2D:
@@ -1634,6 +1648,7 @@ class ViewerModel: ObservableObject {
             }
             if panel.mipSlabThickness < 1 { panel.mipSlabThickness = 10 }
             if panel.mipSlabThickness > volume.depth { panel.mipSlabThickness = volume.depth }
+            panel.mipProjection = mode
 
             let ww = panel.windowWidth > 0 ? panel.windowWidth : (panel.initialWindowWidth > 0 ? panel.initialWindowWidth : 2000)
             let wc = panel.windowWidth > 0 ? panel.windowCenter : (panel.initialWindowWidth > 0 ? panel.initialWindowCenter : 500)

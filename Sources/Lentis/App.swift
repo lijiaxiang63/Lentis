@@ -48,7 +48,8 @@ struct LentisApp: App {
                 // ─ Window/Level ─
                 Button("Auto Window/Level (A)") {
                     if let panel = model.activePanel {
-                        model.autoWindowLevelForPanel(panel)
+                        // Modality-aware auto-window — same path as the Auto button.
+                        model.autoWindow(for: panel)
                     }
                 }
 

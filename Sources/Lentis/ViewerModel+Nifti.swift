@@ -80,7 +80,7 @@ extension ViewerModel {
         panel.windowCenter = wc
         panel.rescaleSlope = volume.rescaleSlope
         panel.rescaleIntercept = volume.rescaleIntercept
-        panel.valueUnitLabel = (dataset.detectedModality == .ct ? "HU" : "Val")
+        panel.valueUnitLabel = (dataset.detectedModality == .ct ? "HU" : "Intensity")
         setPanelMode(panel, mode: .mprAxial)   // centers + renders axial via loadMPRSlice
         activePanelID = panel.id
 
@@ -110,7 +110,7 @@ extension ViewerModel {
     /// Set / clear the manual modality override and refresh dependent UI.
     func setModalityOverride(_ modality: ImagingModality?) {
         modalityOverride = modality
-        let label = (effectiveModality == .ct ? "HU" : "Val")
+        let label = (effectiveModality == .ct ? "HU" : "Intensity")
         for panel in panels where panel.seriesIndex == niftiSeriesIndex {
             panel.valueUnitLabel = label
             // The appropriate window changes with the modality (CT preset vs MRI

@@ -24,6 +24,11 @@ swift test --filter nifti --filter dataset   # just the NIFTI tests
 swift test --filter SegmentationSeam         # just the Phase-7 mask-seam tests
 swift test --filter windowLevelRenderIsAsync # the W/L-drag async/off-main regression test
 
+# Release-mode end-to-end NIFTI load benchmark (read + dataset + canonical volume):
+xcrun swiftc -O Sources/Lentis/{NIfTI,Orientation,LabelVolume,VolumeData,NiftiVolumeLoader}.swift \
+  scripts/NiftiLoadBenchmark.swift -o /tmp/lentis-nifti-load-benchmark
+/tmp/lentis-nifti-load-benchmark /abs/path/to/file.nii.gz
+
 # Run + auto-open a file (App.swift handles --benchmark):
 open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 # Deterministic, GUI-free interactive-perf benchmark (W/L + crosshair + scroll):
@@ -70,7 +75,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/MIP, W/L, sync-scroll. **Crosshair (Phase 6):** `setCrosshair(_:from:)` relocates all panels through a world point. The world point lives in a **decoupled `CrosshairState`** (drag-lag fix) — `crosshairWorld` is now a forwarding shim, so writing it does NOT fire `model.objectWillChange`. **W/L drag (off-main):** `adjustWindowLevelForPanel` updates W/L state synchronously but re-drives `loadMPRSlice`/`loadMIPForPanel` so the re-render is off the main thread (`wl_drag` ~0.1 ms); locked by `WindowLevelAsyncRenderTests`. DICOM ingestion removed (Phase 3). |
 | `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. **Modality-aware W/L (Phase 5):** `modalityDefaultWindow`/`seededWindow` (seed), `applyWindowPreset`/`applyModalityAutoWindow`/`autoWindow(for:)` (UI). **Phase 7 seam:** `installDemoSphereMask` (`--benchmark`-only mask demo). |
 | `WindowLevel.swift` | **`WindowPreset` + CT HU preset table** (Phase 5). Brain default `(0,80)`, Subdural/Stroke/Bone/Soft-tissue (HU). `storedWindow(slope:intercept:)` maps HU→stored (identity for direct-HU CT). Pure; no deps. |
-| `NIfTI.swift` | **NIFTI-1/2 reader**. Header/endianness/4D/9 dtypes, sform/qform affine, **pure-Swift DEFLATE** (`DeflateInflater`). Zero deps. |
+| `NIfTI.swift` | **NIFTI-1/2 reader**. Header/endianness/4D/9 dtypes, sform/qform affine, **table-driven pure-Swift DEFLATE** (`DeflateInflater`): direct mapped-input reads + zero-copy output `Data`. Zero deps. |
 | `NiftiVolumeLoader.swift` | **`NiftiDataset`**: modality detection, Int16 quantization, percentile auto-window. **`makeVolume` reorients to canonical RAS** (Phase 4) — folds the relabel/flip into the quantization pass. |
 | `Orientation.swift` | **Single source of orientation truth** (Phase 4). `anatomicalDirection(of:)` (RAS labels) + `closestCanonicalReorientation(affine:)` → `CanonicalReorientation` (axis permutation + flips, lossless, invertible). Pure; no deps. |
 | `VolumeData.swift` | 3D Int16 voxel buffer + affine. **Two inits**: direction-cosine and full-affine (NIFTI). For NIFTI `voxelToWorldMatrix` is the **canonical RAS** affine; `originalAffine` + `reorientation` are retained for mask write-back. **Seg seam (Phase 7):** optional same-grid `labelMask: LabelVolume?` + `ensureLabelMask()`. |
@@ -78,9 +83,9 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:mask:…)` (CPU W/L — **Float + precomputed-reciprocal, parallelised across 8 bands** for ≥512² slices, `parallelToneMapThreshold`; RGBA composite when a mask is present). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors, cross-ref metadata, **and `maskSlice` (Phase 7 seam)** all read it. **Crosshair geometry (Phase 6):** `PlaneGeometry.world(col:row:)`/`pixel(of:)` (exact-inverse pixel↔world) + `orthogonalSliceIndex(for:containing:)` (world→slice index). (`VolumeBuilder` removed in Phase 3.) |
 | `CrossReferenceOverlay.swift` | **3D crosshair overlay (Phase 6, rewritten).** Draws two lines + center dot through `crosshair.world`'s in-plane projection, on MPR panels only; bridges raw→display pixels then reuses the image's `pixelToScreen` transform. `PanelState.displayedPlaneGeometry` helper. **Hosts `CrosshairState`** (tiny ObservableObject) and observes **it** (not the model) — so a crosshair drag invalidates only this overlay, not the whole quad (drag-lag fix). (Replaced the old `computeCrossReference` lines.) |
 | `MetalVolumeRenderer.swift` | Metal compute, **MIP/MinIP/Average only**. Inline shader strings. Texture `.r16Sint`. W/L on raw stored values. |
-| `MultiPanelContainer.swift` (~2100 lines) | Multi-panel views, gestures, overlays, cursor readout, `OrientationLabelsOverlay` (**RAS-aware** since Phase 4; dark-halo letters Phase 7). **Phase 7 UI:** `PanelStatusCluster` + `ModalityBadge` (top-leading modality badge + 4D timepoint stepper, stacked under `VolumeToolbar`; replaces the old bottom-center 4D pill). **Crosshair (Phase 6):** Select-tool `mouseDown`/`mouseDragged` → `crosshairWorld(at:)` → `model.setCrosshair`. **Seg seam:** Eraser/ROI retained as the future mask-edit surface (seam comment at the `.eraser` handler). |
-| `PanelState.swift` | Per-panel state. `PanelMode = .slice2D/.mprAxial/.mprSagittal/.mprCoronal/.mip`. `isMPR` helper. `rescaleSlope/Intercept`, `valueUnitLabel`. (`.slice2D` now inert — NIFTI uses `.mprAxial`.) |
-| `ContentView.swift` | Root split view: sidebar (series list) + multi-panel detail. (Legacy single-view subtree deleted in Phase 3.) |
+| `MultiPanelContainer.swift` (~2100 lines) | Multi-panel views, gestures, overlays, cursor readout, `OrientationLabelsOverlay` (**RAS-aware** since Phase 4; dark-halo letters Phase 7). **Phase 7 UI:** `PanelStatusCluster` + `ModalityBadge` (top-leading modality badge — now the interactive CT/MRI **toggle** (UI clarity pass) — + 4D timepoint stepper, stacked under `VolumeToolbar`; replaces the old bottom-center 4D pill). **Crosshair (Phase 6):** Select-tool `mouseDown`/`mouseDragged` → `crosshairWorld(at:)` → `model.setCrosshair`. **Seg seam:** Eraser/ROI retained as the future mask-edit surface (seam comment at the `.eraser` handler). |
+| `PanelState.swift` | Per-panel state. `PanelMode = .slice2D/.mprAxial/.mprSagittal/.mprCoronal/.mip`. `isMPR` helper. `rescaleSlope/Intercept`, `valueUnitLabel`. UI-clarity additions: `ActiveTool.displayName` + `ViewerLayout.description` (tooltips), `mipProjection` (MIP menu label). (`.slice2D` inert — NIFTI uses `.mprAxial`; now hidden in the per-panel toolbar.) |
+| `ContentView.swift` | Root split view: sidebar + multi-panel detail. Sidebar row shows the NIfTI **file name** + `modality · WxHxD` + brain icon (UI clarity pass; `model.loadedFileName`). Shows a system-material `NiftiLoadingOverlay` (indeterminate progress + loading copy) over the viewer while `ViewerModel.isLoading`; the sidebar Open action is disabled during the load. (Legacy single-view subtree deleted in Phase 3.) |
 
 ---
 
@@ -144,10 +149,12 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
    (`WindowPreset`, converted to stored units via the volume's rescale), MRI = `suggestedWindow`
    percentile. `seededWindow` prefers a saved manual window (`seriesStates`) over the default, and
    `assignSeriesToPanel` / `applyNiftiDataset` seed **every** panel from it (fixes the dark quad
-   MPR). The per-panel `PanelAdjustmentToolbar` shows a CT preset menu vs an MRI "Auto" button by
+   MPR). The CT/MRI switch lives on the top-leading `ModalityBadge` (click to swap modality + reseed
+   W/L); the per-panel `PanelAdjustmentToolbar` then shows a CT preset menu vs an MRI "Auto" button by
    `effectiveModality`; presets apply to all panels showing the series (`applyWindowPreset`).
 7. **Cursor readout:** `cursorHU = stored * panel.rescaleSlope + panel.rescaleIntercept`, label
-   `panel.valueUnitLabel` ("HU" for CT, "Val" for MRI). (On-screen overlay needs a real
+   `panel.valueUnitLabel` ("HU" for CT, "Intensity" for MRI); shows `px [col,row]` + RAS `mm`. The
+   bottom-left W/L readout appends `HU` for CT (dropped for MRI). (On-screen overlay needs a real
    NSTrackingArea mouse event — synthetic computer-use moves may not trigger it.)
 8. **Segmentation mask overlay (Phase 7 seam; dormant).** A same-grid `LabelVolume` rides on
    `VolumeData.labelMask` (UInt8, identical voxel grid → write-back via the volume's `reorientation`
@@ -178,7 +185,13 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
   Python gzip: small/all-zero/70 KB multi-block + real 34 MB `.nii.gz` all match). Originally
   written because Apple `Compression` `COMPRESSION_ZLIB` *decode* was broken by DCMTK's bundled
   static zlib `inflate` interposing. DCMTK is gone now, but keep the pure-Swift decoder — it's
-  dependency-free and correct. Do NOT "simplify" back to the Compression framework.
+  dependency-free and correct. Do NOT "simplify" back to the Compression framework. **Large-file
+  perf fix (2026-06-21):** canonical Huffman prefix lookup replaced per-symbol bit walking; the
+  bit reader is a local value type; input is read directly from mapped `Data`; and an exact-size raw
+  output buffer is handed to `Data` without copying. Real 445.9 MB MPRAGE: NIFTI read **16.00 →
+  4.94–4.99 s**, full read + statistics + quantize/RAS volume **~19 s inferred → 8.00 s measured**.
+  `scripts/NiftiLoadBenchmark.swift` is the release-mode regression harness. Its full-volume Int16
+  checksum `166302106370` matches streaming Python gzip/numpy exactly.
 - **`Data.withUnsafeBytes { $0[0] }` footgun.** The untyped closure infers `UnsafePointer<Int>`,
   so `$0[0]` reads 8 bytes as an `Int`. Always type it: `{ (raw: UnsafeRawBufferPointer) in raw[0] }`.
 - **Adding a `PanelMode` case** breaks several exhaustive switches across `ViewerModel.swift`. Build,
@@ -189,8 +202,9 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
   so each plane uses a *fixed* flip; do **not** reintroduce per-file/`sliceDirection` heuristics. If
   you add or change a plane/flip, edit `planeGeometry` only — extractors, cross-ref metadata, and
   labels all read it, and the corner-orientation tests in `MPREngineTests` will catch a sign error.
-- **Pure-Swift inflate is bit-by-bit** → ~1.5 s for a 35 MB `.nii.gz`, ~20 s for the 445 MB MPRAGE
-  (background thread, OK for now). Optimize with table-driven Huffman if it bites.
+- **[RESOLVED] Large `.nii.gz` load latency.** Huffman decode is now prefix-table driven and the
+  inflate path avoids the old large intermediate arrays/output copy. Keep the benchmark above when
+  changing the decoder; the 445.9 MB MPRAGE read budget is 8 s in release mode (latest ~4.95 s).
 - **MPR *and* MIP render are async + coalesced (`loadMPRSlice`, `loadMIPForPanel`).** Extraction / GPU
   MIP + W/L + NSImage build run on `panel.loadingQueue` (serial, background); each navigation
   `cancelAllOperations()` + enqueues, and the main-thread apply **drops stale results** whose
@@ -319,8 +333,10 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
    Gated behind `--benchmark` so it's inert in normal runs, but in benchmark mode it logs to
    `~/Desktop/odv_benchmark.csv` per scroll tick (each `log()` also takes a `task_info` memory snapshot).
    Keep as a perf probe, or strip `scroll_main`/`mpr_render` once perf work settles.
-6. **Cosmetic debt (deferred since Phase 3):** stale `// OpenDicomViewer` file headers;
-   `PanelDICOMInteractView` / `PanelInteractiveDICOMView` names; the inert `.slice2D` `PanelMode` case;
+6. **Cosmetic debt (deferred since Phase 3):** stale `// OpenDicomViewer` file headers (fixed in the
+   4 UI-clarity-touched views — Help/Content/Volume/Layout; others remain);
+   `PanelDICOMInteractView` / `PanelInteractiveDICOMView` names; the inert `.slice2D` `PanelMode` case
+   (now hidden in the per-panel toolbar for NIfTI, enum case kept);
    vestigial `ImageContext` struct + `ImageSeries.images` (NIfTI series carry an empty `images` stub).
 
 ---
@@ -328,7 +344,8 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 ## Phase status & roadmap
 
 > **▶ RESUME POINT — Phases 1–7 + crosshair-drag-lag + W/L-drag perf FIXED & committed** on branch
-> `lentis-nifti-conversion` (not pushed; no remote). The app builds with **zero native deps**, runs, and
+> `lentis-nifti-conversion` (not pushed; no remote); the **large-gzip load fix is verified in the current
+> working tree** (445.9 MB MPRAGE read 16.00→~4.95 s; end-to-end ~8.00 s). The app builds with **zero native deps**, runs, and
 > renders real CT/MRI in correct **neurological** orientation with **modality-aware window/level**, a
 > now-smooth **3D crosshair** linkage, **off-main W/L drag**, and **Phase-7 UI polish + dormant
 > segmentation seams**. `swift test` green (**109**: 50 XCTest + 59 swift-testing).
@@ -548,6 +565,27 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   Phase-4 orientation + Phase-6 crosshair intact. **Deferred:** real segmentation, mask write-back/
   persistence, the Metal mask texture, and the remaining cosmetic debt (file headers,
   `PanelDICOMInteractView` names, inert `.slice2D`, vestigial `ImageContext`).
+- [x] **UI clarity pass (post-Phase-7).** Audited the UI for confusing/misleading elements and fixed
+  them in 3 groups (no new tests; **109 green**; `swift build` clean; GUI-verified on real CT incl. a
+  live CT↔MRI badge toggle + MPR quad). **(1) Misleading/dead UI:** HelpView no longer calls Lentis a
+  "DICOM viewer" and drops the phantom `T`=DICOM-tags shortcut; empty-state + sidebar use NIfTI wording
+  (file name + `CT · WxHxD` + brain icon, not "Series 1 / 0 Images"); per-panel info shows the file
+  name (`ViewerModel.loadedFileName`) instead of "Series 1/1"; the inert `.slice2D` "Slice" mode button
+  is hidden on volumetric panels; the **`A` key now routes through `autoWindow(for:)` everywhere** —
+  `performKeyEquivalent` + the menu were calling the generic `autoWindowLevelForPanel`, disagreeing with
+  the Auto button for NIfTI. **(2) Naming/readouts:** `ActiveTool.displayName` ("Window/Level"); the MIP
+  menu label tracks `PanelState.mipProjection`; `ViewerLayout.description` drives descriptive layout
+  tooltips; the group-select overlay is reworded to distinguish it from `L` Synchronized Scrolling; the
+  W/L readout gains a `HU` unit for CT (dropped for MRI); the cursor readout gains `mm`/`px`; the MRI
+  value label `Val`→`Intensity`. **(3) Discoverability/legends:** `ModalityBadge` is now the CT/MRI
+  **toggle** (click swaps modality + reseeds W/L; the old bottom CT/MRI buttons removed — preset/Auto
+  only) — kept as a plain `Button` (not a `Menu`, whose `.borderlessButton` style stripped the
+  amber/teal capsule); an **MPR** button added to `LayoutToolbar`; a fullscreen button added to each
+  `VolumeToolbar` (surfaces the double-click gesture); a histogram `.help`; a new Help **"Display Guide"**
+  section (orientation letters, CT/MRI colors, histogram, readouts) + gesture rows (double-click
+  fullscreen, right-drag W/L). `// OpenDicomViewer` headers fixed in the 4 touched views. Orientation,
+  crosshair, and async-render code untouched. **Deferred:** remaining cosmetic debt (other
+  `// OpenDicomViewer` headers, `PanelDICOMInteractView` names, the `.slice2D` enum case, `ImageContext`).
 
 ---
 
