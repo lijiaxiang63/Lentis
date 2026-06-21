@@ -140,6 +140,18 @@ struct ContentView: View {
         .sheet(isPresented: $model.showHelp) {
             HelpView()
         }
+        .inspector(isPresented: $model.showLayerInspector) {
+            LayerInspectorView(model: model)
+                .inspectorColumnWidth(min: 280, ideal: 330, max: 440)
+        }
+        .alert("Couldn’t Add Layer", isPresented: Binding(
+            get: { model.layerImportError != nil },
+            set: { if !$0 { model.layerImportError = nil } }
+        )) {
+            Button("OK", role: .cancel) { model.layerImportError = nil }
+        } message: {
+            Text(model.layerImportError ?? "")
+        }
         .animation(.easeInOut(duration: 0.2), value: model.isLoading)
         .preferredColorScheme(.dark)
         .background(WindowAccessor(model: model))

@@ -54,6 +54,29 @@ private func makeBaseVolume(
     }
 }
 
+@Test func customLUTRepositoryPersistsDeduplicatesAndRemoves() throws {
+    let parent = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lentis-lut-test-\(UUID().uuidString)", isDirectory: true)
+    let root = parent.appendingPathComponent("LUTs", isDirectory: true)
+    try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: parent) }
+    let source = parent.appendingPathComponent("My Atlas LUT.txt")
+    try Data("1 Region One 10 20 30 0\n".utf8).write(to: source)
+
+    let repository = CustomLUTRepository(directoryURL: root)
+    let first = try repository.importFile(at: source)
+    let duplicate = try repository.importFile(at: source)
+    #expect(first.id == duplicate.id)
+    #expect(repository.loadAll().count == 1)
+    #expect(repository.loadAll().first?.name == "My Atlas LUT")
+
+    let store = LayerStore(lutRepository: repository)
+    #expect(store.lookupTable(id: first.id) != nil)
+    try store.removePersistedLookupTable(id: first.id)
+    #expect(repository.loadAll().isEmpty)
+    #expect(store.lookupTable(id: first.id) == nil)
+}
+
 @Test func singleNonzeroValueAutoDetectsMask() throws {
     let spec = NiftiSpec(nx: 3, ny: 2, nz: 1, datatype: 4, bitpix: 16)
     let image = try NiftiImage.read(data: buildNifti(spec, voxels: [0, 255, 0, 255, 0, 0]))

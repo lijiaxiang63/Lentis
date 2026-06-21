@@ -32,6 +32,7 @@
 - **Fast DICOM Parsing** — Pure-Swift parser with incremental scanning; first image displays instantly while the rest loads in the background
 - **Multi-Panel Layouts** — Single, side-by-side, stacked, and quad arrangements with drag-and-drop series assignment
 - **MPR & 3D Brain Rendering** — One-click axial/sagittal/coronal views plus interactive Metal direct-volume rendering with drag rotation and density control
+- **Mask & Atlas Layers** — A native right-side Inspector for affine-aligned NIfTI overlays, FreeSurfer/custom LUTs, layer ordering, opacity, and per-label visibility
 - **Window/Level** — Right-click drag, W/L tool, auto W/L, and ROI-based W/L with a live histogram overlay
 - **Measurement Tools** — Ruler, angle, and ROI statistics with real-time preview lines
 - **Synchronized Scrolling & Zoom** — Link panels to scroll to the same anatomical position using z-location matching
@@ -214,7 +215,7 @@ If you find a bug or have a feature request, please [open an issue](../../issues
 
 This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.
 
-DCMTK is licensed under the BSD license. OpenJPEG is licensed under BSD-2-Clause. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for full license texts.
+The bundled FreeSurfer color LUT is distributed under separate MGH terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Dependencies
 

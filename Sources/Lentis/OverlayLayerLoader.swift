@@ -66,9 +66,16 @@ enum OverlayLayerLoader {
             )
         }
 
+        let filename = sourceURL.lastPathComponent
+        let displayName: String
+        if filename.lowercased().hasSuffix(".nii.gz") {
+            displayName = String(filename.dropLast(7))
+        } else {
+            displayName = sourceURL.deletingPathExtension().lastPathComponent
+        }
         return OverlayLayer(
             sourceURL: sourceURL,
-            name: sourceURL.deletingPathExtension().lastPathComponent,
+            name: displayName,
             kind: classification.kind,
             volume: layerVolume
         )

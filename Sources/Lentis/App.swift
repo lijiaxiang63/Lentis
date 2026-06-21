@@ -17,10 +17,32 @@ struct LentisApp: App {
                 .task {
                     // Auto-open a file/directory if passed via --benchmark /path
                     if let benchIdx = CommandLine.arguments.firstIndex(of: "--benchmark"),
-                       benchIdx + 1 < CommandLine.arguments.count {
+                       benchIdx + 1 < CommandLine.arguments.count,
+                       !model.didHandleCommandLineLaunch {
+                        model.didHandleCommandLineLaunch = true
                         let path = CommandLine.arguments[benchIdx + 1]
                         let url = URL(fileURLWithPath: path)
                         model.load(url: url)
+
+                        // Optional visual-QA companion for the benchmark path:
+                        // wait for the base grid, import one external layer, and
+                        // expose the Inspector without GUI automation.
+                        if let layerIdx = CommandLine.arguments.firstIndex(of: "--benchmark-layer"),
+                           layerIdx + 1 < CommandLine.arguments.count {
+                            let deadline = Date().addingTimeInterval(120)
+                            while model.niftiDataset == nil, model.errorMessage == nil, Date() < deadline {
+                                try? await Task.sleep(nanoseconds: 20_000_000)
+                            }
+                            if model.niftiDataset != nil {
+                                model.addLayerFiles([
+                                    URL(fileURLWithPath: CommandLine.arguments[layerIdx + 1])
+                                ])
+                                while model.isImportingLayers, Date() < deadline {
+                                    try? await Task.sleep(nanoseconds: 20_000_000)
+                                }
+                                model.showLayerInspector = true
+                            }
+                        }
 
                         // Deterministic, self-driving interactive-perf probe (no GUI /
                         // computer-use needed — computer-use coalesces a synthetic drag to
@@ -40,7 +62,15 @@ struct LentisApp: App {
                     model.openFile()
                 }
                 .keyboardShortcut("o", modifiers: .command)
+
+                Button("Add Layer...") {
+                    model.openLayerFiles()
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .disabled(model.niftiDataset == nil)
             }
+
+            InspectorCommands()
 
             CommandGroup(after: .toolbar) {
                 // ─ Window/Level ─

@@ -96,6 +96,28 @@ final class OverlayLayerRenderTests: XCTestCase {
         XCTAssertNil(store.renderSnapshot().layers.first?.atlasColors[18])
     }
 
+    func testLayerStoreUsesTopFirstUIOrderAndBottomFirstRenderOrder() {
+        let store = LayerStore()
+        func layer(_ name: String) -> OverlayLayer {
+            OverlayLayer(
+                sourceURL: URL(fileURLWithPath: "/tmp/\(name).nii"),
+                name: name,
+                kind: .mask,
+                volume: OverlayLayerVolume(
+                    width: 1, height: 1, depth: 1,
+                    voxelToWorldMatrix: matrix_identity_double4x4,
+                    storage: .uint8([1]), labelCounts: [1: 1]
+                )
+            )
+        }
+        let bottom = layer("Bottom")
+        let top = layer("Top")
+        store.add(bottom)
+        store.add(top)
+        XCTAssertEqual(store.layers.map(\.id), [top.id, bottom.id])
+        XCTAssertEqual(store.renderSnapshot().layers.map(\.layerID), [bottom.id, top.id])
+    }
+
     func testMultipleLayersCompositeBottomToTop() throws {
         var data = Data(count: MemoryLayout<Int16>.stride)
         data.withUnsafeMutableBytes { $0.bindMemory(to: Int16.self)[0] = 0 }

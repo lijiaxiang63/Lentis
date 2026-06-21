@@ -35,6 +35,9 @@ mkdir -p "${RESOURCES_DIR}"
 echo "Copying Executable..."
 cp "${BUILD_DIR}/${APP_NAME}" "${MACOS_DIR}/"
 
+echo "Copying SwiftPM Resources..."
+cp -R "${BUILD_DIR}/Lentis_Lentis.bundle" "${RESOURCES_DIR}/"
+
 echo "Copying App Icon..."
 cp "AppIcon.icns" "${RESOURCES_DIR}/"
 

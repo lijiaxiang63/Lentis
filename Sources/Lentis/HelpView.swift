@@ -8,6 +8,7 @@ import SwiftUI
 
 struct HelpView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var showThirdPartyNotices = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -123,6 +124,11 @@ struct HelpView: View {
                         Text("The brain layout combines axial, sagittal, and coronal MPR planes with an interactive 3D volume rendering. Drag the 3D panel to rotate it; adjust Density in the top control bar. The three orthogonal planes remain linked by the crosshair.")
                     }
 
+                    helpSection("Mask and Atlas Layers") {
+                        Text("Open the **Layers Inspector** with the right-sidebar button or the View menu. Add or drop a 3D NIfTI mask/atlas; Lentis uses the affine to align it to the current image with nearest-neighbour sampling.")
+                        Text("Layers can be reordered, hidden, removed, recolored, and assigned a FreeSurfer-format color LUT. Atlas labels can also be searched and hidden individually. Layer overlays currently appear in the three MPR views, not the 3D volume view.")
+                    }
+
                     // Display guide (legends for on-screen overlays)
                     helpSection("Display Guide") {
                         VStack(alignment: .leading, spacing: 6) {
@@ -142,6 +148,11 @@ struct HelpView: View {
                             shortcutRow("Shift (hold)", "Show group selection overlay")
                             shortcutRow("Escape", "Clear group selection")
                         }
+                    }
+
+                    helpSection("Licenses") {
+                        Text("Lentis code is MIT licensed. The bundled FreeSurfer color LUT is distributed under separate MGH terms.")
+                        Button("View Third-Party Notices…") { showThirdPartyNotices = true }
                     }
 
                     // Full Keyboard Reference
@@ -191,6 +202,9 @@ struct HelpView: View {
         }
         .frame(minWidth: 560, idealWidth: 640, minHeight: 500, idealHeight: 700)
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showThirdPartyNotices) {
+            ThirdPartyNoticesView()
+        }
     }
 
     // MARK: - Helper Views
@@ -245,5 +259,41 @@ struct HelpView: View {
                 .foregroundStyle(.secondary)
             Spacer()
         }
+    }
+}
+
+private struct ThirdPartyNoticesView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    private var text: String {
+        guard let url = Bundle.lentisResources.url(
+            forResource: "THIRD_PARTY_NOTICES",
+            withExtension: "md",
+            subdirectory: "Resources"
+        ) ?? Bundle.lentisResources.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "md"),
+              let value = try? String(contentsOf: url, encoding: .utf8) else {
+            return "Third-party notices are unavailable."
+        }
+        return value
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Third-Party Notices").font(.title2.bold())
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+            .padding()
+            Divider()
+            ScrollView {
+                Text(text)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+        }
+        .frame(width: 680, height: 560)
     }
 }

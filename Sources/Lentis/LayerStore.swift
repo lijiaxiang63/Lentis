@@ -35,21 +35,24 @@ final class LayerStore: ObservableObject {
     @Published var selectedLayerID: UUID?
     @Published private(set) var lookupTables: [ColorLookupTable]
     @Published private(set) var revision: UInt64 = 0
+    private let lutRepository: CustomLUTRepository
 
     /// Installed by ViewerModel. This deliberately isn't @Published on the
     /// model, avoiding a full viewer relayout during opacity slider drags.
     var onRenderChange: (() -> Void)?
 
-    init() {
+    init(lutRepository: CustomLUTRepository = .shared) {
+        self.lutRepository = lutRepository
+        let customTables = lutRepository.loadAll()
         if let bundled = try? ColorLookupTable.bundled() {
-            lookupTables = [bundled]
+            lookupTables = [bundled] + customTables
         } else {
             lookupTables = [ColorLookupTable(
                 id: ColorLookupTable.bundledID,
                 name: "FreeSurfer",
                 entries: [:],
                 isBundled: true
-            )]
+            )] + customTables
         }
     }
 
@@ -63,7 +66,8 @@ final class LayerStore: ObservableObject {
     }
 
     func add(_ layer: OverlayLayer) {
-        layers.append(layer)
+        // Conventional layer stack: the first row is topmost/newest.
+        layers.insert(layer, at: 0)
         selectedLayerID = layer.id
         changed()
     }
@@ -176,6 +180,18 @@ final class LayerStore: ObservableObject {
         }
     }
 
+    @discardableResult
+    func importLookupTable(from url: URL) throws -> ColorLookupTable {
+        let table = try lutRepository.importFile(at: url)
+        installLookupTable(table)
+        return table
+    }
+
+    func removePersistedLookupTable(id: String) throws {
+        try lutRepository.remove(id: id)
+        removeLookupTable(id: id)
+    }
+
     func removeLookupTable(id: String) {
         guard id != ColorLookupTable.bundledID else { return }
         lookupTables.removeAll { $0.id == id }
@@ -188,7 +204,8 @@ final class LayerStore: ObservableObject {
     }
 
     func renderSnapshot() -> LayerRenderSnapshot {
-        let descriptors = layers.compactMap { layer -> LayerRenderDescriptor? in
+        // UI order is top-to-bottom; rendering is bottom-to-top.
+        let descriptors = layers.reversed().compactMap { layer -> LayerRenderDescriptor? in
             guard layer.isVisible, layer.opacity > 0 else { return nil }
             let alpha = Float(min(1, max(0, layer.opacity)))
             switch layer.kind {

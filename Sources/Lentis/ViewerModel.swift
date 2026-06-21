@@ -180,6 +180,12 @@ class ViewerModel: ObservableObject {
         set { crosshair.world = newValue }
     }
     @Published var showHelp: Bool = false
+    @Published var showLayerInspector: Bool = false
+    @Published var isImportingLayers: Bool = false
+    @Published var layerImportError: String? = nil
+    /// WindowGroup can restore more than one window, so command-line startup
+    /// arguments must be claimed once for the app-wide model.
+    var didHandleCommandLineLaunch = false
     @Published var synchronizedScrolling: Bool = false {
         didSet {
             guard synchronizedScrolling, let source = activePanel else { return }
@@ -393,6 +399,71 @@ class ViewerModel: ObservableObject {
         if !types.isEmpty { panel.allowedContentTypes = types }
         if panel.runModal() == .OK, let url = panel.url {
             load(url: url)
+        }
+    }
+
+    /// Choose one or more 3D NIfTI mask/atlas files for the current volume.
+    func openLayerFiles() {
+        guard niftiSeriesIndex >= 0, cachedVolume(forSeriesIndex: niftiSeriesIndex) != nil else {
+            layerImportError = "Open a base NIfTI image before adding layers."
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.message = "Choose 3D NIfTI mask or atlas label files"
+        var types: [UTType] = []
+        for ext in ["nii", "gz"] {
+            if let type = UTType(filenameExtension: ext) { types.append(type) }
+        }
+        if !types.isEmpty { panel.allowedContentTypes = types }
+        if panel.runModal() == .OK { addLayerFiles(panel.urls) }
+    }
+
+    /// Load and affine-map layer files away from the main thread. Files are
+    /// processed serially to avoid holding several decompressed NIfTI payloads
+    /// at once; successful members of a multi-selection are still installed if
+    /// another member fails.
+    func addLayerFiles(_ urls: [URL]) {
+        guard !urls.isEmpty,
+              niftiSeriesIndex >= 0,
+              let base = cachedVolume(forSeriesIndex: niftiSeriesIndex) else {
+            layerImportError = "Open a base NIfTI image before adding layers."
+            return
+        }
+        showLayerInspector = true
+        isImportingLayers = true
+        layerImportError = nil
+        let startingColorIndex = layerStore.layers.count
+        let palette: [SIMD3<Double>] = [
+            SIMD3(1.00, 0.23, 0.19), SIMD3(0.20, 0.67, 0.96),
+            SIMD3(0.30, 0.85, 0.39), SIMD3(1.00, 0.80, 0.18),
+            SIMD3(0.75, 0.35, 0.95), SIMD3(1.00, 0.55, 0.18)
+        ]
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var loaded: [OverlayLayer] = []
+            var failures: [String] = []
+            for (index, url) in urls.enumerated() {
+                let secured = url.startAccessingSecurityScopedResource()
+                defer { if secured { url.stopAccessingSecurityScopedResource() } }
+                do {
+                    let layer = try OverlayLayerLoader.load(url: url, matching: base)
+                    layer.maskColor = palette[(startingColorIndex + index) % palette.count]
+                    loaded.append(layer)
+                } catch {
+                    failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                for layer in loaded { self.layerStore.add(layer) }
+                self.isImportingLayers = false
+                if !failures.isEmpty {
+                    self.layerImportError = failures.joined(separator: "\n")
+                }
+            }
         }
     }
 

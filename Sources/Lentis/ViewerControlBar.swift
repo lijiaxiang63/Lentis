@@ -41,6 +41,16 @@ struct ViewerControlBar: View {
             if let ds = model.niftiDataset, ds.isMultiVolume {
                 ControlBarTimepointGroup(model: model, dataset: ds)
             }
+
+            Button(action: { model.showLayerInspector.toggle() }) {
+                Image(systemName: "sidebar.right")
+                    .font(.system(size: 14))
+                    .foregroundStyle(model.showLayerInspector ? Color.accentColor : .secondary)
+                    .frame(width: 26, height: 26)
+            }
+            .buttonStyle(.plain)
+            .help(model.showLayerInspector ? "Hide Layers Inspector" : "Show Layers Inspector")
+            .accessibilityLabel(model.showLayerInspector ? "Hide layers inspector" : "Show layers inspector")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 5)

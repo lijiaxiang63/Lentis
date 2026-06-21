@@ -86,11 +86,11 @@ struct ColorLookupTable: Identifiable, Equatable, Sendable {
     }
 
     static func bundled() throws -> ColorLookupTable {
-        guard let url = Bundle.module.url(
+        guard let url = Bundle.lentisResources.url(
             forResource: "FreeSurferColorLUT",
             withExtension: "txt",
             subdirectory: "Resources"
-        ) ?? Bundle.module.url(forResource: "FreeSurferColorLUT", withExtension: "txt") else {
+        ) ?? Bundle.lentisResources.url(forResource: "FreeSurferColorLUT", withExtension: "txt") else {
             throw ColorLookupTableError.bundledResourceMissing
         }
         return try parse(
