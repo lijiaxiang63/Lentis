@@ -52,43 +52,54 @@ struct MultiPanelContainer: View {
                 isFocused = true
             }
         } else {
-            // Grid mode — equal sizing via flexible frames
+            // Grid mode — pin every cell to the available geometry. A panel's
+            // image/W-L changes must not make the outer stacks ask all sibling
+            // panels for their ideal size again.
             let rows = layout.rows
             let cols = layout.columns
 
-            VStack(spacing: 2) {
-                ForEach(0..<rows, id: \.self) { row in
-                    HStack(spacing: 2) {
-                        ForEach(0..<cols, id: \.self) { col in
-                            let index = row * cols + col
-                            if index < model.panels.count {
-                                let panel = model.panels[index]
-                                PanelView(
-                                    model: model,
-                                    panel: panel,
-                                    isActive: panel.id == model.activePanelID,
-                                    isFocused: $isFocused
-                                )
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .id(panel.id)
-                                .onTapGesture(count: 2) {
-                                    withAnimation(.easeInOut(duration: 0.2)) {
-                                        model.toggleFullscreen(for: panel)
+            GeometryReader { geometry in
+                let horizontalGaps = CGFloat(max(0, cols - 1)) * 2
+                let verticalGaps = CGFloat(max(0, rows - 1)) * 2
+                let cellWidth = max(0, (geometry.size.width - horizontalGaps) / CGFloat(cols))
+                let cellHeight = max(0, (geometry.size.height - verticalGaps) / CGFloat(rows))
+
+                VStack(spacing: 2) {
+                    ForEach(0..<rows, id: \.self) { row in
+                        HStack(spacing: 2) {
+                            ForEach(0..<cols, id: \.self) { col in
+                                let index = row * cols + col
+                                if index < model.panels.count {
+                                    let panel = model.panels[index]
+                                    PanelView(
+                                        model: model,
+                                        panel: panel,
+                                        isActive: panel.id == model.activePanelID,
+                                        isFocused: $isFocused
+                                    )
+                                    .frame(width: cellWidth, height: cellHeight)
+                                    .id(panel.id)
+                                    .onTapGesture(count: 2) {
+                                        withAnimation(.easeInOut(duration: 0.2)) {
+                                            model.toggleFullscreen(for: panel)
+                                        }
                                     }
+                                    .onTapGesture(count: 1) {
+                                        model.activePanelID = panel.id
+                                        isFocused = true
+                                    }
+                                } else {
+                                    EmptyPanelView()
+                                        .frame(width: cellWidth, height: cellHeight)
                                 }
-                                .onTapGesture(count: 1) {
-                                    model.activePanelID = panel.id
-                                    isFocused = true
-                                }
-                            } else {
-                                EmptyPanelView()
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                             }
                         }
                     }
                 }
+                .frame(width: geometry.size.width, height: geometry.size.height,
+                       alignment: .topLeading)
+                .background(Color(white: 0.15))
             }
-            .background(Color(white: 0.15))
         }
     }
 }
@@ -1500,15 +1511,30 @@ struct PanelAdjustmentToolbar: View {
     /// either the CT HU preset menu or the MRI percentile auto-window.
     @ViewBuilder
     private var modalityControls: some View {
-        Picker("", selection: Binding(
-            get: { model.effectiveModality ?? .mri },
-            set: { model.setModalityOverride($0) }
-        )) {
-            Text("CT").tag(ImagingModality.ct)
-            Text("MRI").tag(ImagingModality.mri)
+        // Do not use a segmented Picker here. Its AppKit-backed
+        // SystemSegmentedControl recursively measured an embedded SwiftUI graph
+        // whenever W/L changed, dominating the main thread during a drag. These
+        // fixed-size buttons keep the same two-state control without an intrinsic
+        // size query in the hot layout path.
+        HStack(spacing: 0) {
+            ForEach(ImagingModality.allCases) { modality in
+                Button(modality.rawValue) {
+                    if model.effectiveModality != modality {
+                        model.setModalityOverride(modality)
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(.system(.caption, design: .rounded, weight: .medium))
+                .foregroundStyle(model.effectiveModality == modality ? .white : .secondary)
+                .frame(width: 48, height: 28)
+                .background(model.effectiveModality == modality
+                            ? Color.accentColor.opacity(0.55) : Color.clear)
+                .contentShape(Rectangle())
+            }
         }
-        .pickerStyle(.segmented)
-        .frame(width: 96)
+        .background(Color.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6)
+            .strokeBorder(Color.white.opacity(0.2), lineWidth: 1))
         .help("Imaging modality (selects CT presets vs MRI auto-window)")
 
         if model.effectiveModality == .ct {
