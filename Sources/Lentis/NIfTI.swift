@@ -389,37 +389,42 @@ private func gunzipIfNeeded(_ data: Data) throws -> Data {
 }
 
 private func gunzip(_ data: Data) throws -> Data {
-    let bytes = [UInt8](data)
-    guard bytes.count > 18, bytes[0] == 0x1f, bytes[1] == 0x8b, bytes[2] == 8 else {
-        throw NiftiError.decompressionFailed
-    }
-    let flg = bytes[3]
-    var idx = 10
-    if flg & 0x04 != 0 { // FEXTRA
-        guard idx + 1 < bytes.count else { throw NiftiError.decompressionFailed }
-        let xlen = Int(bytes[idx]) | (Int(bytes[idx + 1]) << 8)
-        idx += 2 + xlen
-    }
-    if flg & 0x08 != 0 { // FNAME
-        while idx < bytes.count && bytes[idx] != 0 { idx += 1 }
-        idx += 1
-    }
-    if flg & 0x10 != 0 { // FCOMMENT
-        while idx < bytes.count && bytes[idx] != 0 { idx += 1 }
-        idx += 1
-    }
-    if flg & 0x02 != 0 { idx += 2 } // FHCRC
-    guard idx < bytes.count - 8 else { throw NiftiError.decompressionFailed }
+    try data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> Data in
+        guard bytes.count > 18, bytes[0] == 0x1f, bytes[1] == 0x8b, bytes[2] == 8 else {
+            throw NiftiError.decompressionFailed
+        }
+        let flg = bytes[3]
+        var idx = 10
+        if flg & 0x04 != 0 { // FEXTRA
+            guard idx + 1 < bytes.count else { throw NiftiError.decompressionFailed }
+            let xlen = Int(bytes[idx]) | (Int(bytes[idx + 1]) << 8)
+            idx += 2 + xlen
+        }
+        if flg & 0x08 != 0 { // FNAME
+            while idx < bytes.count && bytes[idx] != 0 { idx += 1 }
+            idx += 1
+        }
+        if flg & 0x10 != 0 { // FCOMMENT
+            while idx < bytes.count && bytes[idx] != 0 { idx += 1 }
+            idx += 1
+        }
+        if flg & 0x02 != 0 { idx += 2 } // FHCRC
+        guard idx < bytes.count - 8 else { throw NiftiError.decompressionFailed }
 
-    // ISIZE (uncompressed size mod 2^32) — used to pre-size the output buffer.
-    let n = bytes.count
-    let isize = Int(bytes[n - 4]) | (Int(bytes[n - 3]) << 8) | (Int(bytes[n - 2]) << 16) | (Int(bytes[n - 1]) << 24)
-    let deflate = Array(bytes[idx ..< (n - 8)])
+        // ISIZE (uncompressed size mod 2^32) — used to pre-size the output buffer.
+        let n = bytes.count
+        let isize = Int(bytes[n - 4]) | (Int(bytes[n - 3]) << 8) | (Int(bytes[n - 2]) << 16) | (Int(bytes[n - 1]) << 24)
+        let deflateRange = idx ..< (n - 8)
 
-    guard let out = DeflateInflater.inflate(deflate, expectedSize: isize > 0 ? isize : deflate.count * 4) else {
-        throw NiftiError.decompressionFailed
+        guard let out = DeflateInflater.inflate(
+            bytes,
+            range: deflateRange,
+            expectedSize: isize > 0 ? isize : deflateRange.count * 4
+        ) else {
+            throw NiftiError.decompressionFailed
+        }
+        return out
     }
-    return Data(out)
 }
 
 /// Pure-Swift DEFLATE (RFC 1951) decompressor. Self-contained so .nii.gz works
@@ -437,32 +442,75 @@ private enum DeflateInflater {
 
     /// Canonical Huffman table built from per-symbol code lengths.
     final class Huffman {
-        var count = [Int](repeating: 0, count: 16)
-        var symbol: [Int]
+        /// Packed `(symbol << 4) | bitLength`, indexed by the next `maxBits`
+        /// LSB-first bits in the DEFLATE stream. Short codes fill every table
+        /// entry sharing that prefix, so decoding is one lookup instead of a
+        /// branchy bit-at-a-time walk through up to 15 code lengths.
+        let lookup: UnsafeMutablePointer<UInt16>
+        let lookupCount: Int
+        let maxBits: Int
+
         init(_ lengths: [Int]) {
-            symbol = [Int](repeating: 0, count: lengths.count)
+            var count = [Int](repeating: 0, count: 16)
             for len in lengths where len > 0 { count[len] += 1 }
-            var offs = [Int](repeating: 0, count: 16)
-            for len in 1..<15 { offs[len + 1] = offs[len] + count[len] }
-            for (s, len) in lengths.enumerated() where len > 0 {
-                symbol[offs[len]] = s
-                offs[len] += 1
+
+            maxBits = lengths.max() ?? 0
+            lookupCount = max(1, 1 << maxBits)
+            lookup = .allocate(capacity: lookupCount)
+            lookup.initialize(repeating: 0, count: lookupCount)
+            guard maxBits > 0 else {
+                return
             }
+
+            var nextCode = [Int](repeating: 0, count: 16)
+            var code = 0
+            for bits in 1...maxBits {
+                code = (code + count[bits - 1]) << 1
+                nextCode[bits] = code
+            }
+
+            for (s, len) in lengths.enumerated() where len > 0 {
+                let canonicalCode = nextCode[len]
+                nextCode[len] += 1
+
+                var value = canonicalCode
+                var reversed = 0
+                for _ in 0..<len {
+                    reversed = (reversed << 1) | (value & 1)
+                    value >>= 1
+                }
+
+                let packed = UInt16((s << 4) | len)
+                let step = 1 << len
+                for index in stride(from: reversed, to: lookupCount, by: step) {
+                    lookup[index] = packed
+                }
+            }
+        }
+
+        deinit {
+            lookup.deallocate()
         }
     }
 
     /// LSB-first bit reader over the deflate stream.
-    final class BitReader {
-        let bytes: [UInt8]
-        var pos = 0
+    struct BitReader {
+        let bytes: UnsafePointer<UInt8>
+        let end: Int
+        var pos: Int
         private var bitBuf = 0
         private var bitCnt = 0
-        init(_ b: [UInt8]) { bytes = b }
+        init(_ bytes: UnsafeRawBufferPointer, range: Range<Int>) {
+            self.bytes = bytes.baseAddress!.assumingMemoryBound(to: UInt8.self)
+            pos = range.lowerBound
+            end = range.upperBound
+        }
 
-        func bits(_ need: Int) -> Int? {
+        @inline(__always)
+        mutating func bits(_ need: Int) -> Int? {
             if need == 0 { return 0 }
             while bitCnt < need {
-                guard pos < bytes.count else { return nil }
+                guard pos < end else { return nil }
                 bitBuf |= Int(bytes[pos]) << bitCnt
                 pos += 1
                 bitCnt += 8
@@ -472,28 +520,60 @@ private enum DeflateInflater {
             bitCnt -= need
             return val
         }
-        /// Discard the partial byte, leaving `pos` at the next byte boundary.
-        func alignToByte() { bitBuf = 0; bitCnt = 0 }
-    }
 
-    static func decodeSymbol(_ r: BitReader, _ h: Huffman) -> Int? {
-        var code = 0, first = 0, index = 0
-        for len in 1...15 {
-            guard let b = r.bits(1) else { return nil }
-            code |= b
-            let cnt = h.count[len]
-            if code - cnt < first { return h.symbol[index + (code - first)] }
-            index += cnt
-            first = (first + cnt) << 1
-            code <<= 1
+        /// Returns the currently available prefix, zero-padded above the end
+        /// of the stream. The caller must verify that the decoded code length
+        /// does not exceed `available`; this lets a short final Huffman code be
+        /// decoded even when fewer than `need` padding bits remain.
+        @inline(__always)
+        mutating func paddedPrefix(_ need: Int) -> (value: Int, available: Int) {
+            while bitCnt < need, pos < end {
+                bitBuf |= Int(bytes[pos]) << bitCnt
+                pos += 1
+                bitCnt += 8
+            }
+            return (bitBuf & ((1 << need) - 1), bitCnt)
         }
-        return nil
+
+        @inline(__always)
+        mutating func dropBits(_ count: Int) {
+            bitBuf >>= count
+            bitCnt -= count
+        }
+
+        /// Discard the partial byte, leaving `pos` at the next byte boundary.
+        /// Whole bytes prefetched into `bitBuf` must become input again.
+        mutating func alignToByte() {
+            pos -= bitCnt / 8
+            bitBuf = 0
+            bitCnt = 0
+        }
     }
 
-    static func inflate(_ src: [UInt8], expectedSize: Int) -> [UInt8]? {
-        let r = BitReader(src)
-        var out = [UInt8]()
-        out.reserveCapacity(max(expectedSize, 1 << 12))
+    @inline(__always)
+    static func decodeSymbol(_ r: inout BitReader, _ h: Huffman) -> Int? {
+        guard h.maxBits > 0 else { return nil }
+        let prefix = r.paddedPrefix(h.maxBits)
+        let packed = h.lookup[prefix.value]
+        let length = Int(packed & 0x0f)
+        guard length > 0, length <= prefix.available else { return nil }
+        r.dropBits(length)
+        return Int(packed >> 4)
+    }
+
+    static func inflate(
+        _ src: UnsafeRawBufferPointer,
+        range: Range<Int>,
+        expectedSize: Int
+    ) -> Data? {
+        var r = BitReader(src, range: range)
+        let outputCapacity = max(expectedSize, 1 << 12)
+        let out = UnsafeMutablePointer<UInt8>.allocate(capacity: outputCapacity)
+        var outputOwned = true
+        defer {
+            if outputOwned { out.deallocate() }
+        }
+        var outputCount = 0
 
         // Fixed Huffman tables (RFC 1951 §3.2.6).
         var fixedLitLens = [Int](repeating: 8, count: 288)
@@ -508,11 +588,14 @@ private enum DeflateInflater {
             switch btype {
             case 0: // stored / uncompressed
                 r.alignToByte()
-                guard r.pos + 4 <= src.count else { return nil }
+                guard r.pos + 4 <= r.end else { return nil }
                 let len = Int(src[r.pos]) | (Int(src[r.pos + 1]) << 8)
                 r.pos += 4 // skip LEN(2) + NLEN(2)
-                guard r.pos + len <= src.count else { return nil }
-                out.append(contentsOf: src[r.pos ..< r.pos + len])
+                guard r.pos + len <= r.end else { return nil }
+                guard outputCount + len <= outputCapacity else { return nil }
+                let source = src.baseAddress!.assumingMemoryBound(to: UInt8.self)
+                out.advanced(by: outputCount).update(from: source.advanced(by: r.pos), count: len)
+                outputCount += len
                 r.pos += len
 
             case 1, 2:
@@ -533,7 +616,7 @@ private enum DeflateInflater {
                     var lens = [Int]()
                     lens.reserveCapacity(numLit + numDist)
                     while lens.count < numLit + numDist {
-                        guard let sym = decodeSymbol(r, clTable) else { return nil }
+                        guard let sym = decodeSymbol(&r, clTable) else { return nil }
                         if sym < 16 {
                             lens.append(sym)
                         } else if sym == 16 {
@@ -554,17 +637,27 @@ private enum DeflateInflater {
 
                 // Decode literal/length + distance symbols.
                 while true {
-                    guard let sym = decodeSymbol(r, litTable) else { return nil }
+                    guard let sym = decodeSymbol(&r, litTable) else { return nil }
                     if sym == 256 { break }
-                    if sym < 256 { out.append(UInt8(sym)); continue }
+                    if sym < 256 {
+                        guard outputCount < outputCapacity else { return nil }
+                        out[outputCount] = UInt8(sym)
+                        outputCount += 1
+                        continue
+                    }
                     let li = sym - 257
                     guard li < 29, let ex = r.bits(lenExtra[li]) else { return nil }
                     let length = lenBase[li] + ex
-                    guard let dsym = decodeSymbol(r, distTable), dsym < 30, let dex = r.bits(distExtra[dsym]) else { return nil }
+                    guard let dsym = decodeSymbol(&r, distTable), dsym < 30, let dex = r.bits(distExtra[dsym]) else { return nil }
                     let dist = distBase[dsym] + dex
-                    guard dist <= out.count else { return nil }
-                    var srcIdx = out.count - dist
-                    for _ in 0..<length { out.append(out[srcIdx]); srcIdx += 1 }
+                    guard dist <= outputCount, outputCount + length <= outputCapacity else { return nil }
+                    var sourceIndex = outputCount - dist
+                    let outputEnd = outputCount + length
+                    while outputCount < outputEnd {
+                        out[outputCount] = out[sourceIndex]
+                        outputCount += 1
+                        sourceIndex += 1
+                    }
                 }
 
             default:
@@ -573,6 +666,12 @@ private enum DeflateInflater {
 
             if bfinal == 1 { break }
         }
-        return out
+
+        outputOwned = false
+        return Data(
+            bytesNoCopy: out,
+            count: outputCount,
+            deallocator: .custom { pointer, _ in pointer.deallocate() }
+        )
     }
 }
