@@ -223,110 +223,6 @@ final class MPREngineTests: XCTestCase {
         XCTAssertNil(engine.coronalSlice(at: 4))
     }
 
-    // MARK: - Axial Slab Projection
-
-    func testMIPProjectionMaximum() {
-        // Create a volume where slice 0 has value 10, slice 1 has value 20
-        let w = 2, h = 2, d = 2
-        let buffer = UnsafeMutableBufferPointer<Int16>.allocate(capacity: w * h * d)
-        // Slice 0: all 10
-        for i in 0..<(w * h) { buffer[i] = 10 }
-        // Slice 1: all 20
-        for i in (w * h)..<(w * h * d) { buffer[i] = 20 }
-
-        let vol = VolumeData(
-            voxels: buffer,
-            width: w, height: h, depth: d,
-            spacingX: 1.0, spacingY: 1.0, spacingZ: 1.0,
-            origin: SIMD3<Double>(0, 0, 0),
-            rowDirection: SIMD3<Double>(1, 0, 0),
-            colDirection: SIMD3<Double>(0, 1, 0),
-            rescaleSlope: 1.0,
-            rescaleIntercept: 0.0,
-            seriesUID: "test"
-        )
-        let engine = MPREngine(volume: vol)
-        let slice = engine.axialSlabProjection(mode: .mip, slabCenter: 0, slabThickness: 4)
-        XCTAssertNotNil(slice)
-
-        let pixels = readPixels(from: slice!)
-        // MIP should take max value: 20 from all pixels
-        for p in pixels {
-            XCTAssertEqual(p, 20)
-        }
-    }
-
-    func testMinIPProjectionMinimum() {
-        let w = 2, h = 2, d = 2
-        let buffer = UnsafeMutableBufferPointer<Int16>.allocate(capacity: w * h * d)
-        for i in 0..<(w * h) { buffer[i] = 10 }
-        for i in (w * h)..<(w * h * d) { buffer[i] = 20 }
-
-        let vol = VolumeData(
-            voxels: buffer,
-            width: w, height: h, depth: d,
-            spacingX: 1.0, spacingY: 1.0, spacingZ: 1.0,
-            origin: SIMD3<Double>(0, 0, 0),
-            rowDirection: SIMD3<Double>(1, 0, 0),
-            colDirection: SIMD3<Double>(0, 1, 0),
-            rescaleSlope: 1.0,
-            rescaleIntercept: 0.0,
-            seriesUID: "test"
-        )
-        let engine = MPREngine(volume: vol)
-        let slice = engine.axialSlabProjection(mode: .minip, slabCenter: 0, slabThickness: 4)
-        XCTAssertNotNil(slice)
-
-        let pixels = readPixels(from: slice!)
-        for p in pixels {
-            XCTAssertEqual(p, 10)
-        }
-    }
-
-    func testAverageProjection() {
-        let w = 2, h = 2, d = 2
-        let buffer = UnsafeMutableBufferPointer<Int16>.allocate(capacity: w * h * d)
-        for i in 0..<(w * h) { buffer[i] = 10 }
-        for i in (w * h)..<(w * h * d) { buffer[i] = 30 }
-
-        let vol = VolumeData(
-            voxels: buffer,
-            width: w, height: h, depth: d,
-            spacingX: 1.0, spacingY: 1.0, spacingZ: 1.0,
-            origin: SIMD3<Double>(0, 0, 0),
-            rowDirection: SIMD3<Double>(1, 0, 0),
-            colDirection: SIMD3<Double>(0, 1, 0),
-            rescaleSlope: 1.0,
-            rescaleIntercept: 0.0,
-            seriesUID: "test"
-        )
-        let engine = MPREngine(volume: vol)
-        let slice = engine.axialSlabProjection(mode: .average, slabCenter: 0, slabThickness: 4)
-        XCTAssertNotNil(slice)
-
-        let pixels = readPixels(from: slice!)
-        // Average of 10 and 30 = 20
-        for p in pixels {
-            XCTAssertEqual(p, 20)
-        }
-    }
-
-    // MARK: - ProjectionMode enum
-
-    func testProjectionModeAllCases() {
-        let modes = ProjectionMode.allCases
-        XCTAssertEqual(modes.count, 3)
-        XCTAssertTrue(modes.contains(.mip))
-        XCTAssertTrue(modes.contains(.minip))
-        XCTAssertTrue(modes.contains(.average))
-    }
-
-    func testProjectionModeRawValue() {
-        XCTAssertEqual(ProjectionMode.mip.rawValue, "MIP")
-        XCTAssertEqual(ProjectionMode.minip.rawValue, "MinIP")
-        XCTAssertEqual(ProjectionMode.average.rawValue, "Average")
-    }
-
     // MARK: - Oblique Slice
 
     func testObliqueSliceDimensions() {
@@ -374,7 +270,7 @@ final class MPREngineTests: XCTestCase {
         XCTAssertEqual(engine.orthogonalSliceIndex(for: .mprAxial, containing: world), 3)     // k
         XCTAssertEqual(engine.orthogonalSliceIndex(for: .mprSagittal, containing: world), 2)  // i
         XCTAssertEqual(engine.orthogonalSliceIndex(for: .mprCoronal, containing: world), 1)   // j
-        XCTAssertNil(engine.orthogonalSliceIndex(for: .mip, containing: world))
+        XCTAssertNil(engine.orthogonalSliceIndex(for: .volume3D, containing: world))
         XCTAssertNil(engine.orthogonalSliceIndex(for: .slice2D, containing: world))
     }
 

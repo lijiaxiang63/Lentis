@@ -120,7 +120,7 @@ struct HelpView: View {
 
                     // MPR Views
                     helpSection("MPR (Multiplanar Reconstruction)") {
-                        Text("MPR mode reconstructs orthogonal planes from the 3D volume. Use **Layout > MPR Layout** (Cmd+Shift+M) or the MPR button in the top-right layout toolbar to show axial, sagittal, coronal, and MIP panels together, linked by a 3D crosshair.")
+                        Text("The brain layout combines axial, sagittal, and coronal MPR planes with an interactive 3D volume rendering. Drag the 3D panel to rotate it; adjust Density in the top control bar. The three orthogonal planes remain linked by the crosshair.")
                     }
 
                     // Display guide (legends for on-screen overlays)

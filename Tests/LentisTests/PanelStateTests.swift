@@ -65,7 +65,7 @@ final class PanelStateTests: XCTestCase {
         XCTAssertTrue(cases.contains(.mprAxial))
         XCTAssertTrue(cases.contains(.mprSagittal))
         XCTAssertTrue(cases.contains(.mprCoronal))
-        XCTAssertTrue(cases.contains(.mip))
+        XCTAssertTrue(cases.contains(.volume3D))
     }
 
     func testPanelModeRawValues() {
@@ -73,7 +73,7 @@ final class PanelStateTests: XCTestCase {
         XCTAssertEqual(PanelMode.mprAxial.rawValue, "Axial")
         XCTAssertEqual(PanelMode.mprSagittal.rawValue, "Sagittal")
         XCTAssertEqual(PanelMode.mprCoronal.rawValue, "Coronal")
-        XCTAssertEqual(PanelMode.mip.rawValue, "MIP")
+        XCTAssertEqual(PanelMode.volume3D.rawValue, "3D")
     }
 
     func testPanelModeIdentifiable() {
@@ -127,6 +127,36 @@ final class PanelStateTests: XCTestCase {
     func testActiveToolIdentifiable() {
         let tool = ActiveTool.ruler
         XCTAssertEqual(tool.id, tool.rawValue)
+    }
+
+    func testVolumePrimaryDragTools() {
+        XCTAssertTrue(ActiveTool.select.rotatesVolumeOnPrimaryDrag)
+        XCTAssertTrue(ActiveTool.pan.rotatesVolumeOnPrimaryDrag)
+        XCTAssertFalse(ActiveTool.windowLevel.rotatesVolumeOnPrimaryDrag)
+        XCTAssertFalse(ActiveTool.zoom.rotatesVolumeOnPrimaryDrag)
+    }
+
+    // MARK: - 3D Volume Interaction
+
+    func testHorizontalVolumeDragTurnsWithPointerWithoutPitch() {
+        let delta = VolumeRotationInteraction.rotationDelta(
+            from: CGPoint(x: 20, y: 30),
+            to: CGPoint(x: 100, y: 30)
+        )
+
+        XCTAssertLessThan(delta.yaw, 0)
+        XCTAssertEqual(delta.yaw, -60)
+        XCTAssertEqual(delta.pitch, 0)
+    }
+
+    func testVerticalVolumeDragTurnsWithPointerWithoutYaw() {
+        let delta = VolumeRotationInteraction.rotationDelta(
+            from: CGPoint(x: 20, y: 30),
+            to: CGPoint(x: 20, y: 10)
+        )
+
+        XCTAssertEqual(delta.yaw, 0)
+        XCTAssertGreaterThan(delta.pitch, 0)
     }
 
     // MARK: - PanelState basics

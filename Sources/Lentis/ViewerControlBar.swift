@@ -153,7 +153,7 @@ private struct ControlBarLayoutGroup: View {
     }
 }
 
-// MARK: - Plane / MIP (active panel)
+// MARK: - Plane / 3D volume (active panel)
 
 private struct ControlBarPlaneGroup: View {
     @ObservedObject var model: ViewerModel
@@ -162,10 +162,6 @@ private struct ControlBarPlaneGroup: View {
     private var isVolumetric: Bool {
         model.isSeriesVolumetric(seriesIndex: panel.seriesIndex)
     }
-    private var maxSlabSlices: Int {
-        model.volumeSliceCount(seriesIndex: panel.seriesIndex)
-    }
-
     var body: some View {
         HStack(spacing: 4) {
             // Hide the inert 2D "Slice" mode on volumetric (NIfTI) panels.
@@ -173,47 +169,46 @@ private struct ControlBarPlaneGroup: View {
                 modeButton(mode)
             }
 
-            if panel.panelMode == .mip {
+            if panel.panelMode == .volume3D {
                 Divider().frame(height: 16)
-
-                Menu {
-                    ForEach(ProjectionMode.allCases) { projMode in
-                        Button(projMode.rawValue) { model.loadMIPForPanel(panel, mode: projMode) }
-                    }
-                } label: {
-                    Text(panel.mipProjection.rawValue)
-                        .font(.system(.caption2, design: .monospaced))
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 2)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-
-                if maxSlabSlices > 1 {
-                    Text("Slab")
+                HStack(spacing: 6) {
+                    Text("Density")
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
-                    // NOTE: deliberately NO `step:` here. A stepped Slider renders
-                    // a tick-mark label per step, so `step: 1` over 1...maxSlabSlices
-                    // emitted ~1024 marks for the MPRAGE and cost ~2 s/event of
-                    // layout (the old crosshair "drag lag"). The setter snaps to Int.
+                        .fixedSize()
+
                     Slider(
                         value: Binding(
-                            get: { Double(panel.mipSlabThickness) },
-                            set: { panel.mipSlabThickness = max(1, Int($0.rounded())) }
+                            get: { panel.volumeOpacity },
+                            set: {
+                                panel.volumeOpacity = $0
+                                model.loadVolumeRendering(for: panel, interactive: true)
+                            }
                         ),
-                        in: 1...Double(maxSlabSlices)
+                        in: 0.25...2.5
                     ) {
-                        Text("Slab")
+                        Text("Volume density")
                     } onEditingChanged: { editing in
-                        if !editing { model.loadMIPForPanel(panel) }
+                        if !editing { model.loadVolumeRendering(for: panel) }
                     }
-                    .frame(width: 80)
-                    Text("\(panel.mipSlabThickness)")
+                    .labelsHidden()
+                    .controlSize(.mini)
+                    .frame(width: 104)
+
+                    Text(String(format: "%.1f×", panel.volumeOpacity))
                         .font(.system(.caption2, design: .monospaced))
                         .foregroundStyle(.secondary)
-                        .frame(width: 26, alignment: .leading)
+                        .frame(width: 34, alignment: .trailing)
+
+                    Button(action: { model.resetVolumeCamera(panel) }) {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(.caption))
+                            .frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Reset 3D camera and density")
                 }
+                .fixedSize(horizontal: true, vertical: false)
             }
 
             if model.isVolumeBuildingInProgress {
@@ -334,29 +329,31 @@ private struct ControlBarTransformGroup: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Button(action: { panel.rotationSteps = (panel.rotationSteps + 1) % 4 }) {
-                Image(systemName: "rotate.right").font(.system(.caption)).frame(width: 24, height: 24)
-            }
-            .buttonStyle(.plain)
-            .help("Rotate 90° clockwise (])")
+            if panel.panelMode != .volume3D {
+                Button(action: { panel.rotationSteps = (panel.rotationSteps + 1) % 4 }) {
+                    Image(systemName: "rotate.right").font(.system(.caption)).frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help("Rotate 90° clockwise (])")
 
-            Button(action: { panel.isFlippedH.toggle() }) {
-                Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right")
-                    .font(.system(.caption))
-                    .foregroundStyle(panel.isFlippedH ? Color.accentColor : .secondary)
-                    .frame(width: 24, height: 24)
-            }
-            .buttonStyle(.plain)
-            .help("Flip horizontal (H)")
+                Button(action: { panel.isFlippedH.toggle() }) {
+                    Image(systemName: "arrow.left.and.right.righttriangle.left.righttriangle.right")
+                        .font(.system(.caption))
+                        .foregroundStyle(panel.isFlippedH ? Color.accentColor : .secondary)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help("Flip horizontal (H)")
 
-            Button(action: { panel.isFlippedV.toggle() }) {
-                Image(systemName: "arrow.up.and.down.righttriangle.up.righttriangle.down")
-                    .font(.system(.caption))
-                    .foregroundStyle(panel.isFlippedV ? Color.accentColor : .secondary)
-                    .frame(width: 24, height: 24)
+                Button(action: { panel.isFlippedV.toggle() }) {
+                    Image(systemName: "arrow.up.and.down.righttriangle.up.righttriangle.down")
+                        .font(.system(.caption))
+                        .foregroundStyle(panel.isFlippedV ? Color.accentColor : .secondary)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help("Flip vertical")
             }
-            .buttonStyle(.plain)
-            .help("Flip vertical")
 
             Button(action: { model.toggleFullscreen(for: panel) }) {
                 Image(systemName: model.fullscreenPanelID == panel.id

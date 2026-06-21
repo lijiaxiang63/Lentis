@@ -31,7 +31,7 @@
 
 - **Fast DICOM Parsing** — Pure-Swift parser with incremental scanning; first image displays instantly while the rest loads in the background
 - **Multi-Panel Layouts** — Single, side-by-side, stacked, and quad arrangements with drag-and-drop series assignment
-- **MPR & Volume Rendering** — One-click sagittal, coronal, and MIP views with adjustable slab thickness via Metal compute shaders
+- **MPR & 3D Brain Rendering** — One-click axial/sagittal/coronal views plus interactive Metal direct-volume rendering with drag rotation and density control
 - **Window/Level** — Right-click drag, W/L tool, auto W/L, and ROI-based W/L with a live histogram overlay
 - **Measurement Tools** — Ruler, angle, and ROI statistics with real-time preview lines
 - **Synchronized Scrolling & Zoom** — Link panels to scroll to the same anatomical position using z-location matching
@@ -163,9 +163,9 @@ Sources/
 │   ├── LayoutToolbar.swift       # Floating layout/link/crossref toolbar
 │   ├── CrossReferenceOverlay.swift # Slice intersection lines between panels
 │   ├── MPREngine.swift           # CPU-based multi-planar reconstruction
-│   ├── MetalVolumeRenderer.swift # GPU MIP/MinIP/Average via Metal compute
+│   ├── MetalVolumeRenderer.swift # GPU ray-marched 3D direct-volume rendering
 │   ├── VolumeData.swift          # 3D voxel buffer with affine transforms
-│   ├── VolumeToolbar.swift       # MPR/MIP mode controls per panel
+│   ├── ViewerControlBar.swift    # MPR/3D mode, W/L, layout, and transform controls
 │   ├── HelpView.swift            # In-app help viewer
 │   ├── TagView.swift             # DICOM tag list view
 │   ├── Extensions.swift          # Collection safe-subscript helper

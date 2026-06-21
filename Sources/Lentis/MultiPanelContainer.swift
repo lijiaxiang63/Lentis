@@ -151,7 +151,7 @@ struct PanelView: View {
                 }
             }
 
-            // (Per-panel control toolbars — plane/MIP/modality/window/transform/4D —
+            // (Per-panel control toolbars — plane/3D/modality/window/transform/4D —
             // moved off the image into the docked ViewerControlBar at the top.)
 
             // Shift-overlay for group selection (multi-panel only)
@@ -186,25 +186,25 @@ struct PanelView: View {
 
             // Cross-reference lines overlay. Observes the decoupled CrosshairState
             // (not the model) so crosshair drags don't re-lay-out this whole panel.
-            if panel.image != nil && model.panels.count > 1 && model.showCrossReference {
+            if panel.image != nil && panel.panelMode.isMPR && model.panels.count > 1 && model.showCrossReference {
                 CrossReferenceOverlay(panel: panel, crosshair: model.crosshair)
                     .zIndex(10)
             }
 
             // ROI rectangle overlay
-            if panel.image != nil, let roiRect = panel.roiRect {
+            if panel.image != nil, panel.panelMode != .volume3D, let roiRect = panel.roiRect {
                 ROIOverlay(panel: panel, roiRect: roiRect)
                     .zIndex(12)
             }
 
             // Annotation overlay (rulers, angles, ROI stats)
-            if panel.image != nil {
+            if panel.image != nil && panel.panelMode != .volume3D {
                 AnnotationOverlay(panel: panel)
                     .zIndex(13)
             }
 
             // Orientation labels (A/P/R/L/S/I)
-            if panel.image != nil {
+            if panel.image != nil && panel.panelMode != .volume3D {
                 OrientationLabelsOverlay(orientation: panel.imageOrientationPatient,
                                          rotationSteps: panel.rotationSteps,
                                          isFlippedH: panel.isFlippedH,
@@ -231,7 +231,7 @@ struct PanelView: View {
             // the docked ViewerStatusBar, controls into the docked ViewerControlBar.)
 
             // Right Side Scroller (always visible when series assigned)
-            if panel.seriesIndex >= 0 {
+            if panel.seriesIndex >= 0 && panel.panelMode != .volume3D {
                 HStack {
                     Spacer()
                     PanelDICOMScroller(model: model, panel: panel)
@@ -303,6 +303,14 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
         private var wlPendingDeltaCenter: Double = 0
         private var wlLastRenderTime: CFTimeInterval = 0
         private let wlRenderInterval: CFTimeInterval = 1.0 / 60.0
+        private var volumePendingYaw: Double = 0
+        private var volumePendingPitch: Double = 0
+        private var volumeLastRenderTime: CFTimeInterval = 0
+        // The 192² interactive render fits inside 16.7 ms on the 721 MB
+        // MPRAGE, so drive camera updates at display-rate instead of the visibly
+        // stepped 30 Hz used by the first 3D implementation.
+        private let volumeRenderInterval: CFTimeInterval = 1.0 / 60.0
+        private var volumeDidRotate = false
 
         // In-progress annotation state
         private var rulerStartPixel: CGPoint?
@@ -597,7 +605,7 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
             let desiredCursor: NSCursor
             switch tool {
             case .select:
-                desiredCursor = .arrow
+                desiredCursor = panel?.panelMode == .volume3D ? .openHand : .arrow
             case .pan:
                 desiredCursor = .openHand
             case .windowLevel:
@@ -610,7 +618,7 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
                 desiredCursor = .disappearingItem
             }
 
-            if tool == .select {
+            if tool == .select && panel?.panelMode != .volume3D {
                 // Default arrow cursor — pop any custom cursor
                 if isCrosshairCursorActive {
                     NSCursor.pop()
@@ -741,9 +749,16 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
 
             switch model.activeTool {
             case .select:
-                // Default tool doubles as the crosshair localizer: click sets
-                // the shared 3D crosshair (when enabled in multi-panel MPR).
-                setCrosshairFromEvent(event)
+                if panel.panelMode == .volume3D {
+                    // The default pointer directly manipulates the 3D camera.
+                    lastDragLocation = event.locationInWindow
+                    volumePendingYaw = 0
+                    volumePendingPitch = 0
+                    volumeDidRotate = false
+                } else {
+                    // On MPR, Select doubles as the crosshair localizer.
+                    setCrosshairFromEvent(event)
+                }
 
             case .pan:
                 // Just activate (handled above)
@@ -1052,10 +1067,35 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
                 return
             }
 
+            if panel.panelMode == .volume3D && model.activeTool.rotatesVolumeOnPrimaryDrag {
+                // Trackball-style camera: horizontal drag = yaw, vertical = pitch.
+                // Use absolute locations instead of NSEvent.deltaX/deltaY:
+                // coalesced and synthetic macOS drag events may report zero
+                // deltas even though their cursor location moved, producing
+                // the intermittent "stuck then jump" horizontal rotation.
+                let current = event.locationInWindow
+                guard let previous = lastDragLocation else {
+                    lastDragLocation = current
+                    return
+                }
+                let delta = VolumeRotationInteraction.rotationDelta(
+                    from: previous,
+                    to: current
+                )
+                volumePendingYaw += delta.yaw
+                volumePendingPitch += delta.pitch
+                lastDragLocation = current
+                volumeDidRotate = true
+                flushPendingVolumeRotationIfNeeded(force: false)
+                return
+            }
+
             switch model.activeTool {
             case .select:
-                // Drag the crosshair (continuous localizer) in multi-panel MPR.
-                setCrosshairFromEvent(event)
+                if panel.panelMode != .volume3D {
+                    // Drag the crosshair (continuous localizer) in multi-panel MPR.
+                    setCrosshairFromEvent(event)
+                }
 
             case .pan:
                 // Left-click drag = pan
@@ -1126,7 +1166,16 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
 
             switch model.activeTool {
             case .select:
-                break
+                if panel.panelMode == .volume3D {
+                    flushPendingVolumeRotationIfNeeded(force: true)
+                    lastDragLocation = nil
+                }
+
+            case .pan:
+                if panel.panelMode == .volume3D {
+                    flushPendingVolumeRotationIfNeeded(force: true)
+                    lastDragLocation = nil
+                }
 
             case .roiWL:
                 if let rect = panel.roiRect, rect.width > 1 && rect.height > 1 {
@@ -1180,6 +1229,27 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
             }
         }
 
+        private func flushPendingVolumeRotationIfNeeded(force: Bool) {
+            guard let model, let panel, panel.panelMode == .volume3D else { return }
+            let now = CACurrentMediaTime()
+            let hasPending = volumePendingYaw != 0 || volumePendingPitch != 0
+            if hasPending && (force || (now - volumeLastRenderTime) >= volumeRenderInterval) {
+                model.rotateVolumeRendering(
+                    panel,
+                    deltaYaw: volumePendingYaw,
+                    deltaPitch: volumePendingPitch,
+                    interactive: !force
+                )
+                volumePendingYaw = 0
+                volumePendingPitch = 0
+                volumeLastRenderTime = now
+            } else if force && volumeDidRotate {
+                // Even if the last delta was already flushed, settle at full quality.
+                model.loadVolumeRendering(for: panel)
+            }
+            if force { volumeDidRotate = false }
+        }
+
         // MARK: - Mouse Tracking for HU Readout
 
         override func updateTrackingAreas() {
@@ -1210,6 +1280,10 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
         override func mouseMoved(with event: NSEvent) {
             guard let panel = panel, imageView.image != nil else {
                 panel?.showCursorInfo = false
+                return
+            }
+            guard panel.panelMode != .volume3D else {
+                panel.showCursorInfo = false
                 return
             }
 

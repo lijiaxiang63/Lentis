@@ -7,7 +7,7 @@
 // Key types:
 //   ViewerLayout       — Layout configuration (1x1, 2x1, 1x2, 2x2)
 //   NavigationDirection — Arrow key navigation actions
-//   PanelMode          — Display mode per panel (2D slice, MPR sagittal/coronal, MIP)
+//   PanelMode          — Display mode per panel (2D slice, orthogonal MPR, 3D volume)
 //   PanelState         — Observable state for a single viewer panel, including:
 //                         series/image assignment, window/level, zoom/pan,
 //                         spatial metadata, histogram, cursor readout, and
@@ -75,7 +75,7 @@ enum PanelMode: String, CaseIterable, Identifiable {
     case mprAxial = "Axial"
     case mprSagittal = "Sagittal"
     case mprCoronal = "Coronal"
-    case mip = "MIP"
+    case volume3D = "3D"
 
     var id: String { rawValue }
 
@@ -132,6 +132,32 @@ enum ActiveTool: String, CaseIterable, Identifiable {
         default:           return rawValue
         }
     }
+
+    /// On the 3D panel, both the default pointer and hand tool should directly
+    /// manipulate the camera. Window/level and annotation tools keep their own
+    /// existing drag behavior.
+    var rotatesVolumeOnPrimaryDrag: Bool {
+        self == .select || self == .pan
+    }
+}
+
+// MARK: - 3D Volume Interaction
+
+struct VolumeRotationDelta: Equatable {
+    let yaw: Double
+    let pitch: Double
+}
+
+enum VolumeRotationInteraction {
+    static let yawDegreesPerPoint: Double = 0.75
+    static let pitchDegreesPerPoint: Double = 0.45
+
+    static func rotationDelta(from previous: CGPoint, to current: CGPoint) -> VolumeRotationDelta {
+        VolumeRotationDelta(
+            yaw: Double(previous.x - current.x) * yawDegreesPerPoint,
+            pitch: Double(previous.y - current.y) * pitchDegreesPerPoint
+        )
+    }
 }
 
 // MARK: - Annotations
@@ -162,11 +188,13 @@ class PanelState: ObservableObject, Identifiable {
     // MPR position (voxel index for orthogonal slices)
     @Published var mprSliceIndex: Int = 0
 
-    // MIP slab projection
-    @Published var mipSlabPosition: Int = 0    // center slice index (scrollable)
-    @Published var mipSlabThickness: Int = 10  // number of slices in the slab
-    /// Current projection mode for MIP panels (drives the toolbar menu label).
-    @Published var mipProjection: ProjectionMode = .mip
+    // 3D volume-rendering camera and transfer density. The renderer consumes
+    // these values off-main; a monotonically increasing revision drops stale
+    // GPU results after rapid camera/W-L changes.
+    @Published var volumeYawDegrees: Double = -25
+    @Published var volumePitchDegrees: Double = 18
+    @Published var volumeOpacity: Double = 1.0
+    var volumeRenderRevision: UInt64 = 0
 
     // Rendered Image
     @Published var image: NSImage? = nil
@@ -291,8 +319,10 @@ class PanelState: ObservableObject, Identifiable {
         imageIndex = -1
         panelMode = .slice2D
         mprSliceIndex = 0
-        mipSlabPosition = 0
-        mipSlabThickness = 10
+        volumeYawDegrees = -25
+        volumePitchDegrees = 18
+        volumeOpacity = 1.0
+        volumeRenderRevision &+= 1
         image = nil
         displayImageWidth = 0
         displayImageHeight = 0

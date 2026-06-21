@@ -7,7 +7,8 @@ converted from a DICOM viewer into a NIFTI viewer.
 **Goal:** load CT/MRI NIFTI (incl. 4D), display in **neurological orientation** (patient-left =
 screen-left) per the image affine, **modality-aware window/level** (CT: HU presets incl.
 Brain `(0,80)`; MRI: robust auto-window), draggable crosshair linking three orthogonal views,
-drag-to-open. Remove all DICOM/DCMTK/OpenJPEG deps. Keep MIT license. Leave clean seams for a
+an interactive Metal **3D brain volume-rendering** fourth view, drag-to-open. Remove all
+DICOM/DCMTK/OpenJPEG deps. Keep MIT license. Leave clean seams for a
 future intracranial-calcification segmentation feature (CT/HU-oriented).
 
 This file is the working record. Update it as phases complete.
@@ -18,8 +19,9 @@ This file is the working record. Update it as phases complete.
 
 ```bash
 swift build                       # debug build (~20s clean; zero native/system deps)
+./script/build_and_run.sh         # debug build + stage dist/Lentis.app + launch
 ./scripts/package_app.sh          # release build → Lentis.app + Lentis.dmg (ad-hoc signed)
-swift test                        # full suite: MIXED XCTest + swift-testing (109: 50 XCTest + 59 swift-testing)
+swift test                        # full suite: MIXED XCTest + swift-testing (115: 56 XCTest + 59 swift-testing)
 swift test --filter nifti --filter dataset   # just the NIFTI tests
 swift test --filter SegmentationSeam         # just the Phase-7 mask-seam tests
 swift test --filter windowLevelRenderIsAsync # the W/L-drag async/off-main regression test
@@ -29,6 +31,11 @@ xcrun swiftc -O Sources/Lentis/{NIfTI,Orientation,LabelVolume,VolumeData,NiftiVo
   scripts/NiftiLoadBenchmark.swift -o /tmp/lentis-nifti-load-benchmark
 /tmp/lentis-nifti-load-benchmark /abs/path/to/file.nii.gz
 
+# Release-mode 3D rotation preview throughput (fails if p95 misses target FPS):
+xcrun swiftc -O Sources/Lentis/{NIfTI,Orientation,LabelVolume,VolumeData,NiftiVolumeLoader,MetalVolumeRenderer}.swift \
+  scripts/VolumeRenderBenchmark.swift -o /tmp/lentis-volume-render-benchmark
+/tmp/lentis-volume-render-benchmark /abs/path/to/file.nii.gz 192 16 60
+
 # Run + auto-open a file (App.swift handles --benchmark):
 open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 # Deterministic, GUI-free interactive-perf benchmark (W/L + crosshair + scroll):
@@ -37,9 +44,9 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 
 - **Perf probe:** `--benchmark` writes `~/Desktop/odv_benchmark.csv` (and `[BENCH]` to stderr).
   Main-thread-cost events (must stay sub-ms): `scroll_main` (one scroll tick), `crosshair_set` (one
-  crosshair relocation), `wl_drag` (one W/L flush). Off-main render events: `mpr_render` / `mip_render`
+  crosshair relocation), `wl_drag` (one W/L flush). Off-main render events: `mpr_render` / `volume_render`
   (per-slice render ms). `--perf-stress` (with `--benchmark`) is a **self-driving** harness that loads
-  the file, builds the MPR quad, and fires 80 each of W/L flushes (sagittal MPR + MIP), crosshair
+  the file, builds the brain quad, and fires 80 each of W/L flushes (sagittal MPR + 3D), crosshair
   relocations, and scroll ticks — logging the four main-thread-cost events — so interactive perf can be
   measured **without GUI/computer-use** (which coalesces a synthetic drag to ~2 events). Latest MPRAGE
   quad numbers: `wl_drag` 0.10 ms, `crosshair_set` 0.15 ms, `scroll_main` 0.30 ms — all off-main render.
@@ -51,7 +58,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
   **Zero native/system dependencies** — pure Swift + Metal/AppKit (DCMTK/OpenJPEG gone in Phase 3).
 - `swift build` after adding a `PanelMode` case → the compiler flags every non-exhaustive
   `switch` (~10 sites). Fix each (usually mirror `.mprCoronal` or fold into a combined case).
-- **Git state:** Phases 1–7 **+ the crosshair-drag-lag fix** are committed on branch
+- **Git state:** Phases 1–8 **+ the crosshair-drag-lag fix and 3D camera interaction fixes** are committed on branch
   **`lentis-nifti-conversion`** (off upstream `master`); see `git log`. Not pushed
   (no remote configured). Real patient data (`TestData/sub-*`) is gitignored — only synthetic fixtures
   are tracked. Commit per phase/logical step going forward.
@@ -72,7 +79,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | File | Role |
 |---|---|
 | `App.swift` | `@main struct LentisApp`. Menus. `--benchmark <path>` auto-open. |
-| `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/MIP, W/L, sync-scroll. **Crosshair (Phase 6):** `setCrosshair(_:from:)` relocates all panels through a world point. The world point lives in a **decoupled `CrosshairState`** (drag-lag fix) — `crosshairWorld` is now a forwarding shim, so writing it does NOT fire `model.objectWillChange`. **W/L drag (off-main):** `adjustWindowLevelForPanel` updates W/L state synchronously but re-drives `loadMPRSlice`/`loadMIPForPanel` so the re-render is off the main thread (`wl_drag` ~0.1 ms); locked by `WindowLevelAsyncRenderTests`. DICOM ingestion removed (Phase 3). |
+| `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/3D, W/L, sync-scroll. **Crosshair (Phase 6):** `setCrosshair(_:from:)` relocates the orthogonal panels through a world point; `.volume3D` is deliberately excluded. The world point lives in a **decoupled `CrosshairState`**. **3D (Phase 8):** `loadVolumeRendering` is async/coalesced on `panel.loadingQueue`; `rotateVolumeRendering` drives preview/final camera renders. **W/L drag:** re-drives `loadMPRSlice`/`loadVolumeRendering` off-main. DICOM ingestion removed (Phase 3). |
 | `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. **Modality-aware W/L (Phase 5):** `modalityDefaultWindow`/`seededWindow` (seed), `applyWindowPreset`/`applyModalityAutoWindow`/`autoWindow(for:)` (UI). **Phase 7 seam:** `installDemoSphereMask` (`--benchmark`-only mask demo). |
 | `WindowLevel.swift` | **`WindowPreset` + CT HU preset table** (Phase 5). Brain default `(0,80)`, Subdural/Stroke/Bone/Soft-tissue (HU). `storedWindow(slope:intercept:)` maps HU→stored (identity for direct-HU CT). Pure; no deps. |
 | `NIfTI.swift` | **NIFTI-1/2 reader**. Header/endianness/4D/9 dtypes, sform/qform affine, **table-driven pure-Swift DEFLATE** (`DeflateInflater`): direct mapped-input reads + zero-copy output `Data`. Zero deps. |
@@ -82,32 +89,33 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | `LabelVolume.swift` | **Segmentation seam (Phase 7).** Same-grid UInt8 mask (slice-major, identical dims) riding on `VolumeData.labelMask`; shares the volume's voxel grid so write-back reuses its `reorientation` + `originalAffine`. `labelAt`/`setLabel`/`clear`/`labeledVoxelCount`. Inert in normal runs. |
 | `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:mask:…)` (CPU W/L — **Float + precomputed-reciprocal, parallelised across 8 bands** for ≥512² slices, `parallelToneMapThreshold`; RGBA composite when a mask is present). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors, cross-ref metadata, **and `maskSlice` (Phase 7 seam)** all read it. **Crosshair geometry (Phase 6):** `PlaneGeometry.world(col:row:)`/`pixel(of:)` (exact-inverse pixel↔world) + `orthogonalSliceIndex(for:containing:)` (world→slice index). (`VolumeBuilder` removed in Phase 3.) |
 | `CrossReferenceOverlay.swift` | **3D crosshair overlay (Phase 6, rewritten).** Draws two lines + center dot through `crosshair.world`'s in-plane projection, on MPR panels only; bridges raw→display pixels then reuses the image's `pixelToScreen` transform. `PanelState.displayedPlaneGeometry` helper. **Hosts `CrosshairState`** (tiny ObservableObject) and observes **it** (not the model) — so a crosshair drag invalidates only this overlay, not the whole quad (drag-lag fix). (Replaced the old `computeCrossReference` lines.) |
-| `MetalVolumeRenderer.swift` | Metal compute, **MIP/MinIP/Average only**. Inline shader strings. Texture `.r16Sint`. W/L on raw stored values. |
-| `MultiPanelContainer.swift` (~1960 lines) | Multi-panel views + gestures. **Panels now hold ONLY pixel-bound overlays** (UI-unify pass): `OrientationLabelsOverlay` (**RAS-aware** since Phase 4; dark-halo letters Phase 7), `CrossReferenceOverlay`, ROI/ruler/angle annotations, group-select chrome, right-edge `PanelDICOMScroller`, active/group border. All control toolbars + textual readouts moved OFF the image into the docked bars below. **Still hosts** `ModalityBadge` (CT/MRI capsule, reused by `ViewerControlBar`) + `PanelHistogramView`. **Crosshair (Phase 6):** Select-tool `mouseDown`/`mouseDragged` → `crosshairWorld(at:)` → `model.setCrosshair`. **Seg seam:** Eraser/ROI retained as the future mask-edit surface. (Removed: `VolumeToolbar`/`PanelAdjustmentToolbar`/`PanelStatusCluster`/`CursorInfoOverlay` — folded into the docked bars.) |
-| `ViewerControlBar.swift` | **The single docked top control bar (UI-unify pass).** Replaces every toolbar that used to float over the image (`LayoutToolbar`, per-panel `VolumeToolbar`, bottom-center `PanelAdjustmentToolbar`, `PanelStatusCluster`). Groups: sidebar toggle · layout + MPR · sync/crosshair · plane (Axial/Sag/Cor/MIP)+MIP slab/projection · modality badge + histogram + CT preset / MRI Auto · rotate/flip/fullscreen · 4D stepper. **Per-panel groups act on `model.activePanel`** and are wrapped in `ControlBarActivePanelGroups` (`@ObservedObject panel`) so they appear when the panel's async render lands its image — a guard in the model-observing parent would stay stuck at the initial nil. Slab `Slider` keeps the **no-`step:`** rule (perf). Modality uses fixed-size `Button`/`Menu`, never an AppKit segmented `Picker` (relayout perf). |
+| `MetalVolumeRenderer.swift` | **Phase-8 direct volume renderer.** Metal compute ray marching over a cached `.r16Sint` 3D texture; physical-spacing-aware ray/AABB geometry, window-selective transfer function, front-to-back alpha compositing, early termination, gradient lighting, W/L in stored units. 192² interactive preview / 512² final render. |
+| `MultiPanelContainer.swift` (~1960 lines) | Multi-panel views + gestures. MPR panels keep pixel-bound orientation/crosshair/annotation/scroller overlays. **Phase 8:** Select-drag on `.volume3D` is a 60 Hz coalesced trackball-style yaw/pitch camera; it derives motion from absolute cursor-position differences (not unreliable `NSEvent.deltaX/Y`), and mouse-up settles at full quality. 3D deliberately hides 2D overlays, cursor sampling, and slice scroller. |
+| `ViewerControlBar.swift` | **The single docked top control bar.** Groups: sidebar · layout + brain quad · sync/crosshair · plane (Axial/Sag/Cor/3D) · 3D Density + camera reset · modality + W/L · 2D transforms/fullscreen · 4D. `ControlBarActivePanelGroups` observes the active panel so async image arrival refreshes controls. |
 | `ViewerStatusBar.swift` | **The single docked bottom status bar (UI-unify pass).** Active-panel readout shown ONCE (de-dupes the old per-panel ×4 bottom-left text + histogram): file name · slice position · `WL/WW` (+`HU` for CT). Cursor readout (RAS mm / HU / px, from the removed `CursorInfoOverlay`) **follows the hovered panel** via `ForEach(model.panels)` of `StatusBarCursorInfo` (`@ObservedObject panel`, shows only while `showCursorInfo`). `StatusBarPanelInfo` also observes the panel so it updates when the async image arrives. |
-| `PanelState.swift` | Per-panel state. `PanelMode = .slice2D/.mprAxial/.mprSagittal/.mprCoronal/.mip`. `isMPR` helper. `rescaleSlope/Intercept`, `valueUnitLabel`. `ActiveTool.displayName` + `ViewerLayout.description` (tooltips), `mipProjection` (MIP menu label). (`.slice2D` inert — NIFTI uses `.mprAxial`; hidden in the control-bar plane group.) |
+| `PanelState.swift` | Per-panel state. `PanelMode = .slice2D/.mprAxial/.mprSagittal/.mprCoronal/.volume3D`. 3D owns yaw/pitch/density plus a non-published render revision used to drop stale GPU results. (`.slice2D` remains inert for NIFTI.) |
 | `ContentView.swift` | Root split view: sidebar + detail. **Detail = left `ToolPalette` column + a `VStack`{ `ViewerControlBar` · panel grid (`ZStack` with the `NiftiLoadingOverlay`) · `ViewerStatusBar` }** (UI-unify pass — nothing floats over the image; the old floating `LayoutToolbar`/sidebar-toggle overlay is gone, the toggle now lives in `ViewerControlBar`). Sidebar row shows the NIfTI **file name** + `modality · WxHxD` + brain icon (`model.loadedFileName`). |
 
 ---
 
 ## Data & rendering pipeline (must understand)
 
-1. **2D slice rendering is CPU**, not GPU. Axial/sagittal/coronal go through
-   `MPREngine.renderSlice` (Swift per-pixel W/L loop); **Metal is used only for MIP**.
+1. **2D slice rendering is CPU; 3D volume rendering is Metal.** Axial/sagittal/coronal go through
+   `MPREngine.renderSlice` (Swift per-pixel W/L loop). `.volume3D` goes through
+   `MetalVolumeRenderer.renderVolume`: orthographic physical-space ray marching,
+   window-selective opacity, front-to-back alpha compositing, early termination, and gradient lighting.
    **Extraction + render + NSImage build run on the panel's serial background queue
    (`loadMPRSlice` → `panel.loadingQueue`) and are coalesced** — each navigation
    `cancelAllOperations()` + enqueues, and the main-thread apply drops results whose
    `mprSliceIndex`/`panelMode` no longer match. So fast scrubbing only pays for the in-flight render
-   plus the latest target, and the main thread never blocks. **MIP is the same** (`loadMIPForPanel`):
-   its GPU `renderProjection` (`commandBuffer.waitUntilCompleted()` + readback) also runs on the
-   background queue — that synchronous GPU wait on the main thread was what made the **quad MPR +
-   sync-scroll** layout lag (`syncScrollFromPanel` re-renders the MIP panel every tick). **This (not GPU
-   W/L) fixed laggy scrolling on the 344×1024×1024 / 721 MB MPRAGE**, whose long plane is a full
-   1024×1024 **megapixel** slice; measured per-tick main-thread cost dropped ~15–25 ms → 0.3 ms.
+   plus the latest target, and the main thread never blocks. **3D uses the same queue discipline**
+   (`loadVolumeRendering`): GPU `waitUntilCompleted()` + readback run on `panel.loadingQueue`, and a
+   `volumeRenderRevision` drops stale in-flight results. 3D has no slice index and is excluded from
+   synchronized scrolling/crosshair relocation. Drag rotation renders a coalesced 192² preview at
+   60 Hz and a 512² final frame on mouse-up.
    W/L drag is throttled to 60 Hz and is **also off-main now** — `adjustWindowLevelForPanel` updates
    the W/L state synchronously (the toolbar binds it) and re-drives the panel's async+coalesced loader
-   (`loadMPRSlice` / `loadMIPForPanel`), so the per-flush main-thread cost (`wl_drag`) is ~0.1 ms.
+   (`loadMPRSlice` / `loadVolumeRendering`), so W/L remains off-main for every rendered panel.
    `renderSlice`'s W/L loop is **Float + precomputed-reciprocal + parallelised** across 8 bands (1 MP
    slice 3.14 → 0.46 ms end-to-end, max gray delta 0). The brief's "windowing = GPU uniform only" rule
    is **still NOT met for slices, and is deliberately not pursued** (see *Known issues* #3): the earlier
@@ -119,7 +127,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
    (no NSImage), a real NSImageView→MTKView migration deferred until a concrete driver appears. If ever
    pursued, the clean seam still holds: keep slice *extraction* (the oriented Int16 buffer) in
    `MPREngine`, upload it to a 2D `.r16Sint` texture, W/L in a trivial shader — **no flip logic in MSL**,
-   so tested orientation can't drift. (`MetalVolumeRenderer` already has the texture + in-shader W/L for MIP.)
+   so tested orientation can't drift. (`MetalVolumeRenderer` owns the 3D texture + in-shader transfer function.)
 2. **W/L units = RAW STORED Int16 values.** The shader/CPU window on stored voxels; `scl`/rescale
    is NOT applied in the window math. So presets & auto-window are expressed in **stored units**.
 3. **VolumeData stores Int16.** NIFTI float32/uint16 are **quantized to Int16** by `NiftiDataset`,
@@ -131,9 +139,10 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 4. **Volume display path for NIFTI:** `loadNifti` → `NiftiDataset` → `makeVolume(t)` (**reorients
    to canonical RAS**, see 5) → `registerStandaloneVolume(volume, cacheKey: dataset.seriesID, …)`
    (caches under a **stable key** + appends a stub `ImageSeries` with empty `images`) → panel set
-   to `.mprAxial` → `loadMPRSlice` → `MPREngine.axialSlice` + `renderSlice`. 4D switch replaces the
-   cached volume under the same key and re-renders. `VolumeData.seriesUID` is distinct per timepoint
-   (for future Metal re-upload); the **cache key** is stable.
+   into the quad: three MPR modes render through `loadMPRSlice`; `.volume3D` renders through
+   `loadVolumeRendering`. A 4D switch replaces the cached volume under the same key and re-renders all
+   four panels. `VolumeData.seriesUID` is distinct per timepoint (forcing the 3D texture re-upload);
+   the **cache key** is stable.
 5. **Orientation = canonical RAS + fixed neurological flips (Phase 4).** NIFTI world space is RAS+
    (+x=R, +y=A, +z=S). `Orientation.closestCanonicalReorientation` computes the axis permutation +
    flips that bring the voxel grid to closest-canonical RAS (i→R, j→A, k→S); `makeVolume` applies it
@@ -167,8 +176,8 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
    `SegmentationSeamTests` locks all 3 planes against the gray extractor). `loadMPRSlice` passes the
    mask to `renderSlice`, which composites a translucent color (model `maskOverlayColor`/`Alpha`,
    default calcification red) over labeled pixels — **CPU RGBA path, taken only when a mask exists**,
-   so the grayscale fast path is untouched in normal runs. **MIP is excluded** (Metal path; documented
-   seam). The CPU composite is the live-display seam; the **Metal** entry (upload mask as a 2nd R8
+   so the grayscale fast path is untouched in normal runs. **3D is excluded** (Metal path; documented
+   seam). The CPU composite is the live-display seam; a future **Metal** entry would upload the mask as a 2nd R8
    texture, blend in the W/L shader) is documented in `renderSlice`/`MetalVolumeRenderer`. Demo:
    `--benchmark` paints `installDemoSphereMask` so the overlay is visible once; inert otherwise.
 
@@ -323,17 +332,17 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
    change (NSImageView → MTKView; crosshair / cursor / orientation / ROI overlays re-plumbed onto the
    Metal layer) and should wait for a concrete driver — there is none today (W/L drag is already
    0.10 ms main-thread). It would also unlock the Phase-7 Metal mask-texture overlay. **When
-   segmentation goes live (Phase 8):** the masked path's real cost is `maskSlice`'s *serial* sagittal
+   segmentation goes live (Phase 9):** the masked path's real cost is `maskSlice`'s *serial* sagittal
    gather (~13 ms — the cache-hostile pattern the gray extractor had before `cb12693`), NOT the W/L
    arithmetic (the masked render loop is ~1.7 ms). Parallelise `maskSlice` first (mirror `sagittalSlice`)
    — bigger win than GPU, keeps orientation in `MPREngine`.
 4. **[RESOLVED — Phase 6] Quad-MPR cross-panel linkage is now the 3D crosshair.** Click/drag sets
-   `crosshairWorld`; `ViewerModel.setCrosshair` relocates each panel via `MPREngine.orthogonalSliceIndex`
-   + the existing async `loadMPRSlice`/`loadMIPForPanel`. The old z-only `syncScrollFromPanel` proportional
+   `crosshairWorld`; `ViewerModel.setCrosshair` relocates each orthogonal panel via
+   `MPREngine.orthogonalSliceIndex` + async `loadMPRSlice`; `.volume3D` is excluded. The old z-only `syncScrollFromPanel` proportional
    mapping is no longer the cross-panel mechanism (it remains only for the mouse-wheel group-scroll path).
    Note the "stuck orthogonal panels" complaint was partly a misread: scrolling S *should not* change which
    sagittal/coronal slice is shown — what was missing (and is now drawn) is the moving crosshair line.
-5. **`--benchmark` instrumentation left in** (`scroll_main`, `mpr_render`, `crosshair_set`; `mip_render` pre-existing).
+5. **`--benchmark` instrumentation left in** (`scroll_main`, `mpr_render`, `volume_render`, `crosshair_set`).
    Gated behind `--benchmark` so it's inert in normal runs, but in benchmark mode it logs to
    `~/Desktop/odv_benchmark.csv` per scroll tick (each `log()` also takes a `task_info` memory snapshot).
    Keep as a perf probe, or strip `scroll_main`/`mpr_render` once perf work settles.
@@ -347,12 +356,14 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 
 ## Phase status & roadmap
 
-> **▶ RESUME POINT — Phases 1–7 + crosshair-drag-lag + W/L-drag perf FIXED & committed** on branch
+> **▶ RESUME POINT — Phases 1–7 + crosshair-drag-lag + W/L-drag perf committed; Phase 8 is in the
+> working tree** on branch
 > `lentis-nifti-conversion` (not pushed; no remote); the **large-gzip load fix is verified in the current
 > working tree** (445.9 MB MPRAGE read 16.00→~4.95 s; end-to-end ~8.00 s). The app builds with **zero native deps**, runs, and
 > renders real CT/MRI in correct **neurological** orientation with **modality-aware window/level**, a
-> now-smooth **3D crosshair** linkage, **off-main W/L drag**, and **Phase-7 UI polish + dormant
-> segmentation seams**. `swift test` green (**109**: 50 XCTest + 59 swift-testing).
+> now-smooth **3D crosshair** linkage, **off-main W/L drag**, **interactive Metal 3D brain rendering**,
+> and **Phase-7 UI polish + dormant segmentation seams**. `swift test` green (**109**: 50 XCTest +
+> 59 swift-testing, including 5 direct-volume-rendering tests).
 > **UI unify + default MPR (2026-06-21) — DONE, GUI-verified, committed on `lentis-nifti-conversion`.** Collapsed
 > the 8 floating per-panel/over-image toolbars into **one docked top `ViewerControlBar`** + **one docked
 > bottom `ViewerStatusBar`** (nothing floats over the image now); the bottom-left readout is shown
@@ -404,7 +415,7 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 > preserved for write-back). **GUI-verified** on real-ish synthetic CT/MRI: badge color + no-overlap in
 > single & quad; the `--benchmark` demo sphere composites translucent-red and registers in axial/
 > sagittal/coronal (MIP excluded by design). Orientation untouched. See the Phase-7 roadmap entry below.
-> **⚠ Next: Phase 8 (suggested) — real segmentation (paint into `labelMask` via Eraser/ROI; threshold
+> **⚠ Next: Phase 9 (suggested) — real segmentation (paint into `labelMask` via Eraser/ROI; threshold
 > seed on CT HU), mask persistence/write-back through `originalAffine`, Metal mask-texture overlay,
 > and the remaining cosmetic debt (file headers, `PanelDICOMInteractView` names, inert `.slice2D`).**
 > Phase 5 outcome (verified in GUI on real CT + real T1): CT defaults to the **Brain** HU preset
@@ -635,6 +646,36 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   the slab `Slider` no-`step:` + fixed-size modality buttons (both perf-critical) and all
   orientation/crosshair/async-render code. **Deferred:** cursor RAS/HU/px not GUI-verifiable (real
   NSTrackingArea event needed); same older cosmetic debt.
+- [x] **Phase 8 — replace the MIP view with interactive 3D brain rendering.**
+  Removed `.mip`, `ProjectionMode`, slab state/UI, `loadMIPForPanel`, and the unused CPU
+  MIP/MinIP/Average projection helpers/tests. The fourth quad panel is now `.volume3D` and renders a
+  canonical-RAS `.r16Sint` texture through a physical-spacing-aware Metal compute ray marcher with a
+  window-selective transfer function (CT Brain W/L makes high-HU skull transparent), front-to-back
+  compositing, early ray termination, and gradient lighting. Select-drag rotates yaw/pitch at a
+  coalesced 60 Hz / 192² preview; mouse-up settles at 512². `volumeRenderRevision` drops stale GPU
+  results; all GPU waits/readback stay on `panel.loadingQueue`. The 3D panel has Density + camera-reset
+  controls, follows modality W/L and 4D volume swaps, and deliberately has no slice scroller,
+  crosshair relocation, cursor voxel readout, orientation letters, or 2D annotations. Added pure camera
+  tests plus a real Metal test that compiles the inline MSL, uploads a 16³ volume, dispatches the shader,
+  and asserts non-black output. Added `script/build_and_run.sh` + Codex Run action; launch with
+  `./script/build_and_run.sh --verify --benchmark /abs/path.nii.gz`.
+  **Rotation/Density follow-up (2026-06-21):** fixed horizontal drag stalls by deriving deltas from
+  consecutive absolute `locationInWindow` values; coalesced/synthetic NSEvents can report zero
+  `deltaX/Y`. The same automated drag now moves yaw `-25° → 51°` and reverses to `-25°` (previously
+  stayed at `-25°`). The first 320²/30 Hz preview measured p95 **32.82 ms** on the real
+  344×1024×1024 MPRAGE and looked stepped; 192² measured p95 **10.29 ms**, passing the 60 Hz 16.67 ms
+  budget (`scripts/VolumeRenderBenchmark.swift`). Density UI now hides the Slider's duplicated label,
+  holds a fixed 104pt track, shows a live `1.0×` value, and uses a clear reset icon; GUI verified as a
+  single line and via accessibility increment `1.0× → 1.2×`.
+  **3D camera interaction follow-up (2026-06-21):** fixed the remaining camera semantics after GUI use.
+  The camera matrix now composes `pitchRotation * yawRotation`, so horizontal yaw still turns the head
+  after pitching to the anterior/front view instead of degenerating into screen-space roll. Pitch is no
+  longer clamped at `±89°`; it is normalized like yaw, so dragging can continue through the front view
+  for a natural "look down"/orbit-through motion. The drag delta mapping is inverted (`previous-current`)
+  so the model follows the pointer direction for both horizontal and vertical drags. Bottom status stays
+  `yaw/pitch` only: there is no explicit roll state, and the prior roll-like behavior was a matrix-order
+  bug rather than an intended third camera axis. Regression coverage lives in
+  `MetalVolumeRendererTests` (front-view yaw + pitch-through-front) and `PanelStateTests` (drag direction).
 
 ---
 

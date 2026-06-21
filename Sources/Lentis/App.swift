@@ -162,7 +162,7 @@ struct LentisApp: App {
     /// interactions — yielding the main actor (~60 Hz) between events so each
     /// background render lands like a real drag — and records the synchronous
     /// main-thread cost of each:
-    ///   • W/L flush on the megapixel sagittal MPR panel + the MIP panel → wl_drag
+    ///   • W/L flush on the megapixel sagittal MPR + 3D volume panels → wl_drag
     ///   • crosshair relocation through the volume → crosshair_set
     ///   • scroll tick (active panel + sync-scroll the quad) → scroll_main
     /// Read ~/Desktop/odv_benchmark.csv between the `*_begin/_end` markers.
@@ -180,13 +180,13 @@ struct LentisApp: App {
         guard model.panels.contains(where: { $0.image != nil }) else {
             log.log(event: "perf_stress_abort", detail: "no first render"); return
         }
-        // 2. Tri-planar quad (axial/sagittal/coronal/MIP).
+        // 2. Brain quad (axial/sagittal/coronal/3D volume).
         model.setupMPRLayout()
         await waitFor(60) {
             model.panels.count == 4 && model.panels[1].image != nil && model.panels[3].image != nil
         }
         guard model.panels.count == 4 else { log.log(event: "perf_stress_abort", detail: "no quad"); return }
-        let axial = model.panels[0], sag = model.panels[1], mip = model.panels[3]
+        let axial = model.panels[0], sag = model.panels[1], volume3D = model.panels[3]
 
         // 3a. W/L flushes (alternating sign keeps the window in range).
         // Match the real drag path: panel-local mutations during the gesture,
@@ -194,7 +194,7 @@ struct LentisApp: App {
         // --wl-hold: sustained ~15 s W/L drive so the main thread can be `sample`d.
         let wlHold = CommandLine.arguments.contains("--wl-hold")
         log.log(event: "wl_stress_begin",
-                detail: "sag \(sag.imageWidth)x\(sag.imageHeight) \(sag.panelMode.rawValue); panel3=\(mip.panelMode.rawValue) hold=\(wlHold)")
+                detail: "sag \(sag.imageWidth)x\(sag.imageHeight) \(sag.panelMode.rawValue); panel3=\(volume3D.panelMode.rawValue) hold=\(wlHold)")
         let wlIters = wlHold ? 900 : 80
         for i in 0..<wlIters {
             let s = (i % 2 == 0) ? 1.0 : -1.0
@@ -205,11 +205,11 @@ struct LentisApp: App {
         model.persistWindowToSeriesStates(sag)
         for i in 0..<80 {
             let s = (i % 2 == 0) ? 1.0 : -1.0
-            model.adjustWindowLevelForPanel(mip, deltaWidth: 60 * s, deltaCenter: 15 * s,
+            model.adjustWindowLevelForPanel(volume3D, deltaWidth: 60 * s, deltaCenter: 15 * s,
                                             persist: false)
             await sleep(16)
         }
-        model.persistWindowToSeriesStates(mip)
+        model.persistWindowToSeriesStates(volume3D)
         log.log(event: "wl_stress_end", detail: "done")
 
         // 3b. Crosshair relocations (sweep a world point through the axial plane).

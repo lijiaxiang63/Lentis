@@ -5,8 +5,8 @@
 // must update the panel's W/L *state* synchronously (the toolbar readout binds
 // those @Published values) but run the slice re-render OFF the calling (main)
 // thread, via the panel's async+coalesced loadingQueue — not synchronously
-// inline as it used to (renderSlice on the megapixel slice, or worse a MIP
-// renderProjection waitUntilCompleted GPU block, both on main).
+// inline as it used to (renderSlice on the megapixel slice, or a synchronous
+// GPU command-buffer wait, both on main).
 //
 // The telltale, exploited here: a DispatchQueue.main.async apply cannot preempt
 // synchronous main-thread code, so immediately after the call the displayed

@@ -7,7 +7,7 @@
 // to grayscale NSImage via window/level tone mapping.
 //
 // This is the fallback rendering path; GPU-accelerated rendering is handled
-// by MetalVolumeRenderer for MIP projections.
+// by MetalVolumeRenderer for direct 3D volume rendering.
 // Licensed under the MIT License. See LICENSE for details.
 
 import Foundation
@@ -135,7 +135,7 @@ class MPREngine {
     /// the crosshair to relocate the other panels. Because volumes are
     /// canonical RAS (i→R, j→A, k→S), each plane indexes one voxel axis:
     /// axial→k, sagittal→i, coronal→j. Result is rounded + clamped to bounds.
-    /// Returns nil for non-orthogonal modes (e.g. `.mip`, `.slice2D`).
+    /// Returns nil for non-orthogonal modes (e.g. `.volume3D`, `.slice2D`).
     func orthogonalSliceIndex(for mode: PanelMode, containing world: SIMD3<Double>) -> Int? {
         let v = volume.worldToVoxel(world)
         switch mode {
@@ -509,181 +509,5 @@ class MPREngine {
 
         guard let cgImage = context.makeImage() else { return nil }
         return NSImage(cgImage: cgImage, size: displaySize(for: slice))
-    }
-}
-
-// MARK: - Axial Slab Projection (Clinical MIP)
-
-enum ProjectionMode: String, CaseIterable, Identifiable {
-    case mip = "MIP"
-    case minip = "MinIP"
-    case average = "Average"
-
-    var id: String { rawValue }
-}
-
-extension MPREngine {
-    /// Generate an axial slab MIP/MinIP/Average by projecting consecutive axial slices.
-    /// This is the clinical slab-MIP workflow used in CTA/MRA angiography:
-    /// take N slices centered at `slabCenter`, max-project them into one 2D image.
-    /// Output has the same width×height as a native axial slice.
-    func axialSlabProjection(
-        mode: ProjectionMode,
-        slabCenter: Int,
-        slabThickness: Int
-    ) -> MPRSlice? {
-        let halfSlab = slabThickness / 2
-        let zStart = max(0, slabCenter - halfSlab)
-        let zEnd = min(volume.depth - 1, slabCenter + halfSlab)
-        guard zStart <= zEnd else { return nil }
-
-        let w = volume.width
-        let h = volume.height
-        let pixelCount = w * h
-        var data = Data(count: pixelCount * MemoryLayout<Int16>.stride)
-
-        data.withUnsafeMutableBytes { buf in
-            guard let dst = buf.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
-
-            // Initialize based on projection mode
-            for i in 0..<pixelCount {
-                switch mode {
-                case .mip:     dst[i] = Int16.min
-                case .minip:   dst[i] = Int16.max
-                case .average: dst[i] = 0
-                }
-            }
-
-            // Project slices through the slab
-            for z in zStart...zEnd {
-                let sliceOffset = z * pixelCount
-                for i in 0..<pixelCount {
-                    let val = volume.voxels[sliceOffset + i]
-                    switch mode {
-                    case .mip:     if val > dst[i] { dst[i] = val }
-                    case .minip:   if val < dst[i] { dst[i] = val }
-                    case .average: dst[i] = Int16(clamping: Int32(dst[i]) + Int32(val))
-                    }
-                }
-            }
-
-            // Finalize average
-            if mode == .average {
-                let count = Int32(zEnd - zStart + 1)
-                if count > 1 {
-                    for i in 0..<pixelCount {
-                        dst[i] = Int16(clamping: Int32(dst[i]) / count)
-                    }
-                }
-            }
-        }
-
-        let origin = volume.voxelToWorld(SIMD3<Double>(0, 0, Double(slabCenter)))
-
-        return MPRSlice(
-            pixelData: data,
-            width: w,
-            height: h,
-            planeOrigin: origin,
-            planeRowDir: volume.rowDirection,
-            planeColDir: volume.colDirection,
-            pixelSpacingX: volume.spacingX,
-            pixelSpacingY: volume.spacingY
-        )
-    }
-}
-
-// MARK: - 3D Ray-March Projection (Legacy)
-
-extension MPREngine {
-    /// Generate a projection (MIP/MinIP/Average) through the volume along a given view direction
-    func generateProjection(
-        mode: ProjectionMode,
-        viewDirection: SIMD3<Double>,
-        upDirection: SIMD3<Double>,
-        slabThickness: Double?,      // nil = full volume
-        outputWidth: Int,
-        outputHeight: Int,
-        spacing: Double
-    ) -> MPRSlice {
-        let viewDir = simd_normalize(viewDirection)
-        let right = simd_normalize(simd_cross(viewDir, upDirection))
-        let up = simd_normalize(simd_cross(right, viewDir))
-
-        let center = volume.worldCenter
-        let bounds = volume.worldBounds
-
-        // Compute ray length through volume (diagonal)
-        let diagonal = simd_length(bounds.max - bounds.min)
-        let halfLen = (slabThickness != nil) ? slabThickness! / 2.0 : diagonal / 2.0
-
-        // Step size: half the minimum voxel spacing for quality
-        let minSpacing = min(volume.spacingX, min(volume.spacingY, volume.spacingZ))
-        let stepSize = minSpacing * 0.5
-        let numSteps = Int(2.0 * halfLen / stepSize) + 1
-
-        let halfW = Double(outputWidth) / 2.0
-        let halfH = Double(outputHeight) / 2.0
-
-        var data = Data(count: outputWidth * outputHeight * MemoryLayout<Int16>.stride)
-        data.withUnsafeMutableBytes { buf in
-            guard let dst = buf.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
-
-            for row in 0..<outputHeight {
-                for col in 0..<outputWidth {
-                    let u = (Double(col) - halfW) * spacing
-                    let v = (Double(row) - halfH) * spacing
-
-                    let rayOrigin = center + u * right + v * up - halfLen * viewDir
-
-                    var result: Double
-                    switch mode {
-                    case .mip:   result = -Double.greatestFiniteMagnitude
-                    case .minip: result = Double.greatestFiniteMagnitude
-                    case .average: result = 0
-                    }
-
-                    var sampleCount = 0
-
-                    for step in 0..<numSteps {
-                        let t = Double(step) * stepSize
-                        let worldPt = rayOrigin + t * viewDir
-                        let voxel = volume.worldToVoxel(worldPt)
-
-                        // Bounds check (with small margin)
-                        guard voxel.x >= -0.5, voxel.x < Double(volume.width) - 0.5,
-                              voxel.y >= -0.5, voxel.y < Double(volume.height) - 0.5,
-                              voxel.z >= -0.5, voxel.z < Double(volume.depth) - 0.5 else { continue }
-
-                        let val = volume.sampleTrilinear(vx: voxel.x, vy: voxel.y, vz: voxel.z)
-                        sampleCount += 1
-
-                        switch mode {
-                        case .mip:     result = max(result, val)
-                        case .minip:   result = min(result, val)
-                        case .average: result += val
-                        }
-                    }
-
-                    if mode == .average && sampleCount > 0 {
-                        result /= Double(sampleCount)
-                    }
-                    if sampleCount == 0 { result = 0 }
-
-                    dst[row * outputWidth + col] = Int16(clamping: Int(result.rounded()))
-                }
-            }
-        }
-
-        return MPRSlice(
-            pixelData: data,
-            width: outputWidth,
-            height: outputHeight,
-            planeOrigin: center - halfW * spacing * right - halfH * spacing * up,
-            planeRowDir: right,
-            planeColDir: up,
-            pixelSpacingX: spacing,
-            pixelSpacingY: spacing
-        )
     }
 }

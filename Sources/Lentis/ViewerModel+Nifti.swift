@@ -68,8 +68,8 @@ extension ViewerModel {
             installDemoSphereMask(on: volume)
         }
 
-        // Open directly into the tri-planar MPR layout (Axial + Sagittal + Coronal
-        // + MIP, synchronized, crosshair on). setupMPRLayout assigns the series to
+        // Open directly into the brain layout (Axial + Sagittal + Coronal + 3D
+        // volume, synchronized, crosshair on). setupMPRLayout assigns the series to
         // every panel and seeds each panel's W/L by modality (assignSeriesToPanel →
         // seededWindow), so no panel renders dark. Pass `idx` explicitly so a second
         // open can't resolve to a previously-loaded series.
@@ -104,6 +104,8 @@ extension ViewerModel {
             panel.rescaleIntercept = volume.rescaleIntercept
             if panel.panelMode.isMPR {
                 loadMPRSlice(for: panel)
+            } else if panel.panelMode == .volume3D {
+                loadVolumeRendering(for: panel)
             }
         }
     }

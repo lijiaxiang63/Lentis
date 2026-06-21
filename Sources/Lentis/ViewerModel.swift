@@ -10,7 +10,7 @@
 //   - Multi-panel management: create, resize, assign series, navigate
 //   - Window/level computation (auto, ROI-based, histogram generation)
 //   - MPR volume building and slice extraction
-//   - MIP rendering (CPU fallback + Metal GPU path)
+//   - Metal direct-volume rendering with an interactive 3D camera
 //   - Synchronized scrolling with spatial z-location matching
 //   - Series thumbnail generation
 //   - DICOM tag extraction and panel info string formatting
@@ -330,7 +330,7 @@ class ViewerModel: ObservableObject {
     }
     @Published var isVolumeBuildingInProgress: Bool = false
     @Published var volumeBuildProgress: Double = 0.0
-    /// GPU renderer for MIP and volume rendering (lazy init)
+    /// GPU direct-volume renderer (lazy init)
     lazy var metalRenderer: MetalVolumeRenderer? = MetalVolumeRenderer()
 
 
@@ -507,7 +507,7 @@ class ViewerModel: ObservableObject {
         panel.imageIndex = 0
 
         // Seed modality-aware W/L (CT preset / MRI percentile, or a saved manual
-        // window) so MPR/MIP panels don't fall back to loadMPRSlice's generic
+        // window) so MPR/3D panels don't fall back to a generic
         // 2000/500 window and render dark (e.g. the one-click quad MPR layout).
         // Non-NIfTI series (none currently) keep the legacy reset-to-0.
         if let (ww, wc) = seededWindow(forSeriesIndex: seriesIndex) {
@@ -546,8 +546,6 @@ class ViewerModel: ObservableObject {
         guard panel.seriesIndex >= 0, panel.seriesIndex < allSeries.count else { return }
         if panel.panelMode.isMPR {
             navigateMPRPanel(panel, delta: offset)
-        } else if panel.panelMode == .mip {
-            navigatePanelToSlice(panel, index: panel.mipSlabPosition + offset)
         }
     }
 
@@ -563,7 +561,11 @@ class ViewerModel: ObservableObject {
         guard let panel = panel else { return }
         panel.scale = 1.0
         panel.translation = .zero
-        autoWindowLevelForPanel(panel)
+        if panel.panelMode == .volume3D {
+            resetVolumeCamera(panel)
+        } else {
+            autoWindowLevelForPanel(panel)
+        }
     }
 
     /// Fit image to window (reset zoom/pan only, keep W/L)
@@ -582,24 +584,32 @@ class ViewerModel: ObservableObject {
     /// Rotate image 90° clockwise
     func rotateClockwiseForPanel(_ panel: PanelState?) {
         guard let panel = panel else { return }
-        panel.rotationSteps = (panel.rotationSteps + 1) % 4
+        if panel.panelMode == .volume3D {
+            rotateVolumeRendering(panel, deltaYaw: 90, deltaPitch: 0, interactive: false)
+        } else {
+            panel.rotationSteps = (panel.rotationSteps + 1) % 4
+        }
     }
 
     /// Rotate image 90° counter-clockwise
     func rotateCounterClockwiseForPanel(_ panel: PanelState?) {
         guard let panel = panel else { return }
-        panel.rotationSteps = (panel.rotationSteps + 3) % 4
+        if panel.panelMode == .volume3D {
+            rotateVolumeRendering(panel, deltaYaw: -90, deltaPitch: 0, interactive: false)
+        } else {
+            panel.rotationSteps = (panel.rotationSteps + 3) % 4
+        }
     }
 
     /// Flip image horizontally
     func flipHorizontalForPanel(_ panel: PanelState?) {
-        guard let panel = panel else { return }
+        guard let panel = panel, panel.panelMode != .volume3D else { return }
         panel.isFlippedH.toggle()
     }
 
     /// Flip image vertically
     func flipVerticalForPanel(_ panel: PanelState?) {
-        guard let panel = panel else { return }
+        guard let panel = panel, panel.panelMode != .volume3D else { return }
         panel.isFlippedV.toggle()
     }
 
@@ -674,7 +684,7 @@ class ViewerModel: ObservableObject {
         }
     }
 
-    /// One-click MPR layout: switches to 2x2 and configures panels as Axial + Sagittal + Coronal + MIP.
+    /// One-click brain layout: Axial + Sagittal + Coronal + interactive 3D volume.
     /// Pass `seriesIndex` to pin a specific series (e.g. a freshly-loaded volume on
     /// open); otherwise it uses the active panel's series (or first available).
     func setupMPRLayout(seriesIndex: Int? = nil) {
@@ -709,9 +719,9 @@ class ViewerModel: ObservableObject {
         assignSeriesToPanel(panels[2], seriesIndex: seriesIdx)
         setPanelMode(panels[2], mode: .mprCoronal)
 
-        // Panel 3: MIP
+        // Panel 3: direct volume rendering
         assignSeriesToPanel(panels[3], seriesIndex: seriesIdx)
-        setPanelMode(panels[3], mode: .mip)
+        setPanelMode(panels[3], mode: .volume3D)
 
         // Set active panel to axial
         activePanelID = panels[0].id
@@ -751,7 +761,7 @@ class ViewerModel: ObservableObject {
     /// group-selected panels by the same relative offset (not spatial matching).
     func navigatePanelWithGroup(_ panel: PanelState, direction: NavigationDirection) {
         // Measures the synchronous main-thread cost of one scroll tick (active panel
-        // navigate + sync-scroll of the others). With async MPR + MIP this should be
+        // navigate + sync-scroll of the others). With async MPR this should be
         // sub-millisecond even on the 721 MB MPRAGE quad layout (--benchmark only).
         BenchmarkLogger.shared.start("scroll_main")
         defer { BenchmarkLogger.shared.stop("scroll_main", detail: "\(panel.panelMode.rawValue) sync=\(synchronizedScrolling)") }
@@ -787,24 +797,8 @@ class ViewerModel: ObservableObject {
             return
         }
 
-        if panel.panelMode == .mip {
-            if let seriesID = allSeries[safe: panel.seriesIndex]?.id,
-               let vol = volumeCacheGet(seriesID) {
-                switch direction {
-                case .nextImage:
-                    if panel.mipSlabPosition < vol.depth - 1 {
-                        panel.mipSlabPosition += 1
-                        loadMIPForPanel(panel)
-                    }
-                case .prevImage:
-                    if panel.mipSlabPosition > 0 {
-                        panel.mipSlabPosition -= 1
-                        loadMIPForPanel(panel)
-                    }
-                default: break
-                }
-            }
-        }
+        // A 3D panel has no slice index. Arrow/scroll navigation is intentionally
+        // a no-op; pointer drag controls its camera instead.
     }
 
     /// Navigate within a specific panel
@@ -825,35 +819,10 @@ class ViewerModel: ObservableObject {
             }
         }
 
-        // MIP mode: scroll moves slab position through volume
-        if panel.panelMode == .mip {
-            if let seriesID = allSeries[safe: panel.seriesIndex]?.id,
-               let vol = volumeCacheGet(seriesID) {
-                switch direction {
-                case .nextImage:
-                    if panel.mipSlabPosition < vol.depth - 1 {
-                        panel.mipSlabPosition += 1
-                        loadMIPForPanel(panel)
-                    }
-                case .prevImage:
-                    if panel.mipSlabPosition > 0 {
-                        panel.mipSlabPosition -= 1
-                        loadMIPForPanel(panel)
-                    }
-                case .nextSeries, .prevSeries: break
-                }
-            }
-            if direction == .nextSeries || direction == .prevSeries {
-            } else {
-                if synchronizedScrolling { syncScrollFromPanel(panel) }
-                return
-            }
-        }
-
         // Series switching (NIfTI is usually a single series, so typically a no-op).
         switch direction {
         case .nextImage, .prevImage:
-            break  // handled above for MPR/MIP
+            break  // handled above for MPR; 3D has no slice navigation
         case .nextSeries:
             if panel.seriesIndex < allSeries.count - 1 {
                 assignSeriesToPanel(panel, seriesIndex: panel.seriesIndex + 1)
@@ -868,8 +837,8 @@ class ViewerModel: ObservableObject {
     // MARK: - Crosshair (3D linkage)
 
     /// Place the shared 3D crosshair at `world` (RAS mm) — typically from a
-    /// click/drag in `source`. Every *other* panel relocates so its slice (or
-    /// MIP slab) passes through the point, reusing the async + coalesced MPR/MIP
+    /// click/drag in `source`. Every *other* orthogonal panel relocates so its
+    /// slice passes through the point, reusing the async + coalesced MPR
     /// render path (so drag spam costs no more than fast scrolling). The source
     /// panel isn't moved: the click was on its displayed slice, so the point is
     /// already on its plane. All panels redraw their crosshair lines because the
@@ -898,16 +867,7 @@ class ViewerModel: ObservableObject {
                     updateMPRSpatialMetadata(panel, volume: vol)
                     loadMPRSlice(for: panel)
                 }
-            case .mip:
-                // MIP is an axial slab; track the crosshair's superior (z) level.
-                guard vol.depth > 1 else { continue }
-                let z = min(max(0, Int(vol.worldToVoxel(world).z.rounded())), vol.depth - 1)
-                if z != panel.mipSlabPosition {
-                    relocated += 1
-                    panel.mipSlabPosition = z
-                    loadMIPForPanel(panel)
-                }
-            case .slice2D:
+            case .slice2D, .volume3D:
                 continue
             }
         }
@@ -925,9 +885,11 @@ class ViewerModel: ObservableObject {
             case .slice2D:
                 guard source.imageIndex >= 0, source.imageIndex < sourceSeries.images.count else { return nil }
                 return sourceSeries.images[source.imageIndex].zLocation
-            case .mprAxial, .mprSagittal, .mprCoronal, .mip:
-                // For MPR/MIP, use imagePositionPatient z if available
+            case .mprAxial, .mprSagittal, .mprCoronal:
+                // Orthogonal MPR planes expose a spatial origin.
                 return source.imagePositionPatient?.2
+            case .volume3D:
+                return nil
             }
         }()
 
@@ -936,16 +898,8 @@ class ViewerModel: ObservableObject {
             let targetSeries = allSeries[panel.seriesIndex]
 
             switch panel.panelMode {
-            case .slice2D:
-                continue  // 2D DICOM path removed; NIFTI uses MPR/MIP
-            case .mip:
-                if let vol = volumeCacheGet(targetSeries.id), vol.depth > 1 {
-                    let targetIdx = closestVolumeIndex(dimension: vol.depth, targetSeries: targetSeries, sourceZ: sourceZ, fallbackSource: source, sourceSeries: sourceSeries)
-                    if targetIdx != panel.mipSlabPosition {
-                        panel.mipSlabPosition = targetIdx
-                        loadMIPForPanel(panel)
-                    }
-                }
+            case .slice2D, .volume3D:
+                continue  // NIfTI uses MPR; 3D has no slice position to sync.
             case .mprAxial:
                 if let vol = volumeCacheGet(targetSeries.id), vol.depth > 1 {
                     let targetIdx = closestVolumeIndex(dimension: vol.depth, targetSeries: targetSeries, sourceZ: sourceZ, fallbackSource: source, sourceSeries: sourceSeries)
@@ -988,7 +942,7 @@ class ViewerModel: ObservableObject {
         }
     }
 
-    /// Find the closest volume slice index for MPR/MIP targets using spatial or proportional matching.
+    /// Find the closest volume slice index for MPR targets using spatial or proportional matching.
     private func closestVolumeIndex(dimension: Int, targetSeries: ImageSeries, sourceZ: Double?, fallbackSource source: PanelState, sourceSeries: ImageSeries) -> Int {
         guard dimension > 1 else { return 0 }
 
@@ -1014,7 +968,7 @@ class ViewerModel: ObservableObject {
     }
 
     /// Set a panel's absolute W/L (stored units) and re-render. Routes through
-    /// `adjustWindowLevelForPanel`, so it reuses the MPR/MIP re-render path and
+    /// `adjustWindowLevelForPanel`, so it reuses the MPR/3D re-render path and
     /// persists to seriesStates. Used by preset / auto / modality-toggle seeding.
     func setPanelWindow(_ panel: PanelState, ww: Double, wc: Double) {
         adjustWindowLevelForPanel(panel,
@@ -1057,19 +1011,16 @@ class ViewerModel: ObservableObject {
     ///     can't display a stale slice even if a scroll render was still in
     ///     flight when the drag began (a render-only path reading the cached
     ///     `rawPixelData` could).
-    ///   • MIP → `loadMIPForPanel` (W/L is applied inside the GPU projection
-    ///     shader, so the slab is re-projected). This moves the synchronous
-    ///     `renderProjection` `waitUntilCompleted` GPU block (~15–20 ms steady on
-    ///     the 721 MB MPRAGE — the same block the scroll fix removed) off the
-    ///     main thread during a hard W/L drag.
+    ///   • 3D → `loadVolumeRendering` (W/L drives the GPU transfer function).
+    ///     The command-buffer wait and readback stay on `panel.loadingQueue`.
     /// Both loaders do only cheap setup on the main thread (cached-volume lookup
     /// is synchronous, then enqueue); extraction/projection + the now-Float
     /// parallel W/L render + NSImage build all run on `panel.loadingQueue`.
     /// `wl_drag` (--benchmark) measures the remaining synchronous main-thread
-    /// cost of one flush; the off-main render shows as `mpr_render` / `mip_render`.
+    /// cost of one flush; the off-main render shows as `mpr_render` / `volume_render`.
     ///
     /// Guarded on the panel already having a rendered view (`rawPixelData` for
-    /// MPR / a cached volume for MIP) so seed-time W/L (presets/auto/modality,
+    /// MPR / a cached volume for 3D) so seed-time W/L (presets/auto/modality,
     /// before the first render) stays a no-op exactly as the old synchronous path
     /// was — the normal first-render flow draws the initial slice.
     ///
@@ -1095,13 +1046,13 @@ class ViewerModel: ObservableObject {
 
         switch panel.panelMode {
         case .slice2D:
-            break  // 2D DICOM slice path removed; NIFTI uses MPR/MIP
+            break  // 2D DICOM slice path removed; NIFTI uses MPR/3D
         case .mprAxial, .mprSagittal, .mprCoronal:
             if panel.rawPixelData != nil { loadMPRSlice(for: panel) }
-        case .mip:
+        case .volume3D:
             if let seriesID = allSeries[safe: panel.seriesIndex]?.id,
                volumeCacheGet(seriesID) != nil {
-                loadMIPForPanel(panel)
+                loadVolumeRendering(for: panel)
             }
         }
     }
@@ -1298,15 +1249,11 @@ class ViewerModel: ObservableObject {
             if let vol = volumeCacheGet(s.id) {
                 panel.currentImageInfo = "Coronal \(panel.mprSliceIndex + 1)/\(vol.height)"
             }
-        case .mip:
-            if let vol = volumeCacheGet(s.id) {
-                let halfSlab = panel.mipSlabThickness / 2
-                let zStart = max(0, panel.mipSlabPosition - halfSlab) + 1
-                let zEnd = min(vol.depth, panel.mipSlabPosition + halfSlab)
-                panel.currentImageInfo = "MIP \(zStart)-\(zEnd)/\(vol.depth) (\(panel.mipSlabThickness) slices)"
-            } else {
-                panel.currentImageInfo = "MIP"
-            }
+        case .volume3D:
+            panel.currentImageInfo = String(
+                format: "3D Volume  yaw %.0f°  pitch %.0f°",
+                panel.volumeYawDegrees, panel.volumePitchDegrees
+            )
         }
     }
 
@@ -1326,9 +1273,8 @@ class ViewerModel: ObservableObject {
             return volumeCacheGet(s.id)?.width ?? 0
         case .mprCoronal:
             return volumeCacheGet(s.id)?.height ?? 0
-        case .mip:
-            guard let seriesID = allSeries[safe: panel.seriesIndex]?.id else { return 0 }
-            return volumeCacheGet(seriesID)?.depth ?? 0
+        case .volume3D:
+            return 0
         }
     }
 
@@ -1342,8 +1288,8 @@ class ViewerModel: ObservableObject {
             return panel.imageIndex
         case .mprAxial, .mprSagittal, .mprCoronal:
             return panel.mprSliceIndex
-        case .mip:
-            return panel.mipSlabPosition
+        case .volume3D:
+            return 0
         }
     }
 
@@ -1351,7 +1297,7 @@ class ViewerModel: ObservableObject {
     func navigatePanelToSlice(_ panel: PanelState, index: Int) {
         switch panel.panelMode {
         case .slice2D:
-            break  // 2D DICOM path removed; NIFTI uses MPR/MIP
+            break  // 2D DICOM slice path removed; NIFTI uses MPR/3D
         case .mprAxial, .mprSagittal, .mprCoronal:
             let total = totalSliceCount(for: panel)
             let idx = max(0, min(index, total - 1))
@@ -1363,19 +1309,13 @@ class ViewerModel: ObservableObject {
                 }
                 loadMPRSlice(for: panel)
             }
-        case .mip:
-            guard let seriesID = allSeries[safe: panel.seriesIndex]?.id,
-                  let vol = volumeCacheGet(seriesID) else { return }
-            let idx = max(0, min(index, vol.depth - 1))
-            if idx != panel.mipSlabPosition {
-                panel.mipSlabPosition = idx
-                loadMIPForPanel(panel)
-            }
+        case .volume3D:
+            return
         }
         if synchronizedScrolling { syncScrollFromPanel(panel) }
     }
 
-    /// Whether a series supports MPR/MIP, i.e. a 3D volume with depth is
+    /// Whether a series supports MPR/3D rendering, i.e. a volume with depth is
     /// available. NIfTI registers one volume per dataset via
     /// `registerStandaloneVolume`, so this is simply a cache lookup. (Replaces
     /// the old per-slice DICOM heuristic, which always failed on NIfTI's empty
@@ -1384,13 +1324,6 @@ class ViewerModel: ObservableObject {
         guard seriesIndex >= 0, seriesIndex < allSeries.count else { return false }
         guard let volume = volumeCacheGet(allSeries[seriesIndex].id) else { return false }
         return volume.depth > 1
-    }
-
-    /// Total slice count of the cached volume (for slab thickness slider max)
-    func volumeSliceCount(seriesIndex: Int) -> Int {
-        guard seriesIndex >= 0, seriesIndex < allSeries.count else { return 1 }
-        let seriesID = allSeries[seriesIndex].id
-        return volumeCacheGet(seriesID)?.depth ?? 1
     }
 
     /// The cached volume for a series index, if present (synchronous lookup).
@@ -1603,145 +1536,140 @@ class ViewerModel: ObservableObject {
         }
     }
 
-    /// Switch a panel's display mode (slice2D / sagittal / coronal / MIP)
+    /// Switch a panel's display mode (slice2D / orthogonal MPR / 3D volume).
     func setPanelMode(_ panel: PanelState, mode: PanelMode) {
         panel.panelMode = mode
 
-        // Cancel any pending 2D loads to prevent them from overwriting MPR/MIP panel state
+        // Prevent an older render from overwriting the newly selected mode.
         panel.loadingQueue.cancelAllOperations()
 
         switch mode {
         case .slice2D:
-            break  // 2D DICOM path removed; NIFTI uses MPR/MIP
+            break  // 2D DICOM path removed; NIFTI uses MPR/3D
 
         case .mprAxial, .mprSagittal, .mprCoronal:
             panel.mprSliceIndex = 0  // Reset; loadMPRSlice will center after volume is ready
             loadMPRSlice(for: panel)
 
-        case .mip:
-            if let seriesID = allSeries[safe: panel.seriesIndex]?.id,
-               let vol = volumeCacheGet(seriesID) {
-                panel.mipSlabPosition = vol.depth / 2
-                panel.mipSlabThickness = min(10, vol.depth)
-            }
-            loadMIPForPanel(panel)
+        case .volume3D:
+            loadVolumeRendering(for: panel)
         }
     }
 
-    /// Generate a clinical axial slab-MIP for a panel.
-    /// Projects N consecutive axial slices via max intensity, scroll moves the slab.
-    func loadMIPForPanel(_ panel: PanelState, mode: ProjectionMode = .mip) {
+    /// Rotate the 3D camera and enqueue a coalesced preview or final render.
+    func rotateVolumeRendering(_ panel: PanelState, deltaYaw: Double, deltaPitch: Double,
+                               interactive: Bool) {
+        guard panel.panelMode == .volume3D else { return }
+        panel.volumeYawDegrees = normalizedCameraAngle(panel.volumeYawDegrees + deltaYaw)
+        panel.volumePitchDegrees = normalizedCameraAngle(panel.volumePitchDegrees + deltaPitch)
+        updatePanelInfoStrings(panel)
+        loadVolumeRendering(for: panel, interactive: interactive)
+    }
+
+    private func normalizedCameraAngle(_ degrees: Double) -> Double {
+        var normalized = degrees.truncatingRemainder(dividingBy: 360)
+        if normalized > 180 { normalized -= 360 }
+        if normalized <= -180 { normalized += 360 }
+        return normalized
+    }
+
+    func resetVolumeCamera(_ panel: PanelState) {
+        guard panel.panelMode == .volume3D else { return }
+        panel.volumeYawDegrees = -25
+        panel.volumePitchDegrees = 18
+        panel.volumeOpacity = 1.0
+        loadVolumeRendering(for: panel)
+    }
+
+    /// Render the 3D brain with direct volume ray marching. GPU wait/readback and
+    /// NSImage construction stay on the panel's serial background queue. Rapid
+    /// camera/W-L changes cancel queued work and the revision guard drops any
+    /// in-flight stale result. Interactive rotations use a smaller preview; the
+    /// mouse-up render restores full quality.
+    func loadVolumeRendering(for panel: PanelState, interactive: Bool = false) {
         guard panel.seriesIndex >= 0, panel.seriesIndex < allSeries.count else { return }
         panel.isLoading = true
         panel.errorMessage = nil
+        panel.volumeRenderRevision &+= 1
+        let revision = panel.volumeRenderRevision
 
-        getVolume(for: panel.seriesIndex) { [weak self, weak panel] volume, errorMsg in
-            guard let self = self, let panel = panel else { return }
-
-            guard let volume = volume else {
+        getVolume(for: panel.seriesIndex) { [weak self, weak panel] volume, errorMessage in
+            guard let self, let panel else { return }
+            guard let volume else {
                 panel.isLoading = false
-                if self.isScanning {
-                    panel.errorMessage = "Volume build failed — directory is still scanning. Please wait for scanning to complete and try again."
-                } else {
-                    panel.errorMessage = "Volume build failed — \(errorMsg ?? "unknown error")"
-                }
+                panel.errorMessage = "Volume unavailable — \(errorMessage ?? "unknown error")"
                 return
             }
 
-            // --- main thread: cheap setup only (clamp slab, capture params) ---
-            if panel.mipSlabPosition <= 0 || panel.mipSlabPosition >= volume.depth {
-                panel.mipSlabPosition = volume.depth / 2
-            }
-            if panel.mipSlabThickness < 1 { panel.mipSlabThickness = 10 }
-            if panel.mipSlabThickness > volume.depth { panel.mipSlabThickness = volume.depth }
-            panel.mipProjection = mode
-
-            let ww = panel.windowWidth > 0 ? panel.windowWidth : (panel.initialWindowWidth > 0 ? panel.initialWindowWidth : 2000)
-            let wc = panel.windowWidth > 0 ? panel.windowCenter : (panel.initialWindowWidth > 0 ? panel.initialWindowCenter : 500)
-            let invert = panel.isInverted
-            let slabPosition = panel.mipSlabPosition
-            let slabThickness = panel.mipSlabThickness
+            let ww = panel.windowWidth > 0
+                ? panel.windowWidth
+                : (panel.initialWindowWidth > 0 ? panel.initialWindowWidth : 2000)
+            let wc = panel.windowWidth > 0
+                ? panel.windowCenter
+                : (panel.initialWindowWidth > 0 ? panel.initialWindowCenter : 500)
+            let yaw = panel.volumeYawDegrees
+            let pitch = panel.volumePitchDegrees
+            let opacity = panel.volumeOpacity
+            // 192² sustains a measured 60 Hz preview on the 344×1024×1024
+            // MPRAGE (p95 ~9.5 ms); 320² only just sustained 30 Hz (~32.8 ms).
+            // Mouse-up still settles to the full 512² image.
+            let resolution = interactive ? 192 : 512
             let renderer = self.metalRenderer
 
-            // --- background: GPU MIP (the waitUntilCompleted GPU sync, the readback,
-            // and the NSImage build all run off the main thread) + CPU fallback.
-            // Coalesced exactly like loadMPRSlice — this was the per-tick main-thread
-            // block (~15–20 ms steady, ~170–290 ms on first GPU texture upload) that
-            // made the quad-MPR + sync-scroll layout lag on the 721 MB MPRAGE. ---
             panel.loadingQueue.cancelAllOperations()
-            let op = BlockOperation()
-            op.addExecutionBlock { [weak op, weak panel] in
-                guard let op = op, !op.isCancelled, let panel = panel else { return }
-                let slabThicknessMM = Float(slabThickness) * Float(volume.spacingZ)
-                let slabCenter = SIMD3<Float>(Float(volume.width) / 2.0, Float(volume.height) / 2.0, Float(slabPosition))
+            let operation = BlockOperation()
+            operation.addExecutionBlock { [weak operation, weak panel] in
+                guard let operation, !operation.isCancelled, let panel else { return }
 
-                BenchmarkLogger.shared.start("mip_render")
-                var metalImage: NSImage? = nil
-                if let renderer = renderer {
-                    metalImage = renderer.renderProjection(
-                        volume: volume, mode: mode, viewMatrix: matrix_identity_float4x4,
-                        outputWidth: volume.width, outputHeight: volume.height,
-                        windowWidth: Float(ww), windowCenter: Float(wc),
-                        slabThickness: slabThicknessMM, slabCenterVoxel: slabCenter, invert: invert)
-                }
-
-                // Resolve the image (GPU, else CPU fallback) + raw data for W/L re-render.
-                let resultImage: NSImage?
-                var rawData: Data? = nil
-                var imgW = volume.width, imgH = volume.height
-                if let image = metalImage {
-                    let physW = Double(volume.width) * volume.spacingX
-                    let physH = Double(volume.height) * volume.spacingY
-                    image.size = NSSize(width: CGFloat(volume.width), height: CGFloat(Double(volume.width) * physH / physW))
-                    BenchmarkLogger.shared.stop("mip_render", detail: "GPU slab=\(slabThickness), mode=\(mode)")
-                    resultImage = image
-                } else {
-                    let engine = MPREngine(volume: volume)
-                    if let slice = engine.axialSlabProjection(mode: mode, slabCenter: slabPosition, slabThickness: slabThickness),
-                       let image = MPREngine.renderSlice(slice, ww: ww, wc: wc, invert: invert) {
-                        BenchmarkLogger.shared.stop("mip_render", detail: "CPU slab=\(slabThickness), mode=\(mode)")
-                        rawData = slice.pixelData
-                        imgW = slice.width; imgH = slice.height
-                        resultImage = image
-                    } else {
-                        resultImage = nil
-                    }
-                }
-                guard !op.isCancelled else { return }
-
-                let origin = volume.voxelToWorld(SIMD3<Double>(0, 0, Double(slabPosition)))
-                let rowDir = volume.rowDirection, colDir = volume.colDirection
+                BenchmarkLogger.shared.start("volume_render")
+                let camera = MetalVolumeRenderer.cameraToVolumeMatrix(
+                    yawDegrees: Float(yaw), pitchDegrees: Float(pitch)
+                )
+                let image = renderer?.renderVolume(
+                    volume: volume,
+                    cameraToVolume: camera,
+                    outputWidth: resolution,
+                    outputHeight: resolution,
+                    windowWidth: Float(ww),
+                    windowCenter: Float(wc),
+                    opacity: Float(opacity),
+                    // PanelInteractiveDICOMView applies inversion as a display
+                    // filter, so keep the generated volume image uninverted.
+                    invert: false
+                )
+                BenchmarkLogger.shared.stop(
+                    "volume_render",
+                    detail: "\(resolution)x\(resolution) yaw=\(Int(yaw)) pitch=\(Int(pitch))"
+                )
+                guard !operation.isCancelled else { return }
 
                 DispatchQueue.main.async { [weak self] in
-                    guard let self = self else { return }
-                    // Drop stale results: a newer slab position or mode switch wins.
-                    guard panel.panelMode == .mip, panel.mipSlabPosition == slabPosition else {
+                    guard let self else { return }
+                    guard panel.panelMode == .volume3D,
+                          panel.volumeRenderRevision == revision else { return }
+                    guard let image else {
                         panel.isLoading = false
+                        panel.errorMessage = "3D volume rendering failed — Metal is unavailable"
                         return
                     }
-                    guard let image = resultImage else {
-                        panel.isLoading = false
-                        panel.errorMessage = "Slab MIP rendering failed"
-                        return
-                    }
+
                     panel.setDisplayImage(image)
-                    panel.imageWidth = imgW
-                    panel.imageHeight = imgH
-                    panel.rawPixelData = rawData
+                    panel.imageWidth = resolution
+                    panel.imageHeight = resolution
+                    panel.rawPixelData = nil
                     panel.bitDepth = 16
                     panel.isSigned = true
                     panel.samples = 1
-                    panel.pixelSpacing = (volume.spacingY, volume.spacingX)
-                    // Spatial metadata for cross-reference (axial plane at slab center).
-                    panel.imagePositionPatient = (origin.x, origin.y, origin.z)
-                    panel.imageOrientationPatient = [rowDir.x, rowDir.y, rowDir.z, colDir.x, colDir.y, colDir.z]
+                    panel.pixelSpacing = nil
+                    panel.imagePositionPatient = nil
+                    panel.imageOrientationPatient = nil
+                    panel.showCursorInfo = false
+                    panel.hasCursorPatientPosition = false
                     panel.isLoading = false
-                    // No model-wide objectWillChange (see the MPR path above): the
-                    // panel writes above re-render this panel + its crosshair overlay.
                     self.updatePanelInfoStrings(panel)
                 }
             }
-            panel.loadingQueue.addOperation(op)
+            panel.loadingQueue.addOperation(operation)
         }
     }
 
