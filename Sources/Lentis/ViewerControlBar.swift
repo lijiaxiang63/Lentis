@@ -51,8 +51,6 @@ struct ViewerControlBar: View {
         }
     }
 
-    /// Re-show / hide the series sidebar. Lives here instead of floating over the
-    /// image (replaces the old top-left floating button in ContentView).
     private var sidebarToggle: some View {
         Button(action: {
             columnVisibility = (columnVisibility == .detailOnly) ? .all : .detailOnly

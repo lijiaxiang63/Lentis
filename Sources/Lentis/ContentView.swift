@@ -28,41 +28,42 @@ struct ContentView: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView(model: model, columnVisibility: $columnVisibility)
-            .navigationSplitViewColumnWidth(min: 250, ideal: 300)
-            .toolbar(removing: .sidebarToggle)
-        } detail: {
-            HStack(spacing: 0) {
-                // Fixed tool palette column
-                ToolPalette(model: model)
-                    .padding(.vertical, 8)
+        VStack(spacing: 0) {
+            ViewerControlBar(model: model, columnVisibility: $columnVisibility)
 
-                // Main viewer area: one docked control bar on top, the panel grid
-                // in the middle, one docked status bar at the bottom. Nothing
-                // floats over the image any more.
-                VStack(spacing: 0) {
-                    ViewerControlBar(model: model, columnVisibility: $columnVisibility)
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+                SidebarView(model: model)
+                    .navigationSplitViewColumnWidth(min: 250, ideal: 300)
+                    .toolbar(removing: .sidebarToggle)
+            } detail: {
+                HStack(spacing: 0) {
+                    // Fixed tool palette column
+                    ToolPalette(model: model)
+                        .padding(.vertical, 8)
 
-                    ZStack {
-                        MultiPanelContainer(model: model, isFocused: $isFocused)
-                            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                                _ = handleDrop(providers: providers)
-                                return true
+                    // Main viewer area: the panel grid in the middle, one docked
+                    // status bar at the bottom. Nothing floats over the image.
+                    VStack(spacing: 0) {
+                        ZStack {
+                            MultiPanelContainer(model: model, isFocused: $isFocused)
+                                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                                    _ = handleDrop(providers: providers)
+                                    return true
+                                }
+                                .onTapGesture {
+                                    isFocused = true
+                                }
+
+                            if model.isLoading {
+                                NiftiLoadingOverlay()
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                    .transition(.opacity)
+                                    .zIndex(1_000)
                             }
-                            .onTapGesture {
-                                isFocused = true
-                            }
-
-                        if model.isLoading {
-                            NiftiLoadingOverlay()
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .transition(.opacity)
-                                .zIndex(1_000)
                         }
-                    }
 
-                    ViewerStatusBar(model: model)
+                        ViewerStatusBar(model: model)
+                    }
                 }
             }
         }
@@ -202,38 +203,27 @@ private struct NiftiLoadingOverlay: View {
 
 struct SidebarView: View {
     @ObservedObject var model: ViewerModel
-    @Binding var columnVisibility: NavigationSplitViewVisibility
     
     var body: some View {
         VStack(spacing: 0) {
-            // Custom Toolbar / Header
             HStack {
-                Button(action: { columnVisibility = .detailOnly }) {
-                    Image(systemName: "sidebar.left")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help("Hide Sidebar")
-                
+                Text("Series")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+
                 Spacer()
                 
                 Button(action: openFile) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "folder")
-                        Text("Open")
-                    }
-                    .font(.system(size: 14))
-                    .foregroundStyle(.secondary)
+                    Label("Open", systemImage: "folder")
+                        .labelStyle(.titleAndIcon)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
+                .controlSize(.small)
                 .help("Open NIfTI File")
                 .disabled(model.isLoading)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            // Remove background or make it very subtle
-            // .background(Color.black.opacity(0.4))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
             
             SeriesListView(model: model)
         }
