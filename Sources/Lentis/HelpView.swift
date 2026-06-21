@@ -129,7 +129,7 @@ struct HelpView: View {
                             Text("**Orientation letters** at the panel edges mark patient directions: **R**ight, **L**eft, **A**nterior, **P**osterior, **S**uperior, **I**nferior. Images use the **neurological** convention — patient-left is screen-left.")
                             Text("**Modality badge** (top-left): **CT** = amber, **MRI** = teal. It is auto-detected; click it to switch.")
                             Text("**Histogram** (bottom): the yellow band is the current window; the white line is the level (center).")
-                            Text("**Cursor readout** (top-right): the value is **HU** for CT or **Intensity** (arbitrary units) for MRI, with the pixel column/row in brackets; **RAS** coordinates are in millimetres.")
+                            Text("**Cursor readout** (bottom): the value is **HU** for CT or **Intensity** (arbitrary units) for MRI, with the volume voxel x/y/z in brackets; **RAS** coordinates are in millimetres.")
                             Text("**WL / WW** (bottom-left) are the window level and width in stored units (HU for CT).")
                         }
                     }

@@ -263,6 +263,10 @@ class PanelState: ObservableObject, Identifiable {
     @Published var showCursorInfo: Bool = false
     @Published var cursorPixelX: Int = 0
     @Published var cursorPixelY: Int = 0
+    @Published var cursorVoxelX: Int = 0
+    @Published var cursorVoxelY: Int = 0
+    @Published var cursorVoxelZ: Int = 0
+    @Published var hasCursorVoxelPosition: Bool = false
     @Published var cursorHU: Double = 0
     @Published var cursorPatientX: Double = 0
     @Published var cursorPatientY: Double = 0
@@ -353,6 +357,10 @@ class PanelState: ObservableObject, Identifiable {
         showCursorInfo = false
         cursorPixelX = 0
         cursorPixelY = 0
+        cursorVoxelX = 0
+        cursorVoxelY = 0
+        cursorVoxelZ = 0
+        hasCursorVoxelPosition = false
         cursorHU = 0
         cursorPatientX = 0
         cursorPatientY = 0

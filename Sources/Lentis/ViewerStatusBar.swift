@@ -88,8 +88,14 @@ private struct StatusBarCursorInfo: View {
                         .foregroundStyle(.secondary)
                 }
                 Text("\(panel.valueUnitLabel): " + String(format: "%.0f", panel.cursorHU))
-                Text(String(format: "px [%d, %d]", panel.cursorPixelX, panel.cursorPixelY))
-                    .foregroundStyle(.secondary)
+                if panel.hasCursorVoxelPosition {
+                    Text(String(format: "px [%d, %d, %d]",
+                                panel.cursorVoxelX, panel.cursorVoxelY, panel.cursorVoxelZ))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(String(format: "px [%d, %d]", panel.cursorPixelX, panel.cursorPixelY))
+                        .foregroundStyle(.secondary)
+                }
             }
         }
     }

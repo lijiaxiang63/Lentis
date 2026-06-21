@@ -691,6 +691,16 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
             return CGPoint(x: pixelX, y: pixelY)
         }
 
+        /// Convert aspect-corrected display-image coordinates back to the raw
+        /// slice pixel grid used by `rawPixelData` and `PlaneGeometry`.
+        private func rawPixel(fromDisplayPixel pixel: CGPoint, panel: PanelState) -> CGPoint {
+            let iw = CGFloat(max(1, panel.imageWidth))
+            let ih = CGFloat(max(1, panel.imageHeight))
+            let dw = panel.displayImageWidth > 0 ? panel.displayImageWidth : iw
+            let dh = panel.displayImageHeight > 0 ? panel.displayImageHeight : ih
+            return CGPoint(x: pixel.x * iw / dw, y: pixel.y * ih / dh)
+        }
+
         /// World coordinate (RAS mm) under the cursor, on this panel's displayed
         /// slice plane. screenToPixel yields aspect-corrected display-space
         /// coords; convert back to raw pixels (inverse of the overlay's
@@ -701,13 +711,8 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
                   let g = panel.displayedPlaneGeometry,
                   let disp = screenToPixel(event), disp.x.isFinite, disp.y.isFinite
             else { return nil }
-            let iw = CGFloat(max(1, panel.imageWidth))
-            let ih = CGFloat(max(1, panel.imageHeight))
-            let dw = panel.displayImageWidth > 0 ? panel.displayImageWidth : iw
-            let dh = panel.displayImageHeight > 0 ? panel.displayImageHeight : ih
-            let colRaw = Double(disp.x * iw / dw)
-            let rowRaw = Double(disp.y * ih / dh)
-            return g.world(col: colRaw, row: rowRaw)
+            let raw = rawPixel(fromDisplayPixel: disp, panel: panel)
+            return g.world(col: Double(raw.x), row: Double(raw.y))
         }
 
         /// In multi-panel MPR with the crosshair enabled, place the shared 3D
@@ -1303,13 +1308,14 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
                 }
             }
 
-            // Use screenToPixel for HU readout coordinate mapping
-            guard let pixelPoint = screenToPixel(event) else {
+            // Use raw slice pixels for the status readout and value lookup.
+            guard let displayPixelPoint = screenToPixel(event) else {
                 panel.showCursorInfo = false
                 return
             }
-            let pixelX = pixelPoint.x
-            let pixelY = pixelPoint.y
+            let rawPixelPoint = rawPixel(fromDisplayPixel: displayPixelPoint, panel: panel)
+            let pixelX = rawPixelPoint.x
+            let pixelY = rawPixelPoint.y
 
             // Safe Double→Int conversion (pixelX/Y can be NaN/Inf with degenerate transforms)
             guard pixelX.isFinite, pixelY.isFinite else {
@@ -1325,7 +1331,7 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
             }
 
             // Only update if position changed (throttle view updates)
-            guard px != panel.cursorPixelX || py != panel.cursorPixelY else { return }
+            guard px != panel.cursorPixelX || py != panel.cursorPixelY || !panel.showCursorInfo else { return }
 
             // Look up raw pixel value
             var huValue: Double = 0
@@ -1355,25 +1361,29 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
             panel.cursorHU = huValue * panel.rescaleSlope + panel.rescaleIntercept
             panel.showCursorInfo = true
 
-            // Compute patient coordinates if spatial metadata available
-            if let ipp = panel.imagePositionPatient,
-               let iop = panel.imageOrientationPatient, iop.count == 6,
-               let ps = panel.pixelSpacing {
-                let row = SIMD3<Double>(iop[0], iop[1], iop[2])
-                let col = SIMD3<Double>(iop[3], iop[4], iop[5])
-                let origin = SIMD3<Double>(ipp.0, ipp.1, ipp.2)
-                // DICOM PixelSpacing = (row_spacing, col_spacing) where row_spacing is
-                // the distance between rows (i.e. spacing in the column/Y direction)
-                // and col_spacing is the distance between columns (row/X direction).
-                // So: px (column index) * col_spacing (ps.1) * row_dir,
-                //     py (row index) * row_spacing (ps.0) * col_dir.
-                let patPos = origin + Double(px) * ps.1 * row + Double(py) * ps.0 * col
+            if let geometry = panel.displayedPlaneGeometry {
+                let patPos = geometry.world(col: Double(px), row: Double(py))
                 panel.cursorPatientX = patPos.x
                 panel.cursorPatientY = patPos.y
                 panel.cursorPatientZ = patPos.z
                 panel.hasCursorPatientPosition = true
+
+                if let volume = model?.cachedVolume(forSeriesIndex: panel.seriesIndex) {
+                    let voxel = volume.worldToVoxel(patPos)
+                    if voxel.x.isFinite, voxel.y.isFinite, voxel.z.isFinite {
+                        panel.cursorVoxelX = min(max(0, Int(voxel.x.rounded())), volume.width - 1)
+                        panel.cursorVoxelY = min(max(0, Int(voxel.y.rounded())), volume.height - 1)
+                        panel.cursorVoxelZ = min(max(0, Int(voxel.z.rounded())), volume.depth - 1)
+                        panel.hasCursorVoxelPosition = true
+                    } else {
+                        panel.hasCursorVoxelPosition = false
+                    }
+                } else {
+                    panel.hasCursorVoxelPosition = false
+                }
             } else {
                 panel.hasCursorPatientPosition = false
+                panel.hasCursorVoxelPosition = false
             }
         }
     }
