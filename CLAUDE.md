@@ -19,7 +19,7 @@ This file is the working record. Update it as phases complete.
 ```bash
 swift build                       # debug build (~20s clean; zero native/system deps)
 ./scripts/package_app.sh          # release build → Lentis.app + Lentis.dmg (ad-hoc signed)
-swift test                        # full suite: MIXED XCTest + swift-testing (107: 50 XCTest + 57 swift-testing)
+swift test                        # full suite: MIXED XCTest + swift-testing (109: 50 XCTest + 59 swift-testing)
 swift test --filter nifti --filter dataset   # just the NIFTI tests
 swift test --filter SegmentationSeam         # just the Phase-7 mask-seam tests
 swift test --filter windowLevelRenderIsAsync # the W/L-drag async/off-main regression test
@@ -38,6 +38,9 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
   relocations, and scroll ticks — logging the four main-thread-cost events — so interactive perf can be
   measured **without GUI/computer-use** (which coalesces a synthetic drag to ~2 events). Latest MPRAGE
   quad numbers: `wl_drag` 0.10 ms, `crosshair_set` 0.15 ms, `scroll_main` 0.30 ms — all off-main render.
+  Add `--wl-hold` for a sustained ~15 s W/L drive that can be attached to with `sample`; unlike the
+  cheap synchronous timer, this catches SwiftUI layout after the flush returns. The stress loop mirrors
+  the real gesture (`persist:false` per flush, one `seriesStates` commit at drag end; `f952678`).
 
 - Toolchain: Swift 6.3, Xcode 26.4, macOS arm64. Bundle id `com.kalicooper.lentis`.
   **Zero native/system dependencies** — pure Swift + Metal/AppKit (DCMTK/OpenJPEG gone in Phase 3).
@@ -279,6 +282,15 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
    MPRAGE quad): `wl_drag` main-thread cost 0.10 ms (MPR + MIP)** — down from a synchronous render of
    ~3 ms (MPR) / ~15–200 ms (MIP). Locked by `windowLevelRenderIsAsyncOffMainThread` (verified red on
    `de07903`). The `renderSliceMasked` composite got the same Float+parallel treatment (`8b9919b`).
+   **Follow-up toolbar relayout — FIXED (`4250965`).** The remaining 48–72 ms happened after this
+   function returned: a flexible quad propagated ideal-size queries to sibling panels, then the bottom
+   toolbar's AppKit-backed segmented `Picker` (`SystemSegmentedControl`) recursively measured an embedded
+   SwiftUI graph on every W/L publication. Cells now have exact geometry and CT/MRI uses two fixed-size
+   buttons. On the 344×1024×1024 MPRAGE `--wl-hold` sample, layout-pattern stacks fell **48,886 →
+   1,105**, the top `LayoutEngineBox.sizeThatFits` weight **1,215 → 156**, and
+   `explicitAlignment` **623 → 139**; `SystemSegmentedControl` disappeared. GUI-verified that CT/MRI,
+   Auto/Preset, quad geometry, and sagittal W/L drag still work. There is no reliable unit-test seam for
+   private SwiftUI layout; the permanent `--wl-hold` + `sample` harness is the regression signal.
 3. **GPU slice W/L — EVALUATED, deliberately NOT done (CPU wins make it pointless).** The old premise
    here was **wrong**: it claimed per-slice cost is "dominated by extraction + NSImage alloc, *not* the
    W/L arithmetic." Measured the opposite — the W/L **arithmetic** was ~80% of `renderSlice`; the
@@ -319,7 +331,7 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 > `lentis-nifti-conversion` (not pushed; no remote). The app builds with **zero native deps**, runs, and
 > renders real CT/MRI in correct **neurological** orientation with **modality-aware window/level**, a
 > now-smooth **3D crosshair** linkage, **off-main W/L drag**, and **Phase-7 UI polish + dormant
-> segmentation seams**. `swift test` green (**107**: 50 XCTest + 57 swift-testing).
+> segmentation seams**. `swift test` green (**109**: 50 XCTest + 59 swift-testing).
 > **W/L-drag perf (2026-06-21) — DONE** (commits `de07903` renderSlice Float+parallel, `9399a6a` async
 > W/L, `8804548` regression test, `8b9919b` masked composite, `a67be70` `--perf-stress` harness). The
 > W/L re-render no longer blocks the main thread (MPR `renderSlice` was on main; **MIP ran a
@@ -331,6 +343,12 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 > off-main.** GPU slice W/L **evaluated and deliberately NOT done** — CPU is fast enough that a
 > per-slice-readback GPU path only breaks even; the real win (live MTKView, no readback) awaits a
 > concrete driver (see *Known issues* #3). Orientation/crosshair code untouched; corner tests green.
+> **W/L toolbar relayout follow-up (2026-06-21) — DONE** (`f952678`, `4250965`). Corrected
+> `--perf-stress --wl-hold` to use the production `persist:false` drag path, pinned quad cells to exact
+> geometry, and replaced the pathological AppKit-backed segmented modality picker with fixed-size
+> CT/MRI buttons. The mandatory 6 s `sample` on the real 344×1024×1024 MPRAGE dropped layout-pattern
+> stacks **48,886 → 1,105** and top `sizeThatFits` weight **1,215 → 156**. GUI-verified CT↔MRI,
+> Auto↔Preset, quad geometry, and a sagittal W/L drag; `swift test` is **109 green**.
 > **Re-validated 2026-06-21 at HEAD `c514e9a` (working tree clean):** `swift build` clean, `swift test`
 > 106 green, and the Phase-7 seam symbols all present in committed code — `installDemoSphereMask`,
 > `LabelVolume` on `VolumeData.labelMask` (+ `ensureLabelMask`), `MPREngine.maskSlice` (3-plane
@@ -467,6 +485,15 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   construction (no orientation/crosshair code touched; `renderSlice` output is gray-delta-0) + the
   regression test; a by-hand GUI pass (W/L visibly changes, patient-LEFT → left-hemisphere sagittal) is
   the one outstanding belt-and-suspenders check.
+- [x] **Perf — W/L toolbar relayout follow-up.** 2 commits (`f952678` honest stress persistence,
+  `4250965` layout/control fix). The synchronous `wl_drag` probe could not see the lag because SwiftUI
+  laid out after `adjustWindowLevelForPanel` returned. `--wl-hold` + a 6 s main-thread `sample` exposed
+  flexible-grid sibling propagation and, most importantly, `SystemSegmentedControl._overrideSizeThatFits`
+  recursively measuring its embedded SwiftUI graph. Exact grid cells stop cross-panel ideal-size
+  propagation; fixed-size CT/MRI buttons preserve the modality UI without that native intrinsic-size
+  query. Real MPRAGE sample: layout-pattern stacks **48,886 → 1,105**, top `sizeThatFits` **1,215 →
+  156**, `explicitAlignment` **623 → 139**. GUI: CT/MRI + Auto/Preset + sagittal W/L verified; 109 tests
+  green. No orientation, crosshair, or async-render code changed.
 - [x] **Phase 6 — Crosshair drag linkage.** Done in 5 commits on `lentis-nifti-conversion`. Click/drag
   in any MPR panel (default **Select** tool) sets `ViewerModel.crosshairWorld` (RAS mm); every other panel
   relocates so its slice/MIP-slab passes through the point (`setCrosshair` → `MPREngine.orthogonalSliceIndex`
