@@ -188,6 +188,8 @@ struct LentisApp: App {
         let axial = model.panels[0], sag = model.panels[1], mip = model.panels[3]
 
         // 3a. W/L flushes (alternating sign keeps the window in range).
+        // Match the real drag path: panel-local mutations during the gesture,
+        // followed by one model-level persistence write at drag end.
         // --wl-hold: sustained ~15 s W/L drive so the main thread can be `sample`d.
         let wlHold = CommandLine.arguments.contains("--wl-hold")
         log.log(event: "wl_stress_begin",
@@ -195,14 +197,18 @@ struct LentisApp: App {
         let wlIters = wlHold ? 900 : 80
         for i in 0..<wlIters {
             let s = (i % 2 == 0) ? 1.0 : -1.0
-            model.adjustWindowLevelForPanel(sag, deltaWidth: 60 * s, deltaCenter: 15 * s)
+            model.adjustWindowLevelForPanel(sag, deltaWidth: 60 * s, deltaCenter: 15 * s,
+                                            persist: false)
             await sleep(16)
         }
+        model.persistWindowToSeriesStates(sag)
         for i in 0..<80 {
             let s = (i % 2 == 0) ? 1.0 : -1.0
-            model.adjustWindowLevelForPanel(mip, deltaWidth: 60 * s, deltaCenter: 15 * s)
+            model.adjustWindowLevelForPanel(mip, deltaWidth: 60 * s, deltaCenter: 15 * s,
+                                            persist: false)
             await sleep(16)
         }
+        model.persistWindowToSeriesStates(mip)
         log.log(event: "wl_stress_end", detail: "done")
 
         // 3b. Crosshair relocations (sweep a world point through the axial plane).
