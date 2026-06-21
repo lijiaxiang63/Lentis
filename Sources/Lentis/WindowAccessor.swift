@@ -2,8 +2,7 @@
 // OpenDicomViewer
 //
 // NSViewRepresentable that customizes the hosting NSWindow on appear:
-// hides the titlebar, removes traffic light buttons, enables
-// window dragging by background, and installs a key interceptor
+// enables window dragging by background and installs a key interceptor
 // for IME-independent keyboard shortcuts.
 // Licensed under the MIT License. See LICENSE for details.
 
@@ -65,30 +64,35 @@ private class KeyInterceptorView: NSView {
 
 struct WindowAccessor: NSViewRepresentable {
     let model: ViewerModel
+    private static let centeredTitleIdentifier = NSUserInterfaceItemIdentifier("LentisCenteredWindowTitle")
+    private static let keyInterceptorIdentifier = NSUserInterfaceItemIdentifier("LentisKeyInterceptor")
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
             if let window = view.window {
+                window.title = "Lentis"
                 window.titleVisibility = .hidden
-                window.titlebarAppearsTransparent = true
-                window.styleMask.insert(.fullSizeContentView)
-
-                // Hide Traffic Lights
-                window.standardWindowButton(.closeButton)?.isHidden = true
-                window.standardWindowButton(.miniaturizeButton)?.isHidden = true
-                window.standardWindowButton(.zoomButton)?.isHidden = true
+                window.titlebarAppearsTransparent = false
+                window.styleMask.remove(.fullSizeContentView)
+                window.toolbarStyle = .expanded
+                installCenteredTitle(in: window)
 
                 // Allow moving by dragging background
                 window.isMovableByWindowBackground = true
 
                 // Install key interceptor for IME-independent shortcuts
                 if let contentView = window.contentView {
-                    let interceptor = KeyInterceptorView()
-                    interceptor.model = model
-                    interceptor.frame = .zero
-                    interceptor.isHidden = false
-                    contentView.addSubview(interceptor)
+                    if let interceptor = contentView.subviews.first(where: { $0.identifier == Self.keyInterceptorIdentifier }) as? KeyInterceptorView {
+                        interceptor.model = model
+                    } else {
+                        let interceptor = KeyInterceptorView()
+                        interceptor.identifier = Self.keyInterceptorIdentifier
+                        interceptor.model = model
+                        interceptor.frame = .zero
+                        interceptor.isHidden = false
+                        contentView.addSubview(interceptor)
+                    }
                 }
             }
         }
@@ -96,5 +100,34 @@ struct WindowAccessor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+    }
+
+    private func installCenteredTitle(in window: NSWindow) {
+        guard let closeButton = window.standardWindowButton(.closeButton),
+              let titlebarView = closeButton.superview else {
+            return
+        }
+
+        let label: NSTextField
+        if let existing = titlebarView.subviews.first(where: { $0.identifier == Self.centeredTitleIdentifier }) as? NSTextField {
+            label = existing
+        } else {
+            label = NSTextField(labelWithString: "Lentis")
+            label.identifier = Self.centeredTitleIdentifier
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.alignment = .center
+            label.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+            label.textColor = .secondaryLabelColor
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            titlebarView.addSubview(label)
+
+            NSLayoutConstraint.activate([
+                label.centerXAnchor.constraint(equalTo: titlebarView.centerXAnchor),
+                label.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+                label.widthAnchor.constraint(lessThanOrEqualTo: titlebarView.widthAnchor, constant: -240)
+            ])
+        }
+
+        label.stringValue = "Lentis"
     }
 }

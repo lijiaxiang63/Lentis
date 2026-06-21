@@ -1,8 +1,7 @@
 // App.swift
 // Lentis
 //
-// Application entry point. Configures the main window with a hidden titlebar
-// and registers menu bar commands for layout switching, view operations
+// Application entry point. Configures menu bar commands for layout switching, view operations
 // (window/level, transforms, overlays), MPR mode, and synchronized scrolling.
 // Licensed under the MIT License. See LICENSE for details.
 
@@ -35,7 +34,6 @@ struct LentisApp: App {
                     }
                 }
         }
-        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("Open...") {
