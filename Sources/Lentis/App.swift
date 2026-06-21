@@ -188,9 +188,12 @@ struct LentisApp: App {
         let axial = model.panels[0], sag = model.panels[1], mip = model.panels[3]
 
         // 3a. W/L flushes (alternating sign keeps the window in range).
+        // --wl-hold: sustained ~15 s W/L drive so the main thread can be `sample`d.
+        let wlHold = CommandLine.arguments.contains("--wl-hold")
         log.log(event: "wl_stress_begin",
-                detail: "sag \(sag.imageWidth)x\(sag.imageHeight) \(sag.panelMode.rawValue); panel3=\(mip.panelMode.rawValue)")
-        for i in 0..<80 {
+                detail: "sag \(sag.imageWidth)x\(sag.imageHeight) \(sag.panelMode.rawValue); panel3=\(mip.panelMode.rawValue) hold=\(wlHold)")
+        let wlIters = wlHold ? 900 : 80
+        for i in 0..<wlIters {
             let s = (i % 2 == 0) ? 1.0 : -1.0
             model.adjustWindowLevelForPanel(sag, deltaWidth: 60 * s, deltaCenter: 15 * s)
             await sleep(16)
