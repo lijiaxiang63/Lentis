@@ -17,6 +17,7 @@
 // Licensed under the MIT License. See LICENSE for details.
 
 import Foundation
+import Combine
 import Testing
 import simd
 @testable import Lentis
@@ -86,4 +87,54 @@ func windowLevelRenderIsAsyncOffMainThread() async throws {
     // its main-queue apply run.
     await poll(until: { panel.image !== baseline })
     #expect(panel.image !== baseline)
+}
+
+// MARK: - W/L-drag relayout fix
+
+/// A W/L-drag flush must NOT fire `model.objectWillChange`. The lag was the whole
+/// quad re-laying-out (SwiftUI `LayoutEngineBox`) on every drag event because
+/// `adjustWindowLevelForPanel` wrote the `@Published seriesStates` on the MODEL
+/// each flush. The fix: per-flush is panel-local (`persist: false`); the window is
+/// committed to the model once at drag-end via `persistWindowToSeriesStates`.
+/// (Same invariant style as `CrosshairDecouplingTests`.)
+@MainActor
+@Test
+func windowLevelDragFlushDoesNotInvalidateModel() throws {
+    let (model, panel) = try makeAxialMRIPanel()
+
+    var modelFired = false
+    let token = model.objectWillChange.sink { _ in modelFired = true }
+    defer { token.cancel() }
+
+    // Per-flush drag adjust → panel-local only → no model churn (no quad relayout).
+    model.adjustWindowLevelForPanel(panel, deltaWidth: 200, deltaCenter: 50, persist: false)
+    #expect(modelFired == false)
+    // …but the panel-local W/L state still updated (drives the toolbar + re-render).
+    #expect(panel.windowWidth == 700)   // seeded 500 + 200
+    #expect(panel.windowCenter == 550)  // seeded 500 + 50
+    // …and nothing was persisted to the model yet.
+    #expect(model.seriesStates["wl-async"] == nil)
+
+    // Drag-END commit → DOES touch the model (fires objectWillChange) and persists.
+    modelFired = false
+    model.persistWindowToSeriesStates(panel)
+    #expect(modelFired == true)
+    #expect(model.seriesStates["wl-async"]?.windowWidth == 700)
+    #expect(model.seriesStates["wl-async"]?.windowCenter == 550)
+}
+
+/// Control: the DEFAULT path (`persist: true`, used by presets / auto / seeding)
+/// must still persist + fire — guards against the test above passing because the
+/// model subscription is broken.
+@MainActor
+@Test
+func windowLevelPersistDefaultStillInvalidatesModel() throws {
+    let (model, panel) = try makeAxialMRIPanel()
+    var modelFired = false
+    let token = model.objectWillChange.sink { _ in modelFired = true }
+    defer { token.cancel() }
+
+    model.adjustWindowLevelForPanel(panel, deltaWidth: 100, deltaCenter: 0)  // persist defaults true
+    #expect(modelFired == true)
+    #expect(model.seriesStates["wl-async"]?.windowWidth == 600)
 }

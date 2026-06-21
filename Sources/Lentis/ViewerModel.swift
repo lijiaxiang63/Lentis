@@ -1010,13 +1010,35 @@ class ViewerModel: ObservableObject {
                                   deltaCenter: wc - panel.windowCenter)
     }
 
+    /// Persist a panel's current window to the model's `seriesStates`, so other
+    /// panels / precaching / 4D timepoints share it.
+    ///
+    /// ⚠️ This writes a `@Published` on the MODEL, so it fires
+    /// `model.objectWillChange` → every model-observing view (the whole quad)
+    /// re-evaluates and SwiftUI re-runs layout over the tree. That is fine for a
+    /// **one-shot** (preset / auto / drag-END) but MUST NOT run per W/L-drag
+    /// flush: doing so re-laid-out the entire quad on every mouse event (SwiftUI
+    /// `LayoutEngineBox` recursion — found by `sample`, not by the `wl_drag`
+    /// probe), which was the W/L-drag lag. Same class as the crosshair-drag lag,
+    /// fixed the same way: keep per-event drag state on the PANEL; touch the
+    /// model only at the end of the drag.
+    func persistWindowToSeriesStates(_ panel: PanelState) {
+        guard panel.seriesIndex >= 0, panel.seriesIndex < allSeries.count else { return }
+        let uid = allSeries[panel.seriesIndex].id
+        var state = seriesStates[uid] ?? SeriesViewState()
+        state.windowWidth = panel.windowWidth
+        state.windowCenter = panel.windowCenter
+        seriesStates[uid] = state
+    }
+
     /// Adjust W/L for a specific panel.
     ///
-    /// The W/L *state* update (and its persistence to `seriesStates`) stays
-    /// synchronous on the main thread — the toolbar readout binds those
-    /// `@Published` values directly, so it updates instantly. The *re-render* is
-    /// pushed off the main thread by re-driving the panel's own async+coalesced
-    /// loader with the just-updated window:
+    /// The W/L *state* update stays synchronous on the main thread but mutates
+    /// only PANEL `@Published` values (`windowWidth`/`windowCenter`) — the toolbar
+    /// readout binds them, so it updates instantly while invalidating only this
+    /// panel's subtree, never the whole model/quad. The *re-render* is pushed off
+    /// the main thread by re-driving the panel's own async+coalesced loader with
+    /// the just-updated window:
     ///   • MPR planes → `loadMPRSlice` (re-extracts the CURRENT slice fresh and
     ///     re-renders with the new W/L). Re-extraction is cheap and off-main, and
     ///     it makes this correct by construction — coalesced + drop-stale, and it
@@ -1038,21 +1060,26 @@ class ViewerModel: ObservableObject {
     /// MPR / a cached volume for MIP) so seed-time W/L (presets/auto/modality,
     /// before the first render) stays a no-op exactly as the old synchronous path
     /// was — the normal first-render flow draws the initial slice.
-    func adjustWindowLevelForPanel(_ panel: PanelState, deltaWidth: Double, deltaCenter: Double) {
+    ///
+    /// `persist` controls the write-back to the MODEL's `seriesStates`. A W/L
+    /// **drag** passes `persist: false` for every throttled flush, so a drag never
+    /// fires `model.objectWillChange` and never re-lays-out the whole quad (the
+    /// W/L-drag-lag fix — see `persistWindowToSeriesStates`); it commits ONCE at
+    /// drag-end. One-shot callers (presets / auto / seeding via `setPanelWindow`)
+    /// keep the default `persist: true`.
+    func adjustWindowLevelForPanel(_ panel: PanelState, deltaWidth: Double, deltaCenter: Double,
+                                   persist: Bool = true) {
         BenchmarkLogger.shared.start("wl_drag")
         defer { BenchmarkLogger.shared.stop("wl_drag", detail: panel.panelMode.rawValue) }
 
         panel.windowWidth = max(1.0, panel.windowWidth + deltaWidth)
         panel.windowCenter += deltaCenter
 
-        // Persist to seriesStates so precaching & other images use the same W/L
-        if panel.seriesIndex >= 0, panel.seriesIndex < allSeries.count {
-            let uid = allSeries[panel.seriesIndex].id
-            var state = seriesStates[uid] ?? SeriesViewState()
-            state.windowWidth = panel.windowWidth
-            state.windowCenter = panel.windowCenter
-            seriesStates[uid] = state
-        }
+        // Write the window back to the model only when asked — NEVER per drag
+        // flush. `seriesStates` is @Published on the model, so this fires
+        // model.objectWillChange → whole-quad SwiftUI relayout (LayoutEngineBox).
+        // A drag passes persist:false (panel-local only) and commits once at end.
+        if persist { persistWindowToSeriesStates(panel) }
 
         switch panel.panelMode {
         case .slice2D:

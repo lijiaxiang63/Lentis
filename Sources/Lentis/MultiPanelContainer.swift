@@ -1223,18 +1223,24 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
 
         private func flushPendingWindowLevelIfNeeded(force: Bool) {
             guard let model = model, let panel = panel else { return }
-            guard wlPendingDeltaWidth != 0 || wlPendingDeltaCenter != 0 else { return }
 
             let now = CACurrentMediaTime()
-            if !force && (now - wlLastRenderTime) < wlRenderInterval {
-                return
+            let hasPending = wlPendingDeltaWidth != 0 || wlPendingDeltaCenter != 0
+            if hasPending && (force || (now - wlLastRenderTime) >= wlRenderInterval) {
+                // Per-flush: panel-local only (persist: false) — so a W/L drag does
+                // NOT write the model's @Published seriesStates and thus does not
+                // fire model.objectWillChange → does not re-lay-out the whole quad.
+                model.adjustWindowLevelForPanel(panel, deltaWidth: wlPendingDeltaWidth,
+                                                deltaCenter: wlPendingDeltaCenter, persist: false)
+                applyFilters()
+                wlPendingDeltaWidth = 0
+                wlPendingDeltaCenter = 0
+                wlLastRenderTime = now
             }
-
-            model.adjustWindowLevelForPanel(panel, deltaWidth: wlPendingDeltaWidth, deltaCenter: wlPendingDeltaCenter)
-            applyFilters()
-            wlPendingDeltaWidth = 0
-            wlPendingDeltaCenter = 0
-            wlLastRenderTime = now
+            // Drag END: commit the final window to the model exactly once.
+            if force {
+                model.persistWindowToSeriesStates(panel)
+            }
         }
 
         // MARK: - Mouse Tracking for HU Readout
