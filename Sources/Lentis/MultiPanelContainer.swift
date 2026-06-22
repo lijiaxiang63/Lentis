@@ -32,14 +32,15 @@ struct MultiPanelContainer: View {
     var body: some View {
         let layout = model.layout
 
-        // Fullscreen mode: show only the fullscreen panel
+        // Fullscreen mode: show only the fullscreen panel (edge-to-edge, square).
         if let fsID = model.fullscreenPanelID,
            let fsPanel = model.panels.first(where: { $0.id == fsID }) {
             PanelView(
                 model: model,
                 panel: fsPanel,
                 isActive: true,
-                isFocused: $isFocused
+                isFocused: $isFocused,
+                cornerRadius: 0
             )
             .id(fsPanel.id)
             .onTapGesture(count: 2) {
@@ -53,19 +54,21 @@ struct MultiPanelContainer: View {
         } else {
             // Grid mode — pin every cell to the available geometry. A panel's
             // image/W-L changes must not make the outer stacks ask all sibling
-            // panels for their ideal size again.
+            // panels for their ideal size again. Rounded inset cards float on the
+            // viewport backdrop, separated (and inset) by a consistent gap.
             let rows = layout.rows
             let cols = layout.columns
+            let gap = Spacing.s
 
             GeometryReader { geometry in
-                let horizontalGaps = CGFloat(max(0, cols - 1)) * 2
-                let verticalGaps = CGFloat(max(0, rows - 1)) * 2
+                let horizontalGaps = CGFloat(max(0, cols - 1)) * gap
+                let verticalGaps = CGFloat(max(0, rows - 1)) * gap
                 let cellWidth = max(0, (geometry.size.width - horizontalGaps) / CGFloat(cols))
                 let cellHeight = max(0, (geometry.size.height - verticalGaps) / CGFloat(rows))
 
-                VStack(spacing: 2) {
+                VStack(spacing: gap) {
                     ForEach(0..<rows, id: \.self) { row in
-                        HStack(spacing: 2) {
+                        HStack(spacing: gap) {
                             ForEach(0..<cols, id: \.self) { col in
                                 let index = row * cols + col
                                 if index < model.panels.count {
@@ -97,8 +100,9 @@ struct MultiPanelContainer: View {
                 }
                 .frame(width: geometry.size.width, height: geometry.size.height,
                        alignment: .topLeading)
-                .background(Color(white: 0.15))
             }
+            .padding(gap)
+            .background(Color.lentisViewport)
         }
     }
 }
@@ -109,15 +113,22 @@ struct EmptyPanelView: View {
     var body: some View {
         ZStack {
             Color.black
-            VStack(spacing: 8) {
+            VStack(spacing: Spacing.s) {
                 Image(systemName: "rectangle.dashed")
-                    .font(.system(size: 32))
+                    .font(.system(size: 30))
                     .foregroundStyle(.tertiary)
                 Text("Drag a series here, or drop a NIfTI file")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)
             }
+            .padding()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: Radius.panel))
+        .overlay {
+            RoundedRectangle(cornerRadius: Radius.panel)
+                .strokeBorder(.white.opacity(0.06), lineWidth: 1)
         }
     }
 }
@@ -131,6 +142,7 @@ struct PanelView: View {
     @ObservedObject var panel: PanelState
     let isActive: Bool
     @FocusState.Binding var isFocused: Bool
+    var cornerRadius: CGFloat = Radius.panel
 
     var body: some View {
         ZStack {
@@ -244,21 +256,24 @@ struct PanelView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        // Active panel border + group selection border
-        .overlay(
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+        // Active-panel + group-selection borders, tracking the rounded shape. An
+        // inactive panel keeps a faint hairline so its edge reads against the
+        // viewport backdrop; the active panel gets the accent + a soft glow.
+        .overlay {
             ZStack {
-                // Group selection border (outer, orange)
                 if panel.isGroupSelected {
-                    Rectangle()
-                        .stroke(Color.orange, lineWidth: 2.5)
+                    RoundedRectangle(cornerRadius: cornerRadius)
+                        .strokeBorder(Color.lentisGroup, lineWidth: 2.5)
                 }
-                // Active panel border (inner, accent color)
-                Rectangle()
-                    .stroke(isActive ? Color.accentColor : Color.clear, lineWidth: 1.5)
-                    .padding(panel.isGroupSelected ? 2.5 : 0)
+                RoundedRectangle(cornerRadius: max(0, cornerRadius - (panel.isGroupSelected ? 3 : 0)))
+                    .strokeBorder(isActive ? Color.lentisAccent : Color.white.opacity(0.07),
+                                  lineWidth: isActive ? 2 : 1)
+                    .padding(panel.isGroupSelected ? 3 : 0)
+                    .shadow(color: isActive ? Color.lentisAccent.opacity(0.5) : .clear,
+                            radius: isActive ? 5 : 0)
             }
-        )
-        .clipped()
+        }
     }
 }
 
