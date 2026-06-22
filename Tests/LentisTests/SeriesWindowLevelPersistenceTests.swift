@@ -4,25 +4,22 @@ import Testing
 
 // MARK: - Window/Level Persistence Tests
 //
-// These tests verify that W/L does not drift when scrolling through slices
-// within the same series (Bug 3 fix).  Because loadSingleFileForPanel requires
-// real DICOM files and DCMTK, we test the invariant directly on the state
-// machinery: seriesStates caching and the preservedWW look-up logic.
+// These tests verify that W/L state remains keyed by the volume series and
+// survives panel reassignment / navigation without being overwritten.
 
 // MARK: - SeriesViewState W/L caching
 
 @Test
 func seriesStatesStoresWindowLevelAfterFirstLoad() {
-    // Simulate what the DCMTK render branch does on first load:
-    // it should write the computed W/L into seriesStates so subsequent
-    // slice loads can reuse it.
+    // First render/seed should write W/L into seriesStates so subsequent
+    // renders can reuse it.
     let model = ViewerModel()
     let uid = "test-series-uid"
 
     // Pre-condition: no entry in seriesStates
     #expect(model.seriesStates[uid] == nil)
 
-    // Simulate first-load write (mirrors the code added in loadSingleFileForPanel)
+    // Simulate first-load write.
     var state = model.seriesStates[uid] ?? ViewerModel.SeriesViewState()
     state.windowWidth = 1500.0
     state.windowCenter = 300.0
@@ -61,7 +58,7 @@ func seriesStatesNotOverwrittenOnSubsequentLoads() {
 
 @Test
 func preservedWLRestoredFromSeriesStatesWhenPanelWindowWidthIsZero() {
-    // Verify the look-up logic at the top of loadSingleFileForPanel:
+    // Verify the preserved W/L lookup:
     // when panel.windowWidth == 0 but seriesStates has a saved W/L,
     // the effective preserved values should come from seriesStates.
     let model = ViewerModel()
@@ -69,23 +66,7 @@ func preservedWLRestoredFromSeriesStatesWhenPanelWindowWidthIsZero() {
     let seriesIndex = 0
 
     // Set up a minimal series so allSeries[seriesIndex].id == uid
-    let ctx = ImageContext(
-        url: URL(fileURLWithPath: "/tmp/fake.dcm"),
-        seriesUID: uid,
-        seriesDescription: "test",
-        instanceNumber: 1,
-        seriesNumber: 1,
-        zLocation: nil,
-        imagePosition: nil,
-        imageOrientation: nil,
-        pixelSpacing: nil,
-        sliceThickness: nil,
-        spacingBetweenSlices: nil,
-        frameOfReferenceUID: nil,
-        studyInstanceUID: nil,
-        numberOfFrames: 1
-    )
-    model.allSeries = [ImageSeries(id: uid, seriesNumber: 1, seriesDescription: "test", images: [ctx])]
+    model.allSeries = [ImageSeries(id: uid, seriesNumber: 1, seriesDescription: "test")]
 
     // Pre-populate seriesStates with a known W/L (simulating a prior slice load)
     var state = ViewerModel.SeriesViewState()
@@ -99,7 +80,7 @@ func preservedWLRestoredFromSeriesStatesWhenPanelWindowWidthIsZero() {
     panel.windowWidth = 0
     panel.windowCenter = 0
 
-    // Replicate the preservedWW look-up logic from loadSingleFileForPanel
+    // Replicate the preservedWW lookup logic.
     var preservedWW = panel.windowWidth
     var preservedWC = panel.windowCenter
     if preservedWW <= 0, panel.seriesIndex >= 0, panel.seriesIndex < model.allSeries.count {
@@ -123,23 +104,7 @@ func preservedWLNotRestoredWhenSeriesStatesEmpty() {
     let uid = "test-series-uid-4"
     let seriesIndex = 0
 
-    let ctx = ImageContext(
-        url: URL(fileURLWithPath: "/tmp/fake2.dcm"),
-        seriesUID: uid,
-        seriesDescription: "test",
-        instanceNumber: 1,
-        seriesNumber: 1,
-        zLocation: nil,
-        imagePosition: nil,
-        imageOrientation: nil,
-        pixelSpacing: nil,
-        sliceThickness: nil,
-        spacingBetweenSlices: nil,
-        frameOfReferenceUID: nil,
-        studyInstanceUID: nil,
-        numberOfFrames: 1
-    )
-    model.allSeries = [ImageSeries(id: uid, seriesNumber: 1, seriesDescription: "test", images: [ctx])]
+    model.allSeries = [ImageSeries(id: uid, seriesNumber: 1, seriesDescription: "test")]
 
     let panel = PanelState()
     panel.seriesIndex = seriesIndex
@@ -170,23 +135,7 @@ func adjustWindowLevelPersistsToSeriesStates() {
     let uid = "test-series-uid-5"
     let seriesIndex = 0
 
-    let ctx = ImageContext(
-        url: URL(fileURLWithPath: "/tmp/fake3.dcm"),
-        seriesUID: uid,
-        seriesDescription: "test",
-        instanceNumber: 1,
-        seriesNumber: 1,
-        zLocation: nil,
-        imagePosition: nil,
-        imageOrientation: nil,
-        pixelSpacing: nil,
-        sliceThickness: nil,
-        spacingBetweenSlices: nil,
-        frameOfReferenceUID: nil,
-        studyInstanceUID: nil,
-        numberOfFrames: 1
-    )
-    model.allSeries = [ImageSeries(id: uid, seriesNumber: 1, seriesDescription: "test", images: [ctx])]
+    model.allSeries = [ImageSeries(id: uid, seriesNumber: 1, seriesDescription: "test")]
 
     let panel = PanelState()
     panel.seriesIndex = seriesIndex

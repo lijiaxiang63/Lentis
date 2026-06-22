@@ -1,5 +1,5 @@
 // MPREngine.swift
-// OpenDicomViewer
+// Lentis
 //
 // CPU-based Multi-Planar Reconstruction (MPR) engine. Extracts oblique 2D
 // slices from a 3D VolumeData by sampling along orthogonal planes (sagittal,
@@ -147,7 +147,7 @@ class MPREngine {
     /// the crosshair to relocate the other panels. Because volumes are
     /// canonical RAS (i→R, j→A, k→S), each plane indexes one voxel axis:
     /// axial→k, sagittal→i, coronal→j. Result is rounded + clamped to bounds.
-    /// Returns nil for non-orthogonal modes (e.g. `.volume3D`, `.slice2D`).
+    /// Returns nil for non-orthogonal modes (e.g. `.volume3D`).
     func orthogonalSliceIndex(for mode: PanelMode, containing world: SIMD3<Double>) -> Int? {
         let v = volume.worldToVoxel(world)
         switch mode {

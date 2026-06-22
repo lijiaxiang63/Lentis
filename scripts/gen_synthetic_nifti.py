@@ -1,7 +1,12 @@
-import numpy as np, struct, gzip, os
+import gzip
+import os
+import struct
+from pathlib import Path
 
-OUT = "/Users/jiaxiangli/neuroimaging/Lentis/TestData"
-os.makedirs(OUT, exist_ok=True)
+import numpy as np
+
+OUT = Path(__file__).resolve().parents[1] / "TestData"
+OUT.mkdir(exist_ok=True)
 
 def write_nifti(path, data, dtype_code, bitpix, affine, slope=1.0, inter=0.0):
     # data: numpy array shape (nz,ny,nx) or (nt,nz,ny,nx); C-order => i fastest (NIFTI order)
@@ -44,13 +49,13 @@ skull = (((xx-cx)/26)**2+((yy-cy)/30)**2+((zz-cz)/20)**2 <= 1.0) & (((xx-cx)/23)
 ct[skull] = 1200  # bone
 calc = ((xx-(cx-12))**2 + (yy-cy)**2 + (zz-cz)**2) <= 9    # small dense blob, left-of-center in array
 ct[calc] = 420
-write_nifti(f"{OUT}/synthetic_ct.nii.gz", ct, 4, 16, aff)
+write_nifti(OUT / "synthetic_ct.nii.gz", ct, 4, 16, aff)
 
 # ---- MRI: float32, non-negative, intensity gradient inside head ----
 mri = np.zeros((nz,ny,nx), np.float32)
 mri[ell] = 300 + 200*np.sin(xx[ell]/6.0) + 1.5*yy[ell]
 mri[mri<0] = 0
-write_nifti(f"{OUT}/synthetic_mri.nii.gz", mri, 16, 32, aff)
+write_nifti(OUT / "synthetic_mri.nii.gz", mri, 16, 32, aff)
 
 # ---- 4D MRI: 5 timepoints, brightness varies per timepoint ----
 nt=5
@@ -60,12 +65,12 @@ for t in range(nt):
     vol[ell] = 200 + 60*t + 100*np.cos((xx[ell]+t*4)/7.0)
     vol[vol<0]=0
     m4[t]=vol
-write_nifti(f"{OUT}/synthetic_mri_4d.nii.gz", m4, 16, 32, aff)
+write_nifti(OUT / "synthetic_mri_4d.nii.gz", m4, 16, 32, aff)
 
 # ---- Orientation markers: distinct intensities per octant (for Phase 4 checks) ----
 om = np.zeros((nz,ny,nx), np.int16)
 om[zz<cz] += 0;     om[zz>=cz]+=4
 om[yy>=cy]+=2;      om[xx>=cx]+=1
 om = (om.astype(np.int16))*100 - 1000  # spread into HU-ish range with negatives (reads as CT)
-write_nifti(f"{OUT}/synthetic_orient.nii.gz", om, 4, 16, aff)
+write_nifti(OUT / "synthetic_orient.nii.gz", om, 4, 16, aff)
 print("DONE")

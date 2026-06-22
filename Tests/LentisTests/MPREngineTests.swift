@@ -1,5 +1,5 @@
 // MPREngineTests.swift
-// OpenDicomViewer Tests
+// Lentis Tests
 //
 // Tests for MPR slice extraction using small synthetic volumes.
 // Validates axial, sagittal, coronal slices and slab projections.
@@ -271,7 +271,6 @@ final class MPREngineTests: XCTestCase {
         XCTAssertEqual(engine.orthogonalSliceIndex(for: .mprSagittal, containing: world), 2)  // i
         XCTAssertEqual(engine.orthogonalSliceIndex(for: .mprCoronal, containing: world), 1)   // j
         XCTAssertNil(engine.orthogonalSliceIndex(for: .volume3D, containing: world))
-        XCTAssertNil(engine.orthogonalSliceIndex(for: .slice2D, containing: world))
     }
 
     func testOrthogonalSliceIndexClampsOutOfBounds() {

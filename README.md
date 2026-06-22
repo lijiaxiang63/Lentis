@@ -54,7 +54,7 @@ cd Lentis
 swift build
 
 # Build, stage dist/Lentis.app, and launch it
-./script/build_and_run.sh
+./scripts/build_and_run.sh
 ```
 
 To create a release app and DMG:

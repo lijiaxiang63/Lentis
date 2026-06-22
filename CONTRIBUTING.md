@@ -1,107 +1,104 @@
-# Contributing to OpenDicomViewer
+# Contributing to Lentis
 
-Thanks for your interest in contributing. This guide covers everything you need to get started.
+Thanks for your interest in contributing. Lentis is a native macOS NIfTI brain viewer built with SwiftUI, AppKit, and Metal.
 
 ## Development Environment
 
-**Requirements:**
-- macOS 14.0+ (Sonoma)
-- Xcode 15+ or the Swift 5.9+ toolchain
-- Apple Silicon Mac (arm64)
+Requirements:
 
-No additional package managers or dependency installs are needed. Pre-built static libraries for DCMTK and OpenJPEG ship in `libs/`.
+- macOS 14 Sonoma or later
+- Apple Silicon Mac (`arm64`)
+- Xcode 15+ or a Swift 5.9+ toolchain
+
+No additional package managers, native libraries, or system dependency installs are needed. The app is pure Swift + Metal/AppKit.
 
 ## Building
 
 ```bash
 # Clone the repo
-git clone https://github.com/jnheo-md/open-dicom-viewer.git
-cd open-dicom-viewer
+git clone https://github.com/lijiaxiang63/Lentis.git
+cd Lentis
 
-# Debug build (fast, for iteration)
+# Debug build
 swift build
 
-# Release build + .app bundle (what you actually run)
-bash scripts/package_app.sh
+# Debug build + stage dist/Lentis.app + launch
+./scripts/build_and_run.sh
+
+# Release app + DMG
+./scripts/package_app.sh
 ```
 
-**Important:** `swift build` produces a debug binary only. To run the app, always use `bash scripts/package_app.sh`, which builds a release binary, assembles the `.app` bundle with all required resources (icon, DCMTK dictionary, Info.plist), and creates a DMG. The resulting `OpenDicomViewer.app` can be opened directly or copied to `/Applications`.
-
-To rebuild the native dependencies (DCMTK, OpenJPEG) from source:
-
-```bash
-bash scripts/setup_native_deps.sh
-```
+`swift build` produces a package binary for iteration. Use `./scripts/build_and_run.sh` to run the app during development, and `./scripts/package_app.sh` to assemble `Lentis.app` and `Lentis.dmg` with the resource bundle and app icon.
 
 ## Running Tests
 
 ```bash
 swift test
+swift test --filter nifti --filter dataset
+swift test --filter SegmentationSeam
 ```
 
-Tests live in `Tests/OpenDicomViewerTests/` and cover the DICOM parser, MPR engine, volume data, and panel state logic.
+Tests live in `Tests/LentisTests/` and cover NIfTI parsing, orientation, volume data, MPR rendering, Metal rendering, window/level behavior, overlay layers, and UI-adjacent state logic.
 
 ## Code Structure
 
-```
-Sources/
-├── OpenDicomViewer/           # Main application (SwiftUI + AppKit)
-│   ├── App.swift              # Entry point, menu bar commands
-│   ├── ContentView.swift      # Root view, keyboard shortcuts
-│   ├── DICOMModel.swift       # Core model: loading, caching, panels
-│   ├── SimpleDICOM.swift      # Pure-Swift DICOM parser
-│   ├── MultiPanelContainer.swift  # Panel grid, overlays, gesture handling
-│   ├── PanelState.swift       # Per-panel state (series, W/L, zoom, tools)
-│   ├── MPREngine.swift        # CPU multi-planar reconstruction
-│   ├── MetalVolumeRenderer.swift  # GPU MIP/MinIP via Metal compute
-│   ├── VolumeData.swift       # 3D voxel buffer
-│   └── ...                    # Overlays, toolbars, helpers
-└── DCMTKWrapper/              # Objective-C++ bridge to DCMTK/OpenJPEG
-    ├── DCMTKHelper.mm
-    └── include/DCMTKHelper.h
+```text
+Sources/Lentis/
+├── App.swift                  # Entry point, menus, benchmark launch
+├── ContentView.swift          # Root view, sidebar, inspector, keyboard shortcuts
+├── ViewerModel.swift          # Core model: panels, rendering, navigation, layers
+├── ViewerModel+Nifti.swift    # NIfTI loading, modality, W/L policy, 4D
+├── NIfTI.swift                # NIfTI-1/2 parser + pure-Swift gzip/DEFLATE
+├── Orientation.swift          # Affine interpretation and canonical RAS orientation
+├── VolumeData.swift           # Int16 3D volume, affine transforms, mask seam
+├── MPREngine.swift            # CPU MPR extraction/rendering and overlay compositing
+├── MetalVolumeRenderer.swift  # Interactive 3D volume renderer
+├── LayerInspectorView.swift   # Mask/atlas layer and LUT UI
+└── ...                        # State, overlays, resources, helpers
 ```
 
-For a full breakdown including what to edit for common tasks (adding tools, shortcuts, overlays), see the **Customization Guide** in the README.
+For the most detailed working notes, see `AGENTS.md` / `CLAUDE.md`.
 
 ## Contribution Guidelines
 
 ### Reporting Issues
 
-[Open an issue](https://github.com/jnheo-md/open-dicom-viewer/issues) with:
+Open an issue with:
+
 - What you expected vs. what happened
-- Steps to reproduce (include sample DICOM data characteristics if relevant — modality, transfer syntax, dimensions)
+- Steps to reproduce
+- The NIfTI modality/type involved, if relevant
 - macOS version
+- Whether the issue reproduces with synthetic data or only real patient data
+
+Do not attach identifiable patient data to public issues.
 
 ### Pull Requests
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Make your changes
-4. Run `swift test` and verify the app builds with `bash scripts/package_app.sh`
-5. Commit with a clear message describing what and why
-6. Push and open a PR against `master`
+1. Fork the repository.
+2. Create a focused branch.
+3. Make your changes.
+4. Run `swift test` and at least `swift build`.
+5. For packaging or resource changes, also run `./scripts/package_app.sh`.
+6. Commit with a clear message describing what changed and why.
+7. Push and open a PR against `master`.
 
 Keep PRs focused. One logical change per PR is easier to review than a bundle of unrelated edits.
 
 ### Code Style
 
-- Follow existing conventions in the codebase (Swift standard naming, consistent indentation)
-- No external Swift package dependencies without discussion — the project deliberately keeps its dependency footprint minimal
-- Use `panel.setDisplayImage()` instead of assigning `panel.image` directly (keeps display dimensions in sync)
-- Prefer clear, readable code over clever abstractions — this codebase is designed to be understood by both humans and AI assistants
+- Keep orientation logic centralized in `MPREngine.planeGeometry`.
+- Preserve nearest-neighbour handling for categorical mask/atlas overlays.
+- Use `panel.setDisplayImage()` instead of assigning `panel.image` directly.
+- Prefer small, focused tests for spatial, rendering, and W/L changes.
+- Avoid introducing native/system dependencies unless there is a very strong reason.
 
 ## Contributing with AI Coding Assistants
 
-This project is explicitly designed to be modified with AI tools like Claude, GitHub Copilot, or similar assistants. This is not just permitted — it is encouraged and is a core part of the project's philosophy.
+AI-assisted contributions are welcome. Give the assistant the relevant README/AGENTS context, ask for focused changes, run the tests, and review the diff before committing.
 
-**How to use AI assistants effectively with this codebase:**
-
-- **Point the AI at the right files.** The README's Customization Guide maps common tasks to specific files. Give the AI that context and it will produce better results.
-- **Start small.** Ask the AI to make a single focused change, test it, then iterate. This works much better than requesting sweeping rewrites.
-- **Build and verify.** Always run `bash scripts/package_app.sh` after AI-generated changes to confirm the build succeeds, and `swift test` to catch regressions.
-- **Review what the AI produces.** AI assistants are powerful but imperfect. Read the diff before committing.
-
-**If your entire contribution was written with an AI assistant, that is fine.** Just note it in your PR description. The quality of the change matters, not how it was written.
+If your contribution was AI-assisted, it is fine to mention that in the PR description. The quality and clarity of the change matters most.
 
 ## License
 

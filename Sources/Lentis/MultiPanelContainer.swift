@@ -138,7 +138,7 @@ struct PanelView: View {
 
             // Image View
             if let image = panel.image {
-                PanelInteractiveDICOMView(model: model, panel: panel, image: image)
+                PanelInteractiveImageView(model: model, panel: panel, image: image)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .zIndex(0)
             } else if panel.errorMessage == nil && !panel.isLoading {
@@ -234,7 +234,7 @@ struct PanelView: View {
             if panel.seriesIndex >= 0 && panel.panelMode != .volume3D {
                 HStack {
                     Spacer()
-                    PanelDICOMScroller(model: model, panel: panel)
+                    PanelSliceScroller(model: model, panel: panel)
                         .frame(width: 40)
                         .padding(.trailing, 4)
                         .padding(.vertical, 8)
@@ -262,36 +262,30 @@ struct PanelView: View {
     }
 }
 
-// MARK: - Panel Interactive DICOM View (NSViewRepresentable)
+// MARK: - Panel Interactive Image View (NSViewRepresentable)
 
-struct PanelInteractiveDICOMView: NSViewRepresentable {
+struct PanelInteractiveImageView: NSViewRepresentable {
     @ObservedObject var model: ViewerModel
     @ObservedObject var panel: PanelState
     var image: NSImage
 
-    func makeNSView(context: Context) -> PanelDICOMInteractView {
-        let view = PanelDICOMInteractView()
+    func makeNSView(context: Context) -> PanelImageInteractView {
+        let view = PanelImageInteractView()
         view.model = model
         view.panel = panel
-        panel.cineDisplayView = view
         return view
     }
 
-    func updateNSView(_ nsView: PanelDICOMInteractView, context: Context) {
+    func updateNSView(_ nsView: PanelImageInteractView, context: Context) {
         nsView.model = model
         nsView.panel = panel
-        // During cine playback, frames are rendered directly via setCineFrame
-        // on the CALayer. Skip the expensive SwiftUI image pipeline but still
-        // apply the CALayer transform (zoom/pan) so W/L and navigation work.
-        if !panel.isPlaying {
-            nsView.setImage(image)
-            nsView.applyFilters()
-        }
+        nsView.setImage(image)
+        nsView.applyFilters()
         nsView.updateTransform()
         nsView.updateROICursor()
     }
 
-    class PanelDICOMInteractView: NSView {
+    class PanelImageInteractView: NSView {
         weak var model: ViewerModel?
         var panel: PanelState?
         private var imageView = NSImageView()
@@ -428,12 +422,6 @@ struct PanelInteractiveDICOMView: NSViewRepresentable {
                     self.restoreState()
                 }
             }
-        }
-
-        /// Set a CGImage directly on the layer for high-performance cine playback.
-        /// Bypasses NSImageView.image and SwiftUI update cycle entirely.
-        func setCineFrame(_ cgImage: CGImage) {
-            imageView.layer?.contents = cgImage
         }
 
         func updateTransform() { restoreState() }
@@ -1564,9 +1552,9 @@ struct PanelHistogramView: View {
     }
 }
 
-// MARK: - Panel DICOM Scroller
+// MARK: - Panel Slice Scroller
 
-struct PanelDICOMScroller: View {
+struct PanelSliceScroller: View {
     @ObservedObject var model: ViewerModel
     @ObservedObject var panel: PanelState
     @State private var isHovering = false
@@ -1619,20 +1607,13 @@ struct PanelDICOMScroller: View {
             .overlay(alignment: .topTrailing) {
                 if total > 0, let pY = activeY() {
                     let idx = getIndex(y: pY, height: geo.size.height, total: total)
-                    if panel.panelMode == .slice2D {
-                        PanelThumbnailPopup(model: model, panel: panel, index: idx, total: total)
-                            .offset(x: -20, y: min(max(0, pY - 45), geo.size.height - 90))
-                            .allowsHitTesting(false)
-                    } else {
-                        // MPR mode: show slice number instead of thumbnail
-                        Text("\(idx + 1)/\(total)")
-                            .font(.system(.caption2, design: .monospaced))
-                            .padding(4)
-                            .background(.ultraThinMaterial)
-                            .cornerRadius(4)
-                            .offset(x: -20, y: min(max(0, pY - 12), geo.size.height - 24))
-                            .allowsHitTesting(false)
-                    }
+                    Text("\(idx + 1)/\(total)")
+                        .font(.system(.caption2, design: .monospaced))
+                        .padding(4)
+                        .background(.ultraThinMaterial)
+                        .cornerRadius(4)
+                        .offset(x: -20, y: min(max(0, pY - 12), geo.size.height - 24))
+                        .allowsHitTesting(false)
                 }
             }
         }
@@ -1655,33 +1636,6 @@ struct PanelDICOMScroller: View {
     func getIndex(y: CGFloat, height: CGFloat, total: Int) -> Int {
         let pct = max(0, min(1, y / height))
         return Int(pct * Double(total - 1))
-    }
-}
-
-// MARK: - Panel Thumbnail Popup
-
-struct PanelThumbnailPopup: View {
-    @ObservedObject var model: ViewerModel
-    @ObservedObject var panel: PanelState
-    let index: Int
-    let total: Int
-
-    var body: some View {
-        HStack {
-            Text("\(index + 1)")
-                .font(.caption)
-                .padding(4)
-                .background(.black.opacity(0.7))
-                .cornerRadius(4)
-
-            RoundedRectangle(cornerRadius: 4)
-                .fill(Color.gray.opacity(0.3))
-                .frame(width: 80, height: 80)
-        }
-        .padding(4)
-        .background(.ultraThinMaterial)
-        .cornerRadius(8)
-        .shadow(radius: 4)
     }
 }
 

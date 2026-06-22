@@ -1,5 +1,5 @@
 // CrossReferenceOverlay.swift
-// OpenDicomViewer
+// Lentis
 //
 // Draws the shared 3D crosshair (Phase 6) on each MPR panel: two lines through
 // the in-plane projection of the model's crosshair world point, plus a center

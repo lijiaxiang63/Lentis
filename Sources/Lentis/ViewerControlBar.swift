@@ -172,8 +172,7 @@ private struct ControlBarPlaneGroup: View {
     }
     var body: some View {
         HStack(spacing: 4) {
-            // Hide the inert 2D "Slice" mode on volumetric (NIfTI) panels.
-            ForEach(PanelMode.allCases.filter { !($0 == .slice2D && isVolumetric) }) { mode in
+            ForEach(PanelMode.allCases) { mode in
                 modeButton(mode)
             }
 
@@ -231,8 +230,7 @@ private struct ControlBarPlaneGroup: View {
 
     @ViewBuilder
     private func modeButton(_ mode: PanelMode) -> some View {
-        let needsVolume = mode != .slice2D
-        let modeDisabled = needsVolume && !isVolumetric
+        let modeDisabled = !isVolumetric
         let foreground: Color = modeDisabled ? .gray.opacity(0.35) :
             panel.panelMode == mode ? .white : .secondary
         Button(action: { model.setPanelMode(panel, mode: mode) }) {

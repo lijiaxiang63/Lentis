@@ -196,7 +196,7 @@ struct LentisApp: App {
     ///   • W/L flush on the megapixel sagittal MPR + 3D volume panels → wl_drag
     ///   • crosshair relocation through the volume → crosshair_set
     ///   • scroll tick (active panel + sync-scroll the quad) → scroll_main
-    /// Read ~/Desktop/odv_benchmark.csv between the `*_begin/_end` markers.
+    /// Read ~/Desktop/lentis_benchmark.csv between the `*_begin/_end` markers.
     @MainActor
     static func runPerfStress(_ model: ViewerModel) async {
         let log = BenchmarkLogger.shared

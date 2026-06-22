@@ -1,8 +1,8 @@
 // BenchmarkLogger.swift
-// OpenDicomViewer
+// Lentis
 //
 // Lightweight performance logger for manuscript benchmarks.
-// Logs timing data to stderr and to ~/Desktop/odv_benchmark.csv.
+// Logs timing data to stderr and to ~/Desktop/lentis_benchmark.csv.
 // Enable by setting BENCHMARK_MODE=1 environment variable or
 // launching with --benchmark flag.
 // Licensed under the MIT License. See LICENSE for details.
@@ -30,7 +30,7 @@ final class BenchmarkLogger {
             || CommandLine.arguments.contains("--benchmark")
 
         let desktop = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
-        logURL = desktop.appendingPathComponent("odv_benchmark.csv")
+        logURL = desktop.appendingPathComponent("lentis_benchmark.csv")
 
         if enabled {
             // Write CSV header if file doesn't exist

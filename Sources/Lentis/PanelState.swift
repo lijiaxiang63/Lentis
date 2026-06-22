@@ -1,5 +1,5 @@
 // PanelState.swift
-// OpenDicomViewer
+// Lentis
 //
 // Defines the per-panel state model and supporting enums for the multi-panel
 // viewer architecture.
@@ -7,9 +7,9 @@
 // Key types:
 //   ViewerLayout       — Layout configuration (1x1, 2x1, 1x2, 2x2)
 //   NavigationDirection — Arrow key navigation actions
-//   PanelMode          — Display mode per panel (2D slice, orthogonal MPR, 3D volume)
+//   PanelMode          — Display mode per panel (orthogonal MPR, 3D volume)
 //   PanelState         — Observable state for a single viewer panel, including:
-//                         series/image assignment, window/level, zoom/pan,
+//                         volume assignment, window/level, zoom/pan,
 //                         spatial metadata, histogram, cursor readout, and
 //                         display modifiers (invert, rotate, flip)
 //
@@ -71,7 +71,6 @@ enum NavigationDirection {
 
 // MARK: - Panel Display Mode
 enum PanelMode: String, CaseIterable, Identifiable {
-    case slice2D = "Slice"
     case mprAxial = "Axial"
     case mprSagittal = "Sagittal"
     case mprCoronal = "Coronal"
@@ -183,7 +182,7 @@ class PanelState: ObservableObject, Identifiable {
     @Published var imageIndex: Int = -1
 
     // Panel display mode
-    @Published var panelMode: PanelMode = .slice2D
+    @Published var panelMode: PanelMode = .mprAxial
 
     // MPR position (voxel index for orthogonal slices)
     @Published var mprSliceIndex: Int = 0
@@ -302,26 +301,11 @@ class PanelState: ObservableObject, Identifiable {
     @Published var rulerPreviewEnd: CGPoint? = nil
     @Published var anglePreviewPoints: [CGPoint] = []
 
-    // Multi-frame / Cine state
-    @Published var isMultiFrame: Bool = false
-    @Published var numberOfFrames: Int = 0
-    @Published var currentFrameIndex: Int = 0
-    @Published var isPlaying: Bool = false
-    @Published var playbackSpeed: Double = 1.0
-    @Published var cineRate: Double = 30.0
-    @Published var frameTimeMs: Double = 33.33
-    @Published var loopPlayback: Bool = true
-
-    /// Internal frame counter updated every tick (not @Published, no SwiftUI cascade)
-    var cineInternalFrame: Int = 0
-    /// Weak reference to the NSView for direct cine frame rendering (bypasses SwiftUI)
-    weak var cineDisplayView: NSView?
-
     /// Reset panel to empty state
     func reset() {
         seriesIndex = -1
         imageIndex = -1
-        panelMode = .slice2D
+        panelMode = .mprAxial
         mprSliceIndex = 0
         volumeYawDegrees = -25
         volumePitchDegrees = 18
@@ -377,15 +361,5 @@ class PanelState: ObservableObject, Identifiable {
         rulerPreviewStart = nil
         rulerPreviewEnd = nil
         anglePreviewPoints = []
-        isMultiFrame = false
-        numberOfFrames = 0
-        currentFrameIndex = 0
-        isPlaying = false
-        playbackSpeed = 1.0
-        cineRate = 30.0
-        frameTimeMs = 33.33
-        loopPlayback = true
-        cineInternalFrame = 0
-        cineDisplayView = nil
     }
 }

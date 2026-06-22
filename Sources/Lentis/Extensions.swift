@@ -1,5 +1,5 @@
 // Extensions.swift
-// OpenDicomViewer
+// Lentis
 //
 // Utility extensions used throughout the app.
 // Licensed under the MIT License. See LICENSE for details.

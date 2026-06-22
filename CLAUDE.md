@@ -19,7 +19,7 @@ This file is the working record. Update it as phases complete.
 
 ```bash
 swift build                       # debug build (~20s clean; zero native/system deps)
-./script/build_and_run.sh         # debug build + stage dist/Lentis.app + launch
+./scripts/build_and_run.sh        # debug build + stage dist/Lentis.app + launch
 ./scripts/package_app.sh          # release build → Lentis.app + Lentis.dmg (ad-hoc signed)
 swift test                        # full suite: MIXED XCTest + swift-testing (130: 62 XCTest + 68 swift-testing)
 swift test --filter nifti --filter dataset   # just the NIFTI tests
@@ -42,7 +42,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 ```
 
-- **Perf probe:** `--benchmark` writes `~/Desktop/odv_benchmark.csv` (and `[BENCH]` to stderr).
+- **Perf probe:** `--benchmark` writes `~/Desktop/lentis_benchmark.csv` (and `[BENCH]` to stderr).
   Main-thread-cost events (must stay sub-ms): `scroll_main` (one scroll tick), `crosshair_set` (one
   crosshair relocation), `wl_drag` (one W/L flush). Off-main render events: `mpr_render` / `volume_render`
   (per-slice render ms). `--perf-stress` (with `--benchmark`) is a **self-driving** harness that loads
@@ -57,10 +57,10 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 - Toolchain: Swift 6.3, Xcode 26.4, macOS arm64. Bundle id `com.kalicooper.lentis`.
   **Zero native/system dependencies** — pure Swift + Metal/AppKit (DCMTK/OpenJPEG gone in Phase 3).
 - `swift build` after adding a `PanelMode` case → the compiler flags every non-exhaustive
-  `switch` (~10 sites). Fix each (usually mirror `.mprCoronal` or fold into a combined case).
-- **Git state (2026-06-22):** work is on **`master`**, currently five commits ahead of
-  `origin/master`: the mask/atlas layer data pipeline, ordered renderer, native Layers Inspector/LUT
-  management, and two centered-window-title fixes. See `git log`. Real patient data
+  `switch`. Fix each intentionally (usually mirror `.mprCoronal` or fold into a combined case).
+- **Git state (2026-06-22):** work is on **`master`**. `master` was synchronized with
+  `origin/master` before the repository-hygiene cleanup that removes the remaining
+  DICOM/OpenDicomViewer-era naming, scripts, docs, and inert state. Real patient data
   (`TestData/sub-*`) is gitignored — only synthetic fixtures are tracked. Commit per
   phase/logical step going forward.
 
@@ -80,7 +80,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | File | Role |
 |---|---|
 | `App.swift` | `@main struct LentisApp`. Menus. `--benchmark <path>` auto-open. The `WindowGroup` scene title is intentionally empty; `WindowAccessor` supplies the only visible, centered `Lentis` title so SwiftUI Inspector rebuilds cannot restore a leading duplicate. |
-| `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/3D, W/L, sync-scroll. **Crosshair (Phase 6):** `setCrosshair(_:from:)` relocates the orthogonal panels through a world point; `.volume3D` is deliberately excluded. The world point lives in a **decoupled `CrosshairState`**. **3D (Phase 8):** `loadVolumeRendering` is async/coalesced on `panel.loadingQueue`; `rotateVolumeRendering` drives preview/final camera renders. **W/L drag:** re-drives `loadMPRSlice`/`loadVolumeRendering` off-main. DICOM ingestion removed (Phase 3). |
+| `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model**. Panels, volume cache, MPR/3D, W/L, sync-scroll. **Crosshair (Phase 6):** `setCrosshair(_:from:)` relocates the orthogonal panels through a world point; `.volume3D` is deliberately excluded. The world point lives in a **decoupled `CrosshairState`**. **3D (Phase 8):** `loadVolumeRendering` is async/coalesced on `panel.loadingQueue`; `rotateVolumeRendering` drives preview/final camera renders. **W/L drag:** re-drives `loadMPRSlice`/`loadVolumeRendering` off-main. |
 | `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. **Modality-aware W/L (Phase 5):** `modalityDefaultWindow`/`seededWindow` (seed), `applyWindowPreset`/`applyModalityAutoWindow`/`autoWindow(for:)` (UI). **Phase 7 seam:** `installDemoSphereMask` (`--benchmark`-only mask demo). |
 | `WindowLevel.swift` | **`WindowPreset` + CT HU preset table** (Phase 5). Brain default `(0,80)`, Subdural/Stroke/Bone/Soft-tissue (HU). `storedWindow(slope:intercept:)` maps HU→stored (identity for direct-HU CT). Pure; no deps. |
 | `NIfTI.swift` | **NIFTI-1/2 reader**. Header/endianness/4D/9 dtypes, sform/qform affine, **table-driven pure-Swift DEFLATE** (`DeflateInflater`): direct mapped-input reads + zero-copy output `Data`. Zero deps. |
@@ -98,7 +98,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | `MultiPanelContainer.swift` (~1960 lines) | Multi-panel views + gestures. MPR panels keep pixel-bound orientation/crosshair/annotation/scroller overlays. Cursor tracking maps aspect-corrected display pixels back to raw slice pixels before HU lookup and then uses the panel geometry + cached volume affine to publish canonical voxel `x,y,z` for the status bar. **Phase 8:** Select-drag on `.volume3D` is a 60 Hz coalesced trackball-style yaw/pitch camera; it derives motion from absolute cursor-position differences (not unreliable `NSEvent.deltaX/Y`), and mouse-up settles at full quality. 3D deliberately hides 2D overlays, cursor sampling, and slice scroller. |
 | `ViewerControlBar.swift` | **The single docked top control bar.** Groups: stable sidebar toggle · layout + brain quad · sync/crosshair · plane (Axial/Sag/Cor/3D) · 3D Density + camera reset · modality + W/L · 2D transforms/fullscreen · 4D. The sidebar toggle is app-owned and stays at the far-left of this bar in both shown/hidden states; the system titlebar sidebar toggle is suppressed to avoid a second toolbar row. `ControlBarActivePanelGroups` observes the active panel so async image arrival refreshes controls. |
 | `ViewerStatusBar.swift` | **The single docked bottom status bar (UI-unify pass).** Active-panel readout shown ONCE (de-dupes the old per-panel ×4 bottom-left text + histogram): file name · slice position · `WL/WW` (+`HU` for CT). Cursor readout (RAS mm / HU or intensity / canonical voxel `px [x,y,z]`, from the removed `CursorInfoOverlay`) **follows the hovered panel** via `ForEach(model.panels)` of `StatusBarCursorInfo` (`@ObservedObject panel`, shows only while `showCursorInfo`). `StatusBarPanelInfo` also observes the panel so it updates when the async image arrives. |
-| `PanelState.swift` | Per-panel state. `PanelMode = .slice2D/.mprAxial/.mprSagittal/.mprCoronal/.volume3D`. Stores cursor display pixels, canonical volume voxel `x,y,z`, RAS mm position, and calibrated value for the docked status bar. 3D owns yaw/pitch/density plus a non-published render revision used to drop stale GPU results. (`.slice2D` remains inert for NIFTI.) |
+| `PanelState.swift` | Per-panel state. `PanelMode = .mprAxial/.mprSagittal/.mprCoronal/.volume3D` (the old inert `.slice2D` mode was removed in the repository-hygiene cleanup). Stores cursor display pixels, canonical volume voxel `x,y,z`, RAS mm position, and calibrated value for the docked status bar. 3D owns yaw/pitch/density plus a non-published render revision used to drop stale GPU results. |
 | `ContentView.swift` | Root view = `VStack`{ `ViewerControlBar` · `NavigationSplitView` } with a native trailing `.inspector` containing `LayerInspectorView`. The split detail is left `ToolPalette` column + a `VStack`{ panel grid (`ZStack` with the `NiftiLoadingOverlay`) · `ViewerStatusBar` }. The old floating `LayoutToolbar`/sidebar-toggle overlay is gone; the app-owned toggle lives in `ViewerControlBar` so it does not jump into the macOS titlebar when the sidebar collapses. Sidebar row shows the NIfTI **file name** + `modality · WxHxD` + brain icon (`model.loadedFileName`). |
 | `WindowAccessor.swift` | AppKit bridge for native window configuration and IME-independent shortcuts. Keeps the system title empty/hidden, preserves `Lentis` as the accessibility/minimized-window label, and maintains one custom centered title across SwiftUI Inspector/titlebar updates. Do not give `WindowGroup` a non-empty title or the leading system title can reappear. |
 
@@ -373,26 +373,32 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
    sagittal/coronal slice is shown — what was missing (and is now drawn) is the moving crosshair line.
 5. **`--benchmark` instrumentation left in** (`scroll_main`, `mpr_render`, `volume_render`, `crosshair_set`).
    Gated behind `--benchmark` so it's inert in normal runs, but in benchmark mode it logs to
-   `~/Desktop/odv_benchmark.csv` per scroll tick (each `log()` also takes a `task_info` memory snapshot).
+   `~/Desktop/lentis_benchmark.csv` per scroll tick (each `log()` also takes a `task_info` memory snapshot).
    Keep as a perf probe, or strip `scroll_main`/`mpr_render` once perf work settles.
-6. **Cosmetic debt (deferred since Phase 3):** stale `// OpenDicomViewer` file headers (fixed in
-   Help/Content/MultiPanelContainer + the now-deleted Volume/Layout toolbars; others remain);
-   `PanelDICOMInteractView` / `PanelInteractiveDICOMView` names; the inert `.slice2D` `PanelMode` case
-   (now hidden in the `ViewerControlBar` plane group for NIfTI, enum case kept);
-   vestigial `ImageContext` struct + `ImageSeries.images` (NIfTI series carry an empty `images` stub).
+6. **[RESOLVED — repository hygiene cleanup, 2026-06-22] Phase-3 cosmetic debt.**
+   Stale `// OpenDicomViewer` source headers were replaced with `// Lentis`; the
+   interactive panel/scroller types are now `PanelInteractiveImageView`,
+   `PanelImageInteractView`, and `PanelSliceScroller`; the inert `.slice2D`
+   `PanelMode` case was removed; vestigial `ImageContext` and `ImageSeries.images`
+   were deleted; the old DICOM grouping tests were removed; the W/L persistence
+   tests now use the current series model; the obsolete native dependency setup
+   script, old entitlements file, and compatibility `build_native.sh` wrapper were
+   deleted; CONTRIBUTING/HELP/docs now describe the NIfTI app. Historical fork
+   attribution and Phase-3 removal notes remain.
 
 ---
 
 ## Phase status & roadmap
 
 > **▶ RESUME POINT (2026-06-22) — Phases 1–8, performance fixes, native external Mask/Atlas layers,
-> LUT management, and the centered-title/Inspector fixes are committed on `master`.** Local `master`
-> is five commits ahead of `origin/master` (`e9d3d53`, `74d7c2e`, `ef401d1`, `19b4168`, `b853a49`).
+> LUT management, centered-title/Inspector fixes, and repository-hygiene cleanup are on `master`.**
+> `master` was synchronized with `origin/master` before the current cleanup changes.
 > The app builds with **zero native dependencies**, renders CT/MRI in neurological orientation, keeps
 > MPR and 3D interaction off-main/coalesced, and now composites ordered affine-aligned Mask/Atlas
 > layers in all three MPR planes. The bundled FreeSurfer LUT and third-party notice are packaged in the
 > SwiftPM resource bundle; custom LUTs persist in Application Support. `swift test` is green
-> (**130: 62 XCTest + 68 swift-testing**). Release `Lentis.app`/DMG packaging and codesign verification
+> after the cleanup (**121 total: 62 XCTest + 59 swift-testing**; old DICOM grouping tests removed).
+> Release `Lentis.app`/DMG packaging and codesign verification
 > pass. GUI regression on the packaged app covers layer selection/deselection, Inspector close/reopen,
 > and inactive/active titlebar states; only one centered `Lentis` remains and the native window title
 > stays empty.
@@ -448,8 +454,7 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 > single & quad; the `--benchmark` demo sphere composites translucent-red and registers in axial/
 > sagittal/coronal (MIP excluded by design). Orientation untouched. See the Phase-7 roadmap entry below.
 > **⚠ Next: Phase 9 (suggested) — real segmentation (paint into `labelMask` via Eraser/ROI; threshold
-> seed on CT HU), mask persistence/write-back through `originalAffine`, Metal mask-texture overlay,
-> and the remaining cosmetic debt (file headers, `PanelDICOMInteractView` names, inert `.slice2D`).**
+> seed on CT HU), mask persistence/write-back through `originalAffine`, and Metal mask-texture overlay.**
 > Phase 5 outcome (verified in GUI on real CT + real T1): CT defaults to the **Brain** HU preset
 > (WL 40/WW 80) with a preset menu (Brain/Subdural/Stroke/Bone/Soft-tissue, applied to all linked
 > panels); MRI auto-detects and uses a percentile auto-window (WL 899/WW 1798 on the T1, via an
@@ -479,7 +484,8 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 
 - [x] **Phase 1 — Rebrand to Lentis.** SPM/target/dir/app-struct renamed; menus/About/Help show
   Lentis; `package_app.sh` + bundle id updated; `UpdateChecker` removed (phoned home to upstream).
-  `DICOMModel` & test-target name intentionally kept. Builds & runs as `Lentis.app`.
+  Early compatibility names were intentionally kept at the time, then cleaned up in the
+  2026-06-22 repository-hygiene pass. Builds & runs as `Lentis.app`.
 - [x] **Phase 2 — NIFTI loader (CT+MRI) + open + first render.** Reader/converter/orchestration
   added (above). Verified on **real CT + real T1 MRI** (correct modality, affine, HU/intensity) and
   via GUI (CT loads/renders axial/scrolls; 4D MRI loads with auto-window + timepoint selector).
@@ -494,9 +500,8 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   `DicomImageContext`→`ImageContext`, test target→`LentisTests`; the file-open dialog is now
   NIfTI-only (`openFile`, replaces `openFolder`). **Verified:** clean `swift build`
   (no static-lib warnings), 31 tests green, `otool -L` shows no DCMTK/OpenJPEG linkage, GUI renders
-  synthetic CT (axial + scroll) and real T1 MRI (auto-window). Remaining cosmetic debt (defer):
-  stale `// OpenDicomViewer` file headers, `PanelInteractive/DICOMInteractView` names, the inert
-  `.slice2D` case + vestigial `ImageSeries.images`/`ImageContext` struct.
+  synthetic CT (axial + scroll) and real T1 MRI (auto-window). The remaining cosmetic debt was
+  later resolved in the 2026-06-22 repository-hygiene cleanup.
 - [x] **Phase 4 — Neurological orientation + tri-view.** Done in 6 commits on `lentis-nifti-conversion`.
   Added `Orientation.swift` (RAS labels + closest-canonical reorientation); `NiftiDataset.makeVolume`
   reorients every volume to canonical RAS (i→R, j→A, k→S) — lossless, original affine + reorientation
@@ -509,8 +514,8 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   fixed — no global LPS conversion. **Verified:** 42 tests green (added Orientation + canonical-volume
   + neurological-slice tests); GUI on `synthetic_orient` shows correct octant intensities + L/R/A/P/S/I
   in all three planes; real CT (was radiological) + real T1 (was "coronal-looking") now render as
-  proper neurological axial. Cosmetic debt still deferred: `// OpenDicomViewer` headers,
-  `PanelDICOMInteractView` names, inert `.slice2D`, vestigial `ImageContext`/`ImageSeries.images`.
+  proper neurological axial. The cosmetic debt noted at the time was later resolved in the
+  2026-06-22 repository-hygiene cleanup.
 - [x] **Phase 5 — Modality-aware W/L (CPU; GPU slice move deferred).** Done in 2 commits on
   `lentis-nifti-conversion`. Added `WindowLevel.swift` (`WindowPreset` + CT HU preset table: Brain
   `(0,80)` default, Subdural, Stroke, Bone, Soft-tissue, all HU). `modalityDefaultWindow` seeds
@@ -630,8 +635,7 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   (amber badge, demo red sphere composited in axial/sagittal/coronal of the one-click quad, MIP
   excluded) + synthetic 4D MRI (teal badge, "Vol 1/5" stepper in the top cluster, no bottom overlap);
   Phase-4 orientation + Phase-6 crosshair intact. **Deferred:** real segmentation, mask write-back/
-  persistence, the Metal mask texture, and the remaining cosmetic debt (file headers,
-  `PanelDICOMInteractView` names, inert `.slice2D`, vestigial `ImageContext`).
+  persistence, and the Metal mask texture. The cosmetic debt noted at the time was later resolved.
 - [x] **UI clarity pass (post-Phase-7).** Audited the UI for confusing/misleading elements and fixed
   them in 3 groups (no new tests; **109 green**; `swift build` clean; GUI-verified on real CT incl. a
   live CT↔MRI badge toggle + MPR quad). **(1) Misleading/dead UI:** HelpView no longer calls Lentis a
@@ -651,8 +655,8 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   `VolumeToolbar` (surfaces the double-click gesture); a histogram `.help`; a new Help **"Display Guide"**
   section (orientation letters, CT/MRI colors, histogram, readouts) + gesture rows (double-click
   fullscreen, right-drag W/L). `// OpenDicomViewer` headers fixed in the 4 touched views. Orientation,
-  crosshair, and async-render code untouched. **Deferred:** remaining cosmetic debt (other
-  `// OpenDicomViewer` headers, `PanelDICOMInteractView` names, the `.slice2D` enum case, `ImageContext`).
+  crosshair, and async-render code untouched. The remaining cosmetic debt noted at the time was later
+  resolved in the 2026-06-22 repository-hygiene cleanup.
 - [x] **UI unify — one docked toolbar + status bar, default MPR (post-clarity).** Committed on
   `lentis-nifti-conversion`. The image had **8 floating control/readout clusters**, most repeated per-panel in the
   quad (`VolumeToolbar`, `PanelStatusCluster`/`ModalityBadge`, `PanelAdjustmentToolbar`, the bottom-left
@@ -694,8 +698,8 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   controls, follows modality W/L and 4D volume swaps, and deliberately has no slice scroller,
   crosshair relocation, cursor voxel readout, orientation letters, or 2D annotations. Added pure camera
   tests plus a real Metal test that compiles the inline MSL, uploads a 16³ volume, dispatches the shader,
-  and asserts non-black output. Added `script/build_and_run.sh` + Codex Run action; launch with
-  `./script/build_and_run.sh --verify --benchmark /abs/path.nii.gz`.
+  and asserts non-black output. Added `scripts/build_and_run.sh` + Codex Run action; launch with
+  `./scripts/build_and_run.sh --verify --benchmark /abs/path.nii.gz`.
   **Rotation/Density follow-up (2026-06-21):** fixed horizontal drag stalls by deriving deltas from
   consecutive absolute `locationInWindow` values; coalesced/synthetic NSEvents can report zero
   `deltaX/Y`. The same automated drag now moves yaw `-25° → 51°` and reverses to `-25°` (previously

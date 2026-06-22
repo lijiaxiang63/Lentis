@@ -1,12 +1,12 @@
 // VolumeData.swift
-// OpenDicomViewer
+// Lentis
 //
-// Represents a consolidated 3D volume reconstructed from a DICOM series.
+// Represents a consolidated 3D volume loaded from a NIfTI image.
 // Stores voxels as Int16 in a contiguous buffer in [z][y][x] (slice-major)
 // order. Provides:
 //   - Voxel access (raw and calibrated HU values)
-//   - Coordinate transforms between voxel indices and patient-space (mm)
-//     via 4x4 affine matrices built from DICOM spatial metadata
+//   - Coordinate transforms between voxel indices and RAS world space (mm)
+//     via 4x4 affine matrices from NIfTI sform/qform metadata
 //   - Trilinear interpolation for sub-voxel sampling (used by MPR)
 //   - World-space bounding box computation
 //
@@ -17,7 +17,7 @@
 import Foundation
 import simd
 
-/// Consolidated 3D volume from a DICOM series.
+/// Consolidated 3D volume from a NIfTI image.
 /// Stores voxels as Int16 in a contiguous buffer [z][y][x] order (slice-major).
 final class VolumeData {
     let voxels: UnsafeMutableBufferPointer<Int16>
@@ -44,7 +44,7 @@ final class VolumeData {
     let worldToVoxelMatrix: simd_double4x4
 
     /// Original NIfTI voxel→world affine *before* canonical-RAS reorientation
-    /// (nil for volumes already built in native order, e.g. legacy DICOM).
+    /// (nil for synthetic/test volumes already built in canonical order).
     /// Kept alongside `reorientation` so a segmentation mask authored in this
     /// volume's canonical space can be written back to the original voxel grid.
     let originalAffine: simd_double4x4?

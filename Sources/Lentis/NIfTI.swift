@@ -506,10 +506,7 @@ private func gunzip(_ data: Data) throws -> Data {
 }
 
 /// Pure-Swift DEFLATE (RFC 1951) decompressor. Self-contained so .nii.gz works
-/// regardless of which compression libraries are linked. (Apple's libcompression
-/// delegates to zlib's `inflate`, which can be shadowed by the statically-linked
-/// DCMTK zlib while that dependency is still present — a pure-Swift decoder
-/// sidesteps that entirely and is correct before and after DCMTK removal.)
+/// without linking to platform compression or external native libraries.
 private enum DeflateInflater {
     // RFC 1951 §3.2.5 length/distance base values and extra-bit counts.
     static let lenBase = [3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258]

@@ -1,5 +1,5 @@
 // WindowAccessor.swift
-// OpenDicomViewer
+// Lentis
 //
 // NSViewRepresentable that customizes the hosting NSWindow on appear:
 // enables window dragging by background and installs a key interceptor

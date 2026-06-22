@@ -1,10 +1,9 @@
 // PanelStateTests.swift
-// OpenDicomViewer Tests
+// Lentis Tests
 //
 // Tests for panel state enums (ViewerLayout, PanelMode, ActiveTool,
 // NavigationDirection) and basic PanelState behavior.
-// Note: PanelState imports SwiftUI/DCMTKWrapper so these tests focus
-// on enum logic that does not require a running GUI.
+// These tests focus on enum/state logic that does not require a running GUI.
 // Licensed under the MIT License. See LICENSE for details.
 
 import XCTest
@@ -60,8 +59,7 @@ final class PanelStateTests: XCTestCase {
 
     func testPanelModeAllCases() {
         let cases = PanelMode.allCases
-        XCTAssertEqual(cases.count, 5)
-        XCTAssertTrue(cases.contains(.slice2D))
+        XCTAssertEqual(cases.count, 4)
         XCTAssertTrue(cases.contains(.mprAxial))
         XCTAssertTrue(cases.contains(.mprSagittal))
         XCTAssertTrue(cases.contains(.mprCoronal))
@@ -69,7 +67,6 @@ final class PanelStateTests: XCTestCase {
     }
 
     func testPanelModeRawValues() {
-        XCTAssertEqual(PanelMode.slice2D.rawValue, "Slice")
         XCTAssertEqual(PanelMode.mprAxial.rawValue, "Axial")
         XCTAssertEqual(PanelMode.mprSagittal.rawValue, "Sagittal")
         XCTAssertEqual(PanelMode.mprCoronal.rawValue, "Coronal")
@@ -165,7 +162,7 @@ final class PanelStateTests: XCTestCase {
         let state = PanelState()
         XCTAssertEqual(state.seriesIndex, -1)
         XCTAssertEqual(state.imageIndex, -1)
-        XCTAssertEqual(state.panelMode, .slice2D)
+        XCTAssertEqual(state.panelMode, .mprAxial)
         XCTAssertEqual(state.scale, 1.0)
         XCTAssertEqual(state.windowWidth, 0)
         XCTAssertEqual(state.windowCenter, 0)
@@ -201,7 +198,7 @@ final class PanelStateTests: XCTestCase {
         // Verify everything is back to defaults
         XCTAssertEqual(state.seriesIndex, -1)
         XCTAssertEqual(state.imageIndex, -1)
-        XCTAssertEqual(state.panelMode, .slice2D)
+        XCTAssertEqual(state.panelMode, .mprAxial)
         XCTAssertEqual(state.scale, 1.0)
         XCTAssertEqual(state.windowWidth, 0)
         XCTAssertEqual(state.windowCenter, 0)

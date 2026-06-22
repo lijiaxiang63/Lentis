@@ -1,25 +1,22 @@
 // ViewerModel.swift
-// OpenDicomViewer
+// Lentis
 //
-// Central model for the DICOM viewer. This is the largest file in the project
+// Central model for the NIfTI viewer. This is the largest file in the project
 // and serves as the single source of truth for all viewer state.
 //
 // Responsibilities:
-//   - Directory scanning with incremental UI updates (background thread)
-//   - Series/image loading with multi-level caching (memory + disk)
+//   - NIfTI loading, timepoint switching, and layer import coordination
 //   - Multi-panel management: create, resize, assign series, navigate
 //   - Window/level computation (auto, ROI-based, histogram generation)
-//   - MPR volume building and slice extraction
+//   - MPR slice extraction and layer compositing
 //   - Metal direct-volume rendering with an interactive 3D camera
 //   - Synchronized scrolling with spatial z-location matching
-//   - Series thumbnail generation
-//   - DICOM tag extraction and panel info string formatting
+//   - Panel status/readout string formatting
 //
 // Threading model:
-//   - Directory scanning runs on a background DispatchQueue
-//   - Image loading uses an OperationQueue (serial, for cancellation)
+//   - NIfTI parsing and layer import run off the main thread
+//   - MPR and 3D rendering use per-panel OperationQueues for cancellation/coalescing
 //   - All @Published state updates dispatch to MainActor
-//   - Volume building runs on a dedicated background queue
 // Licensed under the MIT License. See LICENSE for details.
 
 import SwiftUI
@@ -29,77 +26,10 @@ import simd
 import UniformTypeIdentifiers
 
 // MARK: - Data Structures
-struct ImageContext: Identifiable, Equatable {
-    var id: URL { url }
-    let url: URL
-    let seriesUID: String
-    let seriesDescription: String
-    let instanceNumber: Int
-    let seriesNumber: Int
-    let zLocation: Double?
-
-    // Spatial metadata for 3D/MPR/cross-reference
-    let imagePosition: SIMD3<Double>?         // Full ImagePositionPatient (x,y,z)
-    let imageOrientation: [Double]?           // 6 direction cosines from ImageOrientationPatient
-    let pixelSpacing: SIMD2<Double>?          // Row, Column spacing in mm
-    let sliceThickness: Double?               // (0018,0050)
-    let spacingBetweenSlices: Double?          // (0018,0088)
-    let frameOfReferenceUID: String?          // (0020,0052) - gates cross-referencing
-    let studyInstanceUID: String?             // (0020,000D)
-    let numberOfFrames: Int                   // (0028,0008) - 1 for single frame
-
-    static func == (lhs: ImageContext, rhs: ImageContext) -> Bool {
-        return lhs.url == rhs.url
-    }
-
-    /// Single-frame files group by SeriesInstanceUID; multi-frame files get a
-    /// per-file key so each cine becomes its own sidebar series.
-    var seriesGroupingKey: String {
-        numberOfFrames > 1 ? "\(seriesUID)#mf#\(url.path)" : seriesUID
-    }
-
-    func displaySeriesDescription(baseDescription: String) -> String {
-        guard numberOfFrames > 1 else { return baseDescription }
-        let name = url.deletingPathExtension().lastPathComponent
-        return "\(baseDescription) — \(name) (\(numberOfFrames)f)"
-    }
-}
-
 struct ImageSeries: Identifiable, Equatable {
-    let id: String // SeriesUID
+    let id: String
     let seriesNumber: Int
     let seriesDescription: String
-    var images: [ImageContext]
-
-    /// Computed: dominant axis of this series (axial/sagittal/coronal) based on ImageOrientationPatient
-    var dominantAxis: SliceAxis? {
-        guard let orient = images.first?.imageOrientation, orient.count == 6 else { return nil }
-        // The slice normal = cross product of row and column direction cosines
-        let rowDir = SIMD3<Double>(orient[0], orient[1], orient[2])
-        let colDir = SIMD3<Double>(orient[3], orient[4], orient[5])
-        let normal = cross(rowDir, colDir)
-
-        let absX = abs(normal.x)
-        let absY = abs(normal.y)
-        let absZ = abs(normal.z)
-
-        if absZ >= absX && absZ >= absY { return .axial }
-        if absY >= absX && absY >= absZ { return .coronal }
-        return .sagittal
-    }
-}
-
-enum SliceAxis: String, CaseIterable {
-    case axial, sagittal, coronal
-}
-
-// SIMD3 cross product helper
-func cross(_ a: SIMD3<Double>, _ b: SIMD3<Double>) -> SIMD3<Double> {
-    return SIMD3<Double>(
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x
-    )
 }
 
 // MARK: - Model
@@ -193,21 +123,11 @@ class ViewerModel: ObservableObject {
             // If single-panel, auto-expand to 2-panel and assign a same-axis series
             if layout == .single && allSeries.count > 1 {
                 let sourceIdx = source.seriesIndex
-                let sourceAxis = sourceIdx >= 0 && sourceIdx < allSeries.count
-                    ? allSeries[sourceIdx].dominantAxis : nil
 
-                // Find a different series with the same dominant axis (or just the next series)
+                // Find a different series; NIfTI volumes do not carry legacy
+                // per-slice orientation metadata, so there is no axis matching.
                 var bestIdx: Int? = nil
-                for (i, s) in allSeries.enumerated() where i != sourceIdx {
-                    if sourceAxis != nil && s.dominantAxis == sourceAxis {
-                        bestIdx = i
-                        break
-                    }
-                }
-                // Fallback: just pick the next available series
-                if bestIdx == nil {
-                    bestIdx = allSeries.indices.first(where: { $0 != sourceIdx })
-                }
+                bestIdx = allSeries.indices.first(where: { $0 != sourceIdx })
 
                 if let idx = bestIdx {
                     setLayout(.twoHorizontal)
@@ -325,8 +245,8 @@ class ViewerModel: ObservableObject {
     var maskOverlayColor: SIMD3<Double> = SIMD3<Double>(1.0, 0.23, 0.19)
     var maskOverlayAlpha: Double = 0.45
 
-    /// Register a pre-built volume (e.g. from a NIfTI file) under `cacheKey` so
-    /// panels can display it without any DICOM files. Returns the series index.
+    /// Register a pre-built NIfTI volume under `cacheKey` so panels can display
+    /// it. Returns the series index.
     @discardableResult
     func registerStandaloneVolume(_ volume: VolumeData, cacheKey: String, description: String) -> Int {
         volumeCacheSet(cacheKey, volume)
@@ -334,7 +254,7 @@ class ViewerModel: ObservableObject {
             return existing
         }
         let series = ImageSeries(id: cacheKey, seriesNumber: allSeries.count + 1,
-                                 seriesDescription: description, images: [])
+                                 seriesDescription: description)
         allSeries.append(series)
         return allSeries.count - 1
     }
@@ -385,7 +305,7 @@ class ViewerModel: ObservableObject {
     
     // MARK: - Load Methods
 
-    /// Show an Open panel and load the selected DICOM file or folder.
+    /// Show an Open panel and load the selected NIfTI file.
     func openFile() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
@@ -474,7 +394,6 @@ class ViewerModel: ObservableObject {
         BenchmarkLogger.shared.start("load_total")
         BenchmarkLogger.shared.log(event: "load_start", dataset: url.lastPathComponent, detail: url.path)
 
-        // NIfTI files bypass the DICOM directory-scan path entirely.
         if ViewerModel.isNiftiURL(url) {
             cachingQueue.cancelAllOperations()
             DispatchQueue.main.async {
@@ -501,15 +420,6 @@ class ViewerModel: ObservableObject {
 
 
 
-    // MARK: - Image Loading
-
-    // ...
-
-    // MARK: - Python/External Logic (REPLACED)
-
-    // Legacy fallbackToExternalConverter removed
-
-    
     private func computeMinMax(data: Data, isSigned: Bool, bits: Int) -> (Double, Double) {
         var minVal: Double = Double.greatestFiniteMagnitude
         var maxVal: Double = -Double.greatestFiniteMagnitude
@@ -564,17 +474,6 @@ class ViewerModel: ObservableObject {
         if maxVal == minVal { maxVal = minVal + 1 }
         return (minVal, maxVal)
     }
-    
-    // Track currently caching series to avoid redundant cancellations
-    private var currentCachingSeriesUID: String? = nil
-
-    // MARK: - Caching Logic
-    
-    // Synchronous version of fallbackToExternalConverter for background queue usage
-    // Legacy runExternalConverterSynchronous removed
-
-
-    // MARK: - Directory
     
     // MARK: - Navigation helpers
     
@@ -949,7 +848,7 @@ class ViewerModel: ObservableObject {
                     updateMPRSpatialMetadata(panel, volume: vol)
                     loadMPRSlice(for: panel)
                 }
-            case .slice2D, .volume3D:
+            case .volume3D:
                 continue
             }
         }
@@ -959,32 +858,20 @@ class ViewerModel: ObservableObject {
     /// Uses z-location matching when available, falls back to proportional matching.
     private func syncScrollFromPanel(_ source: PanelState) {
         guard source.seriesIndex >= 0, source.seriesIndex < allSeries.count else { return }
-        let sourceSeries = allSeries[source.seriesIndex]
 
-        // Determine the source z-location for spatial matching
-        let sourceZ: Double? = {
-            switch source.panelMode {
-            case .slice2D:
-                guard source.imageIndex >= 0, source.imageIndex < sourceSeries.images.count else { return nil }
-                return sourceSeries.images[source.imageIndex].zLocation
-            case .mprAxial, .mprSagittal, .mprCoronal:
-                // Orthogonal MPR planes expose a spatial origin.
-                return source.imagePositionPatient?.2
-            case .volume3D:
-                return nil
-            }
-        }()
+        let sourceTotal = totalSliceCount(for: source)
+        let sourceIndex = currentSliceIndex(for: source)
 
         for panel in panels where panel.id != source.id {
             guard panel.seriesIndex >= 0, panel.seriesIndex < allSeries.count else { continue }
             let targetSeries = allSeries[panel.seriesIndex]
 
             switch panel.panelMode {
-            case .slice2D, .volume3D:
-                continue  // NIfTI uses MPR; 3D has no slice position to sync.
+            case .volume3D:
+                continue  // 3D has no slice position to sync.
             case .mprAxial:
                 if let vol = volumeCacheGet(targetSeries.id), vol.depth > 1 {
-                    let targetIdx = closestVolumeIndex(dimension: vol.depth, targetSeries: targetSeries, sourceZ: sourceZ, fallbackSource: source, sourceSeries: sourceSeries)
+                    let targetIdx = closestVolumeIndex(dimension: vol.depth, sourceIndex: sourceIndex, sourceTotal: sourceTotal)
                     if targetIdx != panel.mprSliceIndex {
                         panel.mprSliceIndex = targetIdx
                         updateMPRSpatialMetadata(panel, volume: vol)
@@ -993,7 +880,7 @@ class ViewerModel: ObservableObject {
                 }
             case .mprSagittal:
                 if let vol = volumeCacheGet(targetSeries.id), vol.width > 1 {
-                    let targetIdx = closestVolumeIndex(dimension: vol.width, targetSeries: targetSeries, sourceZ: sourceZ, fallbackSource: source, sourceSeries: sourceSeries)
+                    let targetIdx = closestVolumeIndex(dimension: vol.width, sourceIndex: sourceIndex, sourceTotal: sourceTotal)
                     if targetIdx != panel.mprSliceIndex {
                         panel.mprSliceIndex = targetIdx
                         updateMPRSpatialMetadata(panel, volume: vol)
@@ -1002,7 +889,7 @@ class ViewerModel: ObservableObject {
                 }
             case .mprCoronal:
                 if let vol = volumeCacheGet(targetSeries.id), vol.height > 1 {
-                    let targetIdx = closestVolumeIndex(dimension: vol.height, targetSeries: targetSeries, sourceZ: sourceZ, fallbackSource: source, sourceSeries: sourceSeries)
+                    let targetIdx = closestVolumeIndex(dimension: vol.height, sourceIndex: sourceIndex, sourceTotal: sourceTotal)
                     if targetIdx != panel.mprSliceIndex {
                         panel.mprSliceIndex = targetIdx
                         updateMPRSpatialMetadata(panel, volume: vol)
@@ -1024,28 +911,14 @@ class ViewerModel: ObservableObject {
         }
     }
 
-    /// Find the closest volume slice index for MPR targets using spatial or proportional matching.
-    private func closestVolumeIndex(dimension: Int, targetSeries: ImageSeries, sourceZ: Double?, fallbackSource source: PanelState, sourceSeries: ImageSeries) -> Int {
+    /// Find the closest volume slice index for MPR targets using proportional matching.
+    private func closestVolumeIndex(dimension: Int, sourceIndex: Int, sourceTotal: Int) -> Int {
         guard dimension > 1 else { return 0 }
 
-        // Spatial matching using target series z-range
-        if let z = sourceZ {
-            let zValues = targetSeries.images.compactMap { $0.zLocation }
-            if zValues.count >= 2 {
-                let minZ = zValues.min()!
-                let maxZ = zValues.max()!
-                let range = maxZ - minZ
-                if range > 0 {
-                    let fraction = (z - minZ) / range
-                    return max(0, min(dimension - 1, Int(fraction * Double(dimension - 1))))
-                }
-            }
-        }
-
-        // Fallback: proportional
-        let sourceTotal = sourceSeries.images.count
+        // Current NIfTI synchronized scrolling is proportional. Cross-panel
+        // anatomical linking is handled by the 3D crosshair path.
         guard sourceTotal > 1 else { return 0 }
-        let pct = Double(source.imageIndex) / Double(sourceTotal - 1)
+        let pct = Double(sourceIndex) / Double(sourceTotal - 1)
         return max(0, min(dimension - 1, Int(pct * Double(dimension - 1))))
     }
 
@@ -1127,8 +1000,6 @@ class ViewerModel: ObservableObject {
         if persist { persistWindowToSeriesStates(panel) }
 
         switch panel.panelMode {
-        case .slice2D:
-            break  // 2D DICOM slice path removed; NIFTI uses MPR/3D
         case .mprAxial, .mprSagittal, .mprCoronal:
             if panel.rawPixelData != nil { loadMPRSlice(for: panel) }
         case .volume3D:
@@ -1312,13 +1183,6 @@ class ViewerModel: ObservableObject {
         }
 
         switch panel.panelMode {
-        case .slice2D:
-            if panel.isMultiFrame && panel.numberOfFrames > 1 {
-                panel.currentImageInfo = "Frame \(panel.currentFrameIndex + 1)/\(panel.numberOfFrames)"
-            } else if panel.imageIndex >= 0, panel.imageIndex < s.images.count {
-                let img = s.images[panel.imageIndex]
-                panel.currentImageInfo = "Image \(img.instanceNumber) (\(panel.imageIndex + 1)/\(s.images.count))"
-            }
         case .mprAxial:
             if let vol = volumeCacheGet(s.id) {
                 panel.currentImageInfo = "Axial \(panel.mprSliceIndex + 1)/\(vol.depth)"
@@ -1344,11 +1208,6 @@ class ViewerModel: ObservableObject {
         guard panel.seriesIndex >= 0, panel.seriesIndex < allSeries.count else { return 0 }
         let s = allSeries[panel.seriesIndex]
         switch panel.panelMode {
-        case .slice2D:
-            if panel.isMultiFrame && panel.numberOfFrames > 1 {
-                return panel.numberOfFrames
-            }
-            return s.images.count
         case .mprAxial:
             return volumeCacheGet(s.id)?.depth ?? 0
         case .mprSagittal:
@@ -1363,11 +1222,6 @@ class ViewerModel: ObservableObject {
     /// Get current slice index for panel mode (for scroller)
     func currentSliceIndex(for panel: PanelState) -> Int {
         switch panel.panelMode {
-        case .slice2D:
-            if panel.isMultiFrame && panel.numberOfFrames > 1 {
-                return panel.currentFrameIndex
-            }
-            return panel.imageIndex
         case .mprAxial, .mprSagittal, .mprCoronal:
             return panel.mprSliceIndex
         case .volume3D:
@@ -1378,8 +1232,6 @@ class ViewerModel: ObservableObject {
     /// Navigate to a specific slice index in any mode (for scroller drag)
     func navigatePanelToSlice(_ panel: PanelState, index: Int) {
         switch panel.panelMode {
-        case .slice2D:
-            break  // 2D DICOM slice path removed; NIFTI uses MPR/3D
         case .mprAxial, .mprSagittal, .mprCoronal:
             let total = totalSliceCount(for: panel)
             let idx = max(0, min(index, total - 1))
@@ -1399,9 +1251,7 @@ class ViewerModel: ObservableObject {
 
     /// Whether a series supports MPR/3D rendering, i.e. a volume with depth is
     /// available. NIfTI registers one volume per dataset via
-    /// `registerStandaloneVolume`, so this is simply a cache lookup. (Replaces
-    /// the old per-slice DICOM heuristic, which always failed on NIfTI's empty
-    /// `images` stub.)
+    /// `registerStandaloneVolume`, so this is simply a cache lookup.
     func isSeriesVolumetric(seriesIndex: Int) -> Bool {
         guard seriesIndex >= 0, seriesIndex < allSeries.count else { return false }
         guard let volume = volumeCacheGet(allSeries[seriesIndex].id) else { return false }
@@ -1432,9 +1282,8 @@ class ViewerModel: ObservableObject {
             return
         }
 
-        // No cached volume. DICOM volume-building has been removed; NIFTI
-        // volumes are always pre-registered via registerStandaloneVolume, so a
-        // miss here means the volume simply isn't available.
+        // NIfTI volumes are always pre-registered via registerStandaloneVolume,
+        // so a miss here means the volume simply isn't available.
         completion(nil, "Volume not available")
     }
 
@@ -1578,26 +1427,9 @@ class ViewerModel: ObservableObject {
             switch panel.panelMode {
             case .mprAxial, .mprSagittal, .mprCoronal:
                 if panel.seriesIndex == niftiSeriesIndex { loadMPRSlice(for: panel) }
-            case .slice2D, .volume3D:
+            case .volume3D:
                 break
             }
-        }
-    }
-
-    /// Update spatial metadata synchronously from series image data (for cross-reference lines).
-    /// Called immediately when imageIndex changes, before async image loading,
-    /// so cross-reference overlays update without waiting for the loading queue.
-    private func updateSpatialMetadataFromSeries(_ panel: PanelState) {
-        guard panel.seriesIndex >= 0, panel.seriesIndex < allSeries.count else { return }
-        let images = allSeries[panel.seriesIndex].images
-        guard panel.imageIndex >= 0, panel.imageIndex < images.count else { return }
-        let img = images[panel.imageIndex]
-        if let pos = img.imagePosition {
-            panel.imagePositionPatient = (pos.x, pos.y, pos.z)
-        }
-        panel.imageOrientationPatient = img.imageOrientation
-        if let ps = img.pixelSpacing {
-            panel.pixelSpacing = (ps.x, ps.y)
         }
     }
 
@@ -1637,7 +1469,7 @@ class ViewerModel: ObservableObject {
         }
     }
 
-    /// Switch a panel's display mode (slice2D / orthogonal MPR / 3D volume).
+    /// Switch a panel's display mode (orthogonal MPR / 3D volume).
     func setPanelMode(_ panel: PanelState, mode: PanelMode) {
         panel.panelMode = mode
 
@@ -1645,9 +1477,6 @@ class ViewerModel: ObservableObject {
         panel.loadingQueue.cancelAllOperations()
 
         switch mode {
-        case .slice2D:
-            break  // 2D DICOM path removed; NIFTI uses MPR/3D
-
         case .mprAxial, .mprSagittal, .mprCoronal:
             panel.mprSliceIndex = 0  // Reset; loadMPRSlice will center after volume is ready
             loadMPRSlice(for: panel)
@@ -1734,7 +1563,7 @@ class ViewerModel: ObservableObject {
                     windowWidth: Float(ww),
                     windowCenter: Float(wc),
                     opacity: Float(opacity),
-                    // PanelInteractiveDICOMView applies inversion as a display
+                    // PanelInteractiveImageView applies inversion as a display
                     // filter, so keep the generated volume image uninverted.
                     invert: false
                 )
