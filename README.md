@@ -1,227 +1,158 @@
 <p align="center">
-  <img src="docs/icon.png" alt="OpenDicomViewer" width="128">
+  <img src="docs/icon.png" alt="Lentis app icon" width="128">
 </p>
 
-<h1 align="center">OpenDicomViewer</h1>
+<h1 align="center">Lentis</h1>
 
 <p align="center">
-  <strong>A free, native macOS DICOM viewer — designed not just for use, but for adaptation.</strong><br>
-  In the era of AI, everyone can customize open-source software to meet their own needs.<br>
-  Fork it, modify it with an AI assistant, and make it yours.
+  <strong>A native macOS NIfTI brain viewer for CT and MRI.</strong><br>
+  Affine-correct neurological orientation, linked multiplanar views, interactive Metal volume rendering,
+  and mask/atlas overlays in one focused desktop app.
 </p>
 
 <p align="center">
-  <a href="https://jnheo-md.github.io/open-dicom-viewer">Website</a> &middot;
-  <a href="https://github.com/jnheo-md/open-dicom-viewer/releases/latest/download/OpenDicomViewer.dmg">Download DMG</a> &middot;
-  <a href="https://github.com/jnheo-md/open-dicom-viewer/releases">Releases</a>
+  <a href="../../releases">Releases</a> &middot;
+  <a href="../../issues">Issues</a> &middot;
+  <a href="LICENSE">MIT License</a>
 </p>
 
-![Screenshot](screenshot.png)
+![Lentis showing linked axial, sagittal, coronal, and 3D brain views with mask and atlas layers](screenshot.png)
 
-## Why OpenDicomViewer?
+## Overview
 
-- **Free and open source** — MIT licensed, no restrictions on use or modification
-- **Native macOS** — Built with SwiftUI and Metal, no Electron or web overhead
-- **Fast** — Instant first-image display with background loading; images appear before the study finishes scanning
-- **Multi-panel layouts** — Side-by-side, stacked, and quad views with synchronized scrolling and zoom
-- **Clinical measurement tools** — Ruler, angle, and ROI statistics with real-time dashed preview lines
-- **Designed for customization** — Clean, readable architecture that's easy to fork and adapt, including with AI coding assistants
+Lentis is a SwiftUI + Metal viewer for 3D and 4D brain NIfTI files (`.nii` and `.nii.gz`). It supports both CT and MRI, displays anatomy in neurological orientation (patient-left is screen-left), and uses the image affine as the source of spatial truth.
+
+The app began as a fork of [OpenDicomViewer](https://github.com/jnheo-md/open-dicom-viewer) and has since been rebuilt around a dependency-free NIfTI pipeline. DICOM, DCMTK, and OpenJPEG are not part of Lentis.
 
 ## Features
 
-- **Fast DICOM Parsing** — Pure-Swift parser with incremental scanning; first image displays instantly while the rest loads in the background
-- **Multi-Panel Layouts** — Single, side-by-side, stacked, and quad arrangements with drag-and-drop series assignment
-- **MPR & 3D Brain Rendering** — One-click axial/sagittal/coronal views plus interactive Metal direct-volume rendering with drag rotation and density control
-- **Mask & Atlas Layers** — A native right-side Inspector for affine-aligned NIfTI overlays, FreeSurfer/custom LUTs, layer ordering, opacity, and per-label visibility
-- **Window/Level** — Right-click drag, W/L tool, auto W/L, and ROI-based W/L with a live histogram overlay
-- **Measurement Tools** — Ruler, angle, and ROI statistics with real-time preview lines
-- **Synchronized Scrolling & Zoom** — Link panels to scroll to the same anatomical position using z-location matching
-- **Cross-Reference Lines** — Overlay showing where other panels' slice planes intersect the current view
-- **DICOM Tag Inspector** — Browse all metadata tags for the active image
-- **Cursor Readout** — Real-time HU value and coordinates under the cursor
-- **Scrollbar Thumbnails** — Hover the scrollbar to preview any slice
-- **JPEG 2000 Support** — Compressed transfer syntaxes via DCMTK + OpenJPEG
+- **NIfTI-1 and NIfTI-2** — reads uncompressed and gzip-compressed 3D/4D volumes across common integer and floating-point data types.
+- **Correct spatial orientation** — uses sform/qform affines, canonicalizes volumes to RAS, and renders axial, sagittal, and coronal planes in neurological orientation.
+- **Linked brain quad** — one command creates axial, sagittal, coronal, and 3D views with a draggable crosshair connecting the orthogonal planes.
+- **Interactive 3D rendering** — Metal compute ray marching with drag rotation, density control, physical-spacing-aware geometry, lighting, and full-quality settling after interaction.
+- **CT- and MRI-aware display** — CT HU presets (Brain, Subdural, Stroke, Bone, and Soft Tissue), robust MRI auto-windowing, manual window/level, invert, zoom, pan, rotate, and flip.
+- **Mask and atlas layers** — add 3D NIfTI overlays in the native Layers Inspector; Lentis performs affine-aware nearest-neighbour alignment and supports ordering, opacity, mask colors, FreeSurfer/custom LUTs, and per-label visibility.
+- **4D timepoints** — switch volumes without changing the shared spatial view or quantization scale.
+- **Measurement tools** — ruler, angle, ROI statistics, and ROI-based window/level.
+- **Spatial readout** — live voxel coordinates, RAS millimetres, and calibrated HU/intensity values in the status bar.
+- **Responsive large-volume interaction** — slice extraction, windowing, overlay compositing, and GPU readback run asynchronously with stale-render coalescing.
+- **Native and self-contained** — pure Swift + SwiftUI + AppKit + Metal, with no native or system-library dependencies.
 
-## Quick Start
+## Requirements
 
-### For Users
+- macOS 14 Sonoma or later
+- Apple Silicon Mac (`arm64`)
+- Xcode 15+ or a Swift 5.9+ toolchain for source builds
 
-Download the latest `.dmg` from [Releases](../../releases), open it, and drag OpenDicomViewer to your Applications folder.
-
-> The app is signed and notarized — it will open without any Gatekeeper warnings.
-
-### For Developers
-
-**Prerequisites:** macOS 14.0+ (Sonoma), Xcode 15+ (or Swift 5.9+ toolchain), Apple Silicon Mac (arm64).
+## Build and Run
 
 ```bash
-# Clone and build
-git clone https://github.com/jnheo-md/open-dicom-viewer.git
-cd open-dicom-viewer
+git clone https://github.com/lijiaxiang63/Lentis.git
+cd Lentis
 
-# Build release and package as .app bundle
+# Build the Swift package
+swift build
+
+# Build, stage dist/Lentis.app, and launch it
+./script/build_and_run.sh
+```
+
+To create a release app and DMG:
+
+```bash
 ./scripts/package_app.sh
-
-# Install (optional)
-cp -r OpenDicomViewer.app /Applications/
 ```
 
-To run the test suite:
+This produces `Lentis.app` and `Lentis.dmg` with ad-hoc signing by default. Developer ID signing and notarization require your own Apple credentials and packaging configuration.
 
-```bash
-swift test
-```
+## Open Images and Layers
 
-Pre-built static libraries for DCMTK and OpenJPEG are included in `libs/`. To rebuild them from source (e.g., for a different architecture):
+- Press `Cmd+O`, use **File → Open**, click **Open** in the sidebar, or drop a `.nii` / `.nii.gz` file onto the viewer.
+- Press `Cmd+Shift+O`, use **File → Add Layer**, or drop a 3D NIfTI mask/atlas into the Layers Inspector.
+- Click the brain-quad button or press `Cmd+Shift+M` to create linked axial, sagittal, coronal, and 3D panels.
+- Click or drag in an MPR panel with the Select tool to reposition the shared crosshair.
+- Drag inside the 3D panel to rotate the volume.
 
-```bash
-./scripts/setup_native_deps.sh
-```
+External layers are session-scoped. Label `0` is transparent, categorical labels are never linearly interpolated, and the top row in the Inspector is composited last.
 
-## Keyboard Shortcuts
+## Controls
 
-### Navigation
+### Navigation and Layout
 
-| Key | Action |
-|-----|--------|
-| `Up` / `Down` | Previous / next image in series |
-| `Left` / `Right` | Previous / next series |
-| `Scroll` | Navigate slices |
-| `Page Up` / `Page Down` | Skip 10 images |
-| `Home` / `End` | Jump to first / last image |
-| `Tab` | Cycle active panel |
-| `Double-click` | Toggle panel fullscreen |
-
-### Layout
-
-| Key | Action |
-|-----|--------|
-| `1` / `2` / `3` / `4` | Single / side-by-side / stacked / quad |
-| `Cmd+1` - `Cmd+4` | Layout switching (menu bar) |
-| `Cmd+Shift+M` | MPR layout |
+| Input | Action |
+|---|---|
+| `Cmd+1` … `Cmd+4` | Single, side-by-side, stacked, or quad layout |
+| `Cmd+Shift+M` | Axial/sagittal/coronal/3D brain layout |
+| `Tab` | Cycle the active panel |
+| Scroll wheel or `Up` / `Down` | Navigate slices |
+| `Page Up` / `Page Down` | Jump 10 slices |
+| `Home` / `End` | First / last slice |
+| Double-click | Toggle the active panel fullscreen |
+| `A` | Modality-aware auto window/level |
+| `F` | Fit image to panel |
+| `R` | Reset view |
+| `I` | Invert image |
+| `H` | Flip horizontally |
+| `[` / `]` | Rotate 90° counter-clockwise / clockwise |
 
 ### Tools
 
 | Key | Tool |
-|-----|------|
-| `V` | Select (default pointer) |
+|---|---|
+| `V` | Select / move crosshair |
 | `P` | Pan |
 | `W` | Window/Level |
 | `Z` | Zoom |
 | `O` | ROI Window/Level |
 | `S` | ROI Statistics |
-| `D` | Ruler (distance) |
+| `D` | Ruler |
 | `N` | Angle |
 | `E` | Eraser |
 
-### Display
-
-| Key | Action |
-|-----|--------|
-| `A` | Auto window/level |
-| `I` | Invert image |
-| `F` | Fit to window |
-| `R` | Reset view (zoom, pan, W/L) |
-| `H` | Flip horizontal |
-| `]` or `.` | Rotate clockwise 90° |
-| `[` or `,` | Rotate counter-clockwise 90° |
-
-### Overlays & Multi-Panel
-
-| Key | Action |
-|-----|--------|
-| `T` | Toggle DICOM tag inspector |
-| `X` | Toggle cross-reference lines |
-| `L` | Toggle synchronized scrolling & zoom |
-| `Shift` (hold) | Show group selection overlay |
-| `Escape` | Clear group selection |
-
-### Mouse Actions
-
-| Input | Action |
-|-------|--------|
-| Left-click | Activate panel / tool action |
-| Right-drag | Adjust Window/Level |
-| Scroll wheel | Navigate slices |
-| Option/Ctrl + Left-drag | Pan (any tool) |
-| Option/Ctrl + Scroll | Zoom in/out |
-| Shift (hold) + Click | Toggle panel group selection |
-| Double-click | Toggle fullscreen panel |
-| Drag from sidebar | Assign series to panel |
-| Drag from Finder | Open DICOM file/folder |
+Right-drag adjusts window/level from any tool. Hold `Option` or `Control` while left-dragging to pan, or while scrolling to zoom.
 
 ## Architecture
 
-```
-Sources/
-├── OpenDicomViewer/          # Main application target
-│   ├── App.swift                 # App entry point, menu bar commands
-│   ├── ContentView.swift         # Root view: sidebar + detail split
-│   ├── DICOMModel.swift          # Core model: loading, caching, panel management
-│   ├── SimpleDICOM.swift         # Pure-Swift DICOM parser (no DCMTK dependency)
-│   ├── MultiPanelContainer.swift # Multi-panel grid, per-panel overlays & gestures
-│   ├── PanelState.swift          # Per-panel state: series, W/L, zoom, metadata
-│   ├── LayoutToolbar.swift       # Floating layout/link/crossref toolbar
-│   ├── CrossReferenceOverlay.swift # Slice intersection lines between panels
-│   ├── MPREngine.swift           # CPU-based multi-planar reconstruction
-│   ├── MetalVolumeRenderer.swift # GPU ray-marched 3D direct-volume rendering
-│   ├── VolumeData.swift          # 3D voxel buffer with affine transforms
-│   ├── ViewerControlBar.swift    # MPR/3D mode, W/L, layout, and transform controls
-│   ├── HelpView.swift            # In-app help viewer
-│   ├── TagView.swift             # DICOM tag list view
-│   ├── Extensions.swift          # Collection safe-subscript helper
-│   └── WindowAccessor.swift      # NSWindow customization (hidden titlebar)
-└── DCMTKWrapper/             # Objective-C++ bridge to DCMTK
-    ├── DCMTKHelper.mm            # DCMTK image decoding + JPEG2000 fallback
-    └── include/
-        └── DCMTKHelper.h         # Public C/ObjC interface
+```text
+Sources/Lentis/
+├── NIfTI.swift                 # NIfTI-1/2 parsing and pure-Swift gzip/DEFLATE
+├── Orientation.swift           # Affine interpretation and canonical RAS reorientation
+├── NiftiVolumeLoader.swift     # Modality detection, quantization, and volume creation
+├── VolumeData.swift            # Int16 volume, affine transforms, and mask seam
+├── ViewerModel.swift           # Panel, rendering, navigation, and interaction state
+├── ViewerModel+Nifti.swift     # NIfTI loading, timepoints, modality, and W/L policy
+├── MPREngine.swift             # Oriented CPU slice extraction and layer compositing
+├── MetalVolumeRenderer.swift   # Metal 3D ray marcher and projection rendering
+├── OverlayLayerLoader.swift    # Mask/atlas classification and affine-aware alignment
+├── LayerInspectorView.swift    # Native layer and LUT management UI
+└── MultiPanelContainer.swift   # Panel grid, gestures, annotations, and overlays
 ```
 
-### Key Design Decisions
+The 2D MPR path is CPU-rendered; the fourth panel uses a cached Metal 3D texture. Both paths run expensive work off the main thread and discard stale results during rapid interaction. Orientation and display flips are centralized so grayscale slices, overlays, crosshairs, labels, and coordinate readouts remain aligned.
 
-- **Dual Parser Strategy**: A fast pure-Swift parser (`SimpleDICOM.swift`) handles tag reading and metadata extraction during directory scanning, while the DCMTK wrapper handles pixel data decoding for complex transfer syntaxes.
-- **Panel-Based Architecture**: Each panel (`PanelState`) owns its own image, W/L, zoom, and metadata state. The model (`DICOMModel`) manages shared resources (series data, caches, queues) and coordinates between panels.
-- **Spatial Synchronization**: Linked scrolling uses physical z-location matching rather than proportional index matching, so panels showing different series display the same anatomical position.
-- **NSView for Interaction**: Mouse gesture handling uses `NSViewRepresentable` wrapping a custom `NSView` subclass for reliable AppKit-level event handling (W/L drag, zoom, pan, annotations).
+## Tests
 
-## Customization Guide
+```bash
+# Full XCTest + swift-testing suite
+swift test
 
-OpenDicomViewer is designed to be straightforward to customize — whether you're adding features manually or working with an AI coding assistant. Here's where to look for common changes:
+# NIfTI and dataset coverage
+swift test --filter nifti --filter dataset
 
-| What you want to do | Where to look |
-|---|---|
-| **Add a new tool** | Define it in the `ActiveTool` enum in `PanelState.swift`, add mouse handling in `MultiPanelContainer.swift`, and add a button to the tool palette (also in `MultiPanelContainer.swift`) |
-| **Add a keyboard shortcut** | Add an `.onKeyPress` handler in `ContentView.swift` |
-| **Modify overlays** | Edit `AnnotationOverlay` or `InfoOverlay` in `MultiPanelContainer.swift` |
-| **Change panel behavior** | Per-panel state lives in `PanelState.swift`; cross-panel coordination is in `DICOMModel.swift` |
-| **Add a menu bar command** | Add commands in `App.swift` |
-| **Modify cross-reference lines** | Edit `CrossReferenceOverlay.swift` |
+# Segmentation/mask alignment seam
+swift test --filter SegmentationSeam
+```
 
-The codebase uses clear naming conventions and minimal abstraction layers, making it well-suited for AI-assisted development. Fork the project, describe what you want to change, and point your AI assistant at the relevant files above.
+The repository also includes release-mode NIfTI load and 3D rendering benchmark harnesses under `scripts/`.
+
+## Research Use
+
+Lentis is research and visualization software. It is not a medical device and has not been reviewed or approved for clinical diagnosis. Always validate orientation, calibration, and derived results for your own workflow, and do not publish screenshots containing identifying patient information.
 
 ## Contributing
 
-Contributions are welcome! Whether it's a bug fix, new feature, or documentation improvement — all PRs are appreciated.
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Commit your changes (`git commit -am 'Add my feature'`)
-4. Push to the branch (`git push origin feature/my-feature`)
-5. Open a Pull Request
-
-If you find a bug or have a feature request, please [open an issue](../../issues).
+Issues and pull requests are welcome. Please keep orientation logic centralized, preserve nearest-neighbour handling for categorical overlays, and include focused tests for spatial or rendering changes.
 
 ## License
 
-This project is licensed under the MIT License — see [LICENSE](LICENSE) for details.
-
-The bundled FreeSurfer color LUT is distributed under separate MGH terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-## Dependencies
-
-| Library | Version | Purpose | License |
-|---------|---------|---------|---------|
-| [DCMTK](https://dicom.offis.de/dcmtk.php.en) | 3.6.8 | DICOM image decoding, JPEG/JPEG-LS decompression | BSD |
-| [OpenJPEG](https://www.openjpeg.org/) | 2.5.0 | JPEG 2000 decompression | BSD-2-Clause |
-
-Both are included as pre-built static libraries (`libs/`) and linked at compile time via Swift Package Manager.
+Lentis is distributed under the [MIT License](LICENSE) and retains attribution to the original OpenDicomViewer project. The bundled FreeSurfer color lookup table is distributed under separate MGH terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
