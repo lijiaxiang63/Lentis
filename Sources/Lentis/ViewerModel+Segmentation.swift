@@ -325,6 +325,107 @@ extension ViewerModel {
         rerenderSegmentation()
     }
 
+    // MARK: - Brain mask / SynthSeg
+
+    var synthSegAvailable: Bool { SynthSegRunner.isAvailable(userOverride: synthSegBinaryOverride) }
+
+    /// Load a brain mask / parcellation NIfTI as the segmentation constraint
+    /// (reusing the overlay loader's affine-aware resampling onto the base grid).
+    func loadBrainMask(url: URL, statusLabel: String? = nil) {
+        guard let base = segmentationVolume else { brainMaskStatus = "Open a CT first."; return }
+        brainMaskStatus = "Loading brain mask…"
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let secured = url.startAccessingSecurityScopedResource()
+            defer { if secured { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let layer = try OverlayLayerLoader.load(url: url, matching: base)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.brainMaskLayer = layer
+                    let kindStr = layer.kind == .atlas
+                        ? "parcellation · \(layer.volume.labelsPresent.count) labels"
+                        : "mask"
+                    self.brainMaskStatus = (statusLabel ?? layer.name) + " · " + kindStr
+                    self.draftRegion?.parameters.constrainToBrainMask = true
+                    self.updateActiveRegionPreview()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.brainMaskStatus = "Brain mask failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    func clearBrainMask() {
+        brainMaskLayer = nil
+        brainMaskStatus = ""
+        updateActiveRegionPreview()
+    }
+
+    /// Derive a brain mask + parcellation by running FreeSurfer SynthSeg on the
+    /// loaded CT. Writes the CT to a temp file, runs off-main, then loads the
+    /// parcellation as the constraint.
+    func generateBrainMaskWithSynthSeg() {
+        guard let vol = segmentationVolume, !isRunningSynthSeg else { return }
+        guard synthSegAvailable else {
+            synthSegStatus = SynthSegError.notFound.localizedDescription
+            return
+        }
+        isRunningSynthSeg = true
+        synthSegProgress = 0
+        synthSegStatus = "Preparing CT…"
+        let runner = SynthSegRunner()
+        synthSegRunner = runner
+        let tmp = FileManager.default.temporaryDirectory
+        let inputURL = tmp.appendingPathComponent("lentis_ct_\(UUID().uuidString).nii.gz")
+        let outputURL = tmp.appendingPathComponent("lentis_synthseg_\(UUID().uuidString).nii.gz")
+        let override = synthSegBinaryOverride
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                try NiftiWriter.writeVolume(vol, to: inputURL, gzip: true)
+            } catch {
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.isRunningSynthSeg = false
+                    self.synthSegRunner = nil
+                    self.synthSegStatus = "Failed to write CT: \(error.localizedDescription)"
+                }
+                return
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.synthSegStatus = "Running SynthSeg… (this takes minutes)"
+                runner.run(inputURL: inputURL, outputURL: outputURL, parcellation: true, robust: true,
+                           userOverride: override,
+                           progress: { [weak self] chunk in
+                               if let s = SynthSegRunner.briefStatus(chunk) { self?.synthSegStatus = s }
+                           },
+                           completion: { [weak self] result in
+                               guard let self else { return }
+                               self.isRunningSynthSeg = false
+                               self.synthSegRunner = nil
+                               try? FileManager.default.removeItem(at: inputURL)
+                               switch result {
+                               case .success(let segURL):
+                                   self.synthSegStatus = "SynthSeg complete."
+                                   self.loadBrainMask(url: segURL, statusLabel: "SynthSeg")
+                               case .failure(let err):
+                                   self.synthSegStatus = err.localizedDescription
+                               }
+                           })
+            }
+        }
+    }
+
+    func cancelSynthSeg() {
+        synthSegRunner?.cancel()
+        synthSegRunner = nil
+        isRunningSynthSeg = false
+        synthSegStatus = "Cancelled."
+    }
+
     // MARK: - Export
 
     private func isGzipURL(_ url: URL) -> Bool {

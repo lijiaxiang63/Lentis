@@ -124,6 +124,29 @@ enum NiftiWriter {
         }
     }
 
+    /// Write a grayscale `VolumeData` (Int16) as a NIfTI-1 file — used to hand
+    /// the loaded CT to an external tool (SynthSeg). Written in the in-memory
+    /// canonical grid with the canonical affine + the volume's rescale, so the
+    /// tool's same-grid output loads straight back as a layer.
+    static func writeVolume(_ volume: VolumeData, to url: URL, gzip: Bool) throws {
+        let nx = volume.width, ny = volume.height, nz = volume.depth
+        let header = makeHeader(nx: nx, ny: ny, nz: nz,
+                                spacing: (volume.spacingX, volume.spacingY, volume.spacingZ),
+                                affine: volume.voxelToWorldMatrix, datatype: 4, bitpix: 16,
+                                sclSlope: volume.rescaleSlope, sclInter: volume.rescaleIntercept)
+        // arm64 macOS is little-endian, matching the NIfTI LE we declare.
+        let voxelData = Data(buffer: UnsafeBufferPointer(volume.voxels))
+        var file = Data()
+        file.append(header)
+        file.append(voxelData)
+        let output = gzip ? try gzipContainer(file) : file
+        do {
+            try output.write(to: url, options: .atomic)
+        } catch {
+            throw NiftiWriteError.writeFailed(error.localizedDescription)
+        }
+    }
+
     /// Write a FreeSurfer-format LUT sidecar (`id name R G B T`, T = transparency)
     /// describing the atlas regions, for use as an accompanying color table.
     static func writeLUT(regions: [CalcificationRegion], to url: URL) throws {
@@ -153,7 +176,8 @@ enum NiftiWriter {
     /// Serialize a NIfTI-1 single-file header (348 bytes + 4 pad to vox_offset
     /// 352). Offsets match `NIfTI.parseHeader` exactly.
     static func makeHeader(nx: Int, ny: Int, nz: Int, spacing: (Double, Double, Double),
-                           affine: simd_double4x4, datatype: Int16, bitpix: Int16) -> Data {
+                           affine: simd_double4x4, datatype: Int16, bitpix: Int16,
+                           sclSlope: Double = 1, sclInter: Double = 0) -> Data {
         var h = [UInt8](repeating: 0, count: 352)
         func putI16(_ v: Int16, _ o: Int) { withUnsafeBytes(of: v.littleEndian) { for i in 0..<2 { h[o + i] = $0[i] } } }
         func putI32(_ v: Int32, _ o: Int) { withUnsafeBytes(of: v.littleEndian) { for i in 0..<4 { h[o + i] = $0[i] } } }
@@ -170,8 +194,8 @@ enum NiftiWriter {
         putF32(1, 76)
         putF32(spacing.0, 80); putF32(spacing.1, 84); putF32(spacing.2, 88)
         putF32(352, 108)                                 // vox_offset
-        putF32(1, 112)                                   // scl_slope (labels are categorical)
-        putF32(0, 116)                                   // scl_inter
+        putF32(sclSlope, 112)                            // scl_slope
+        putF32(sclInter, 116)                            // scl_inter
         putI16(0, 252)                                   // qform_code
         putI16(1, 254)                                   // sform_code (use srow)
         // srow_* are the ROWS of the voxel→world affine.

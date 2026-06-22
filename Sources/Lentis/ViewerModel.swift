@@ -273,6 +273,9 @@ class ViewerModel: ObservableObject {
     /// Voxel values under the current draft preview, so clearing the preview
     /// restores committed labels instead of zeroing them.
     var segPreviewBackup: [(x: Int, y: Int, z: Int, prev: UInt8)] = []
+    /// In-flight SynthSeg run (for cancel) + a user-chosen binary override.
+    var synthSegRunner: SynthSegRunner?
+    var synthSegBinaryOverride: URL?
 
     /// Register a pre-built NIfTI volume under `cacheKey` so panels can display
     /// it. Returns the series index.
