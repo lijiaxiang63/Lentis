@@ -67,16 +67,18 @@ struct WindowAccessor: NSViewRepresentable {
     private static let centeredTitleIdentifier = NSUserInterfaceItemIdentifier("LentisCenteredWindowTitle")
     private static let keyInterceptorIdentifier = NSUserInterfaceItemIdentifier("LentisKeyInterceptor")
 
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
             if let window = view.window {
-                window.title = "Lentis"
-                window.titleVisibility = .hidden
                 window.titlebarAppearsTransparent = false
                 window.styleMask.remove(.fullSizeContentView)
                 window.toolbarStyle = .expanded
-                installCenteredTitle(in: window)
+                context.coordinator.attach(to: window)
 
                 // Allow moving by dragging background
                 window.isMovableByWindowBackground = true
@@ -100,34 +102,108 @@ struct WindowAccessor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            if let window = nsView.window {
+                context.coordinator.attach(to: window)
+            }
+        }
     }
 
-    private func installCenteredTitle(in window: NSWindow) {
-        guard let closeButton = window.standardWindowButton(.closeButton),
-              let titlebarView = closeButton.superview else {
-            return
+    final class Coordinator {
+        private weak var window: NSWindow?
+        private weak var centeredTitleLabel: NSTextField?
+        private var notificationTokens: [NSObjectProtocol] = []
+        private var enforcementPending = false
+
+        deinit {
+            notificationTokens.forEach(NotificationCenter.default.removeObserver)
         }
 
-        let label: NSTextField
-        if let existing = titlebarView.subviews.first(where: { $0.identifier == Self.centeredTitleIdentifier }) as? NSTextField {
-            label = existing
-        } else {
-            label = NSTextField(labelWithString: "Lentis")
-            label.identifier = Self.centeredTitleIdentifier
-            label.translatesAutoresizingMaskIntoConstraints = false
-            label.alignment = .center
-            label.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
-            label.textColor = .secondaryLabelColor
-            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            titlebarView.addSubview(label)
+        func attach(to window: NSWindow) {
+            guard self.window !== window else {
+                enforceCenteredTitle()
+                return
+            }
 
-            NSLayoutConstraint.activate([
-                label.centerXAnchor.constraint(equalTo: titlebarView.centerXAnchor),
-                label.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
-                label.widthAnchor.constraint(lessThanOrEqualTo: titlebarView.widthAnchor, constant: -240)
-            ])
+            notificationTokens.forEach(NotificationCenter.default.removeObserver)
+            notificationTokens.removeAll()
+            self.window = window
+            centeredTitleLabel = nil
+
+            // SwiftUI can reconfigure the NSWindow titlebar when an inspector is
+            // presented or its content changes. That may restore the native
+            // leading title after WindowAccessor initially hid it, leaving both
+            // the native and custom centered titles visible. Reassert the title
+            // presentation after AppKit finishes each affected window update.
+            let center = NotificationCenter.default
+            for name in [NSWindow.didUpdateNotification, NSWindow.didBecomeKeyNotification] {
+                notificationTokens.append(center.addObserver(
+                    forName: name,
+                    object: window,
+                    queue: .main
+                ) { [weak self] _ in
+                    self?.scheduleTitleEnforcement()
+                })
+            }
+
+            enforceCenteredTitle()
         }
 
-        label.stringValue = "Lentis"
+        private func scheduleTitleEnforcement() {
+            guard !enforcementPending else { return }
+            enforcementPending = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.enforcementPending = false
+                self.enforceCenteredTitle()
+            }
+        }
+
+        private func enforceCenteredTitle() {
+            guard let window else { return }
+
+            if window.title != "Lentis" {
+                window.title = "Lentis"
+            }
+            if window.titleVisibility != .hidden {
+                window.titleVisibility = .hidden
+            }
+
+            guard let closeButton = window.standardWindowButton(.closeButton),
+                  let titlebarView = closeButton.superview else {
+                return
+            }
+
+            let label: NSTextField
+            if let existing = centeredTitleLabel,
+               existing.superview === titlebarView {
+                label = existing
+            } else if let existing = titlebarView.subviews.first(where: {
+                $0.identifier == WindowAccessor.centeredTitleIdentifier
+            }) as? NSTextField {
+                label = existing
+                centeredTitleLabel = existing
+            } else {
+                label = NSTextField(labelWithString: "Lentis")
+                label.identifier = WindowAccessor.centeredTitleIdentifier
+                label.translatesAutoresizingMaskIntoConstraints = false
+                label.alignment = .center
+                label.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+                label.textColor = .secondaryLabelColor
+                label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                titlebarView.addSubview(label)
+
+                NSLayoutConstraint.activate([
+                    label.centerXAnchor.constraint(equalTo: titlebarView.centerXAnchor),
+                    label.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+                    label.widthAnchor.constraint(lessThanOrEqualTo: titlebarView.widthAnchor, constant: -240)
+                ])
+                centeredTitleLabel = label
+            }
+
+            if label.stringValue != "Lentis" {
+                label.stringValue = "Lentis"
+            }
+        }
     }
 }
