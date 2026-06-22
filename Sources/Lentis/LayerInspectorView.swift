@@ -43,7 +43,9 @@ struct LayerInspectorView: View {
 
             footer
         }
-        .background(.background)
+        // No opaque .background here: forcing one tints the inspector's toolbar
+        // segment a different shade than the detail's, splitting the unified
+        // toolbar into two backgrounds. Let it adopt the system glass backing.
         .onDrop(of: [.fileURL], isTargeted: nil, perform: handleDrop)
         .onDeleteCommand(perform: removeSelectedLayer)
         .accessibilityElement(children: .contain)
