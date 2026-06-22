@@ -21,7 +21,7 @@ This file is the working record. Update it as phases complete.
 swift build                       # debug build (~20s clean; zero native/system deps)
 ./script/build_and_run.sh         # debug build + stage dist/Lentis.app + launch
 ./scripts/package_app.sh          # release build → Lentis.app + Lentis.dmg (ad-hoc signed)
-swift test                        # full suite: MIXED XCTest + swift-testing (115: 56 XCTest + 59 swift-testing)
+swift test                        # full suite: MIXED XCTest + swift-testing (130: 62 XCTest + 68 swift-testing)
 swift test --filter nifti --filter dataset   # just the NIFTI tests
 swift test --filter SegmentationSeam         # just the Phase-7 mask-seam tests
 swift test --filter windowLevelRenderIsAsync # the W/L-drag async/off-main regression test
@@ -58,10 +58,11 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
   **Zero native/system dependencies** — pure Swift + Metal/AppKit (DCMTK/OpenJPEG gone in Phase 3).
 - `swift build` after adding a `PanelMode` case → the compiler flags every non-exhaustive
   `switch` (~10 sites). Fix each (usually mirror `.mprCoronal` or fold into a combined case).
-- **Git state:** Phases 1–8 **+ the crosshair-drag-lag fix and 3D camera interaction fixes** are committed on branch
-  **`lentis-nifti-conversion`** (off upstream `master`); see `git log`. Not pushed
-  (no remote configured). Real patient data (`TestData/sub-*`) is gitignored — only synthetic fixtures
-  are tracked. Commit per phase/logical step going forward.
+- **Git state (2026-06-22):** work is on **`master`**, currently five commits ahead of
+  `origin/master`: the mask/atlas layer data pipeline, ordered renderer, native Layers Inspector/LUT
+  management, and two centered-window-title fixes. See `git log`. Real patient data
+  (`TestData/sub-*`) is gitignored — only synthetic fixtures are tracked. Commit per
+  phase/logical step going forward.
 
 ---
 
@@ -78,7 +79,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 ### Key source files
 | File | Role |
 |---|---|
-| `App.swift` | `@main struct LentisApp`. Menus. `--benchmark <path>` auto-open. |
+| `App.swift` | `@main struct LentisApp`. Menus. `--benchmark <path>` auto-open. The `WindowGroup` scene title is intentionally empty; `WindowAccessor` supplies the only visible, centered `Lentis` title so SwiftUI Inspector rebuilds cannot restore a leading duplicate. |
 | `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model** (was `DICOMModel`). Panels, volume cache, MPR/3D, W/L, sync-scroll. **Crosshair (Phase 6):** `setCrosshair(_:from:)` relocates the orthogonal panels through a world point; `.volume3D` is deliberately excluded. The world point lives in a **decoupled `CrosshairState`**. **3D (Phase 8):** `loadVolumeRendering` is async/coalesced on `panel.loadingQueue`; `rotateVolumeRendering` drives preview/final camera renders. **W/L drag:** re-drives `loadMPRSlice`/`loadVolumeRendering` off-main. DICOM ingestion removed (Phase 3). |
 | `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. **Modality-aware W/L (Phase 5):** `modalityDefaultWindow`/`seededWindow` (seed), `applyWindowPreset`/`applyModalityAutoWindow`/`autoWindow(for:)` (UI). **Phase 7 seam:** `installDemoSphereMask` (`--benchmark`-only mask demo). |
 | `WindowLevel.swift` | **`WindowPreset` + CT HU preset table** (Phase 5). Brain default `(0,80)`, Subdural/Stroke/Bone/Soft-tissue (HU). `storedWindow(slope:intercept:)` maps HU→stored (identity for direct-HU CT). Pure; no deps. |
@@ -87,6 +88,10 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | `Orientation.swift` | **Single source of orientation truth** (Phase 4). `anatomicalDirection(of:)` (RAS labels) + `closestCanonicalReorientation(affine:)` → `CanonicalReorientation` (axis permutation + flips, lossless, invertible). Pure; no deps. |
 | `VolumeData.swift` | 3D Int16 voxel buffer + affine. **Two inits**: direction-cosine and full-affine (NIFTI). For NIFTI `voxelToWorldMatrix` is the **canonical RAS** affine; `originalAffine` + `reorientation` are retained for mask write-back. **Seg seam (Phase 7):** optional same-grid `labelMask: LabelVolume?` + `ensureLabelMask()`. |
 | `LabelVolume.swift` | **Segmentation seam (Phase 7).** Same-grid UInt8 mask (slice-major, identical dims) riding on `VolumeData.labelMask`; shares the volume's voxel grid so write-back reuses its `reorientation` + `originalAffine`. `labelAt`/`setLabel`/`clear`/`labeledVoxelCount`. Inert in normal runs. |
+| `OverlayLayer.swift` / `LayerStore.swift` | Session-scoped external Mask/Atlas layers. Immutable adaptive label storage (`UInt8` mask; `UInt16`/`Int32` atlas) is paired with observable visibility, opacity, color/LUT, per-label visibility, ordering, selection, and render revision state. The UI list is top-first; render snapshots reverse it so the top row composites last. |
+| `OverlayLayerLoader.swift` | Background NIfTI layer loader and classifier. Accepts one 3D timepoint, auto-detects Mask vs Atlas from nonzero integer labels, uses a same-grid fast path or affine-aware world-coordinate nearest-neighbour resampling onto canonical RAS, and rejects non-overlapping volumes. |
+| `ColorLookupTable.swift` / `CustomLUTRepository.swift` | Strict FreeSurfer-format LUT parser (`ID Name R G B T`, line-numbered errors, `opacity = 1 - T/255`) plus content-deduplicated custom LUT persistence in `~/Library/Application Support/Lentis/LUTs/`. The bundled default is `Resources/FreeSurferColorLUT.txt`. |
+| `LayerInspectorView.swift` | Native trailing SwiftUI Inspector for adding/dropping, selecting, reordering, hiding, deleting/undoing Mask/Atlas layers; Mask color/opacity controls; Atlas LUT selection, searchable actual-label legend, voxel counts, per-label visibility actions, and LUT management. |
 | `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:mask:…)` (CPU W/L — **Float + precomputed-reciprocal, parallelised across 8 bands** for ≥512² slices, `parallelToneMapThreshold`; RGBA composite when a mask is present). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors, cross-ref metadata, **and `maskSlice` (Phase 7 seam)** all read it. **Crosshair geometry (Phase 6):** `PlaneGeometry.world(col:row:)`/`pixel(of:)` (exact-inverse pixel↔world) + `orthogonalSliceIndex(for:containing:)` (world→slice index). (`VolumeBuilder` removed in Phase 3.) |
 | `CrossReferenceOverlay.swift` | **3D crosshair overlay (Phase 6, rewritten).** Draws two lines + center dot through `crosshair.world`'s in-plane projection, on MPR panels only; bridges raw→display pixels then reuses the image's `pixelToScreen` transform. `PanelState.displayedPlaneGeometry` helper. **Hosts `CrosshairState`** (tiny ObservableObject) and observes **it** (not the model) — so a crosshair drag invalidates only this overlay, not the whole quad (drag-lag fix). (Replaced the old `computeCrossReference` lines.) |
 | `MetalVolumeRenderer.swift` | **Phase-8 direct volume renderer.** Metal compute ray marching over a cached `.r16Sint` 3D texture; physical-spacing-aware ray/AABB geometry, window-selective transfer function, front-to-back alpha compositing, early termination, gradient lighting, W/L in stored units. 192² interactive preview / 512² final render. |
@@ -94,7 +99,8 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | `ViewerControlBar.swift` | **The single docked top control bar.** Groups: stable sidebar toggle · layout + brain quad · sync/crosshair · plane (Axial/Sag/Cor/3D) · 3D Density + camera reset · modality + W/L · 2D transforms/fullscreen · 4D. The sidebar toggle is app-owned and stays at the far-left of this bar in both shown/hidden states; the system titlebar sidebar toggle is suppressed to avoid a second toolbar row. `ControlBarActivePanelGroups` observes the active panel so async image arrival refreshes controls. |
 | `ViewerStatusBar.swift` | **The single docked bottom status bar (UI-unify pass).** Active-panel readout shown ONCE (de-dupes the old per-panel ×4 bottom-left text + histogram): file name · slice position · `WL/WW` (+`HU` for CT). Cursor readout (RAS mm / HU or intensity / canonical voxel `px [x,y,z]`, from the removed `CursorInfoOverlay`) **follows the hovered panel** via `ForEach(model.panels)` of `StatusBarCursorInfo` (`@ObservedObject panel`, shows only while `showCursorInfo`). `StatusBarPanelInfo` also observes the panel so it updates when the async image arrives. |
 | `PanelState.swift` | Per-panel state. `PanelMode = .slice2D/.mprAxial/.mprSagittal/.mprCoronal/.volume3D`. Stores cursor display pixels, canonical volume voxel `x,y,z`, RAS mm position, and calibrated value for the docked status bar. 3D owns yaw/pitch/density plus a non-published render revision used to drop stale GPU results. (`.slice2D` remains inert for NIFTI.) |
-| `ContentView.swift` | Root view = `VStack`{ `ViewerControlBar` · `NavigationSplitView` }. The split detail is left `ToolPalette` column + a `VStack`{ panel grid (`ZStack` with the `NiftiLoadingOverlay`) · `ViewerStatusBar` }. The old floating `LayoutToolbar`/sidebar-toggle overlay is gone; the app-owned toggle lives in `ViewerControlBar` so it does not jump into the macOS titlebar when the sidebar collapses. Sidebar row shows the NIfTI **file name** + `modality · WxHxD` + brain icon (`model.loadedFileName`). |
+| `ContentView.swift` | Root view = `VStack`{ `ViewerControlBar` · `NavigationSplitView` } with a native trailing `.inspector` containing `LayerInspectorView`. The split detail is left `ToolPalette` column + a `VStack`{ panel grid (`ZStack` with the `NiftiLoadingOverlay`) · `ViewerStatusBar` }. The old floating `LayoutToolbar`/sidebar-toggle overlay is gone; the app-owned toggle lives in `ViewerControlBar` so it does not jump into the macOS titlebar when the sidebar collapses. Sidebar row shows the NIfTI **file name** + `modality · WxHxD` + brain icon (`model.loadedFileName`). |
+| `WindowAccessor.swift` | AppKit bridge for native window configuration and IME-independent shortcuts. Keeps the system title empty/hidden, preserves `Lentis` as the accessibility/minimized-window label, and maintains one custom centered title across SwiftUI Inspector/titlebar updates. Do not give `WindowGroup` a non-empty title or the leading system title can reappear. |
 
 ---
 
@@ -183,6 +189,15 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
    seam). The CPU composite is the live-display seam; a future **Metal** entry would upload the mask as a 2nd R8
    texture, blend in the W/L shader) is documented in `renderSlice`/`MetalVolumeRenderer`. Demo:
    `--benchmark` paints `installDemoSphereMask` so the overlay is visible once; inert otherwise.
+9. **External Mask/Atlas layers (2026-06-22).** `ViewerModel` owns a session-only `LayerStore`; adding
+   NIfTI layers parses and aligns them off-main through `OverlayLayerLoader`. Same-grid files retain
+   categorical values without interpolation; differing affines map target canonical-RAS voxel centers
+   through world space and sample nearest neighbour, with zero outside the source. `MPREngine` extracts
+   every visible layer with the same `planeGeometry` as grayscale, then composites bottom-to-top using
+   the immutable render snapshot/revision. Label 0 is always transparent. Masks use one selectable
+   color; atlases use the bundled/custom LUT, per-label visibility, and a stable hashed fallback for
+   missing entries. Zero visible layers stay on the original grayscale fast path. External layers are
+   currently MPR-only; the fourth Metal 3D panel remains unchanged.
 
 ---
 
@@ -212,6 +227,17 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
   so `$0[0]` reads 8 bytes as an `Int`. Always type it: `{ (raw: UnsafeRawBufferPointer) in raw[0] }`.
 - **Adding a `PanelMode` case** breaks several exhaustive switches across `ViewerModel.swift`. Build,
   read the compiler notes, add the case (mirror coronal / use `vol.depth`).
+- **The window has exactly one centered title by design.** `App.swift` must keep `WindowGroup("")`:
+  SwiftUI's trailing `.inspector` can rebuild titlebar state and expose a non-empty scene title at the
+  leading edge, producing either two `Lentis` titles or a one-frame flash. `WindowAccessor` supplies the
+  visible centered label while keeping the native title empty/hidden and separately retaining the
+  accessibility/minimized-window name. Do not restore `WindowGroup { … }` or set the native title to
+  `"Lentis"`. Regression coverage is in `WindowAccessorTests`; GUI verification must include inactive →
+  active, layer select → list-blank deselect, and Inspector close → reopen.
+- **Overlay labels are categorical.** Never use linear/trilinear interpolation for Mask/Atlas import or
+  slice extraction. Keep affine-aware nearest-neighbour resampling in `OverlayLayerLoader`, label 0
+  transparent, and all display flips sourced from `MPREngine.planeGeometry`. A layer-list top row is
+  visually topmost and therefore renders **last**, even though the UI array is stored top-first.
 - **Orientation lives in ONE place: `MPREngine.planeGeometry`** (Phase 4). The render chain maps
   **buffer row 0 → screen top, col 0 → left** (CGImage row 0 = top; NSImageView draws upright) —
   confirmed on `synthetic_orient` octant markers. Volumes are already canonical RAS (i→R, j→A, k→S),
@@ -359,14 +385,17 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 
 ## Phase status & roadmap
 
-> **▶ RESUME POINT — Phases 1–7 + crosshair-drag-lag + W/L-drag perf committed; Phase 8 is in the
-> working tree** on branch
-> `lentis-nifti-conversion` (not pushed; no remote); the **large-gzip load fix is verified in the current
-> working tree** (445.9 MB MPRAGE read 16.00→~4.95 s; end-to-end ~8.00 s). The app builds with **zero native deps**, runs, and
-> renders real CT/MRI in correct **neurological** orientation with **modality-aware window/level**, a
-> now-smooth **3D crosshair** linkage, **off-main W/L drag**, **interactive Metal 3D brain rendering**,
-> and **Phase-7 UI polish + dormant segmentation seams**. `swift test` green (**109**: 50 XCTest +
-> 59 swift-testing, including 5 direct-volume-rendering tests).
+> **▶ RESUME POINT (2026-06-22) — Phases 1–8, performance fixes, native external Mask/Atlas layers,
+> LUT management, and the centered-title/Inspector fixes are committed on `master`.** Local `master`
+> is five commits ahead of `origin/master` (`e9d3d53`, `74d7c2e`, `ef401d1`, `19b4168`, `b853a49`).
+> The app builds with **zero native dependencies**, renders CT/MRI in neurological orientation, keeps
+> MPR and 3D interaction off-main/coalesced, and now composites ordered affine-aligned Mask/Atlas
+> layers in all three MPR planes. The bundled FreeSurfer LUT and third-party notice are packaged in the
+> SwiftPM resource bundle; custom LUTs persist in Application Support. `swift test` is green
+> (**130: 62 XCTest + 68 swift-testing**). Release `Lentis.app`/DMG packaging and codesign verification
+> pass. GUI regression on the packaged app covers layer selection/deselection, Inspector close/reopen,
+> and inactive/active titlebar states; only one centered `Lentis` remains and the native window title
+> stays empty.
 > **UI unify + default MPR (2026-06-21) — DONE, GUI-verified, committed on `lentis-nifti-conversion`.** Collapsed
 > the 8 floating per-panel/over-image toolbars into **one docked top `ViewerControlBar`** + **one docked
 > bottom `ViewerStatusBar`** (nothing floats over the image now); the bottom-left readout is shown
@@ -684,6 +713,40 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   `yaw/pitch` only: there is no explicit roll state, and the prior roll-like behavior was a matrix-order
   bug rather than an intended third camera axis. Regression coverage lives in
   `MetalVolumeRendererTests` (front-view yaw + pitch-through-front) and `PanelStateTests` (drag direction).
+- [x] **External Mask/Atlas layers + native trailing Inspector (2026-06-22).** Three logical commits:
+  `e9d3d53` (data/LUT/import), `74d7c2e` (ordered MPR rendering), and `ef401d1` (Inspector/resources/
+  packaging). A single add/drop entry accepts 3D NIfTI overlays, detects a single nonzero integer value
+  as Mask and multiple values as Atlas, permits manual type changes, and aligns each source affine to
+  the current canonical-RAS base grid with categorical nearest-neighbour sampling. Non-overlapping and
+  multi-timepoint overlays are rejected with per-file errors. `LayerStore` is session-only, survives a
+  4D base timepoint change, clears when a different base file opens, publishes a render revision without
+  invalidating the full viewer model, and supports visibility, top-first ordering, remove/Undo, opacity,
+  Mask color, Atlas LUT, and per-label visibility. MPR composition is bottom-to-top, label 0 is
+  transparent, missing LUT labels get deterministic hashed colors/`Label <ID>`, and the no-layer
+  grayscale fast path is unchanged. The fourth 3D Metal panel intentionally remains unchanged.
+  `LayerInspectorView` uses native `List`/`Form`/`Menu`/`Slider`/`ColorPicker`, searchable actual-label
+  rows with voxel counts, show/hide/invert/solo actions, LUT import/manage/delete, drag reorder, Delete,
+  VoiceOver labels, `InspectorCommands`, and automatic presentation after the first successful import.
+  The original FreeSurfer LUT is bundled at `Sources/Lentis/Resources/FreeSurferColorLUT.txt`; custom
+  FreeSurfer-format LUTs are content-deduplicated under Application Support. `THIRD_PARTY_NOTICES.md`
+  is bundled and linked from Help; no local FreeSurfer `license.txt` is copied. Debug/release staging
+  copies the SwiftPM resource bundle. Tests cover parsing/transparency/errors, persistence/dedup,
+  classification/storage, affine resampling/rejection, 3-plane alignment, ordering/alpha/visibility,
+  revision isolation, and the bundled known entry. GUI-verified with real T1 + brainmask/synthseg and
+  the deterministic synthetic benchmark layer. Release app/DMG build and ad-hoc codesign verification
+  pass.
+- [x] **Centered title survives Inspector changes without a duplicate/flash (2026-06-22).** Commits
+  `19b4168` and `b853a49`. The original window intentionally installed a custom centered `Lentis` but
+  also left SwiftUI's non-empty native scene title available; activating the layer list or rebuilding
+  the trailing Inspector could expose the native leading title, first as a persistent duplicate and
+  then as a one-frame flash. `App.swift` now declares `WindowGroup("")` so the native title is empty at
+  the SwiftUI source of truth. `WindowAccessor.Coordinator` keeps it empty/hidden across AppKit updates,
+  retains `Lentis` separately for accessibility/minimized-window naming, and ensures exactly one custom
+  centered label remains attached to the current titlebar. `WindowAccessorTests` simulates SwiftUI
+  restoring a visible native title and locks synchronous suppression. GUI-verified on the packaged app
+  through inactive→active, layer select→blank deselect, and Inspector close→reopen transitions; Cua
+  window enumeration reported an empty native title throughout and screenshots showed only the centered
+  title. Full suite: **130 tests green (62 XCTest + 68 swift-testing)**.
 
 ---
 
