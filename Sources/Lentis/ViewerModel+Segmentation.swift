@@ -325,6 +325,32 @@ extension ViewerModel {
         rerenderSegmentation()
     }
 
+    // MARK: - Export
+
+    private func isGzipURL(_ url: URL) -> Bool {
+        url.pathExtension.lowercased() == "gz" || url.lastPathComponent.lowercased().hasSuffix(".nii.gz")
+    }
+
+    /// Export all regions as a single-value binary mask NIfTI (original grid).
+    func exportMask(to url: URL) throws {
+        guard let vol = segmentationVolume, let mask = vol.labelMask else { throw NiftiWriteError.noMask }
+        try NiftiWriter.writeMask(mask, basedOn: vol, kind: .binaryMask, to: url, gzip: isGzipURL(url))
+    }
+
+    /// Export regions as a multi-value atlas NIfTI (each region its own label),
+    /// plus a FreeSurfer-format LUT sidecar.
+    func exportAtlas(to url: URL) throws {
+        guard let vol = segmentationVolume, let mask = vol.labelMask else { throw NiftiWriteError.noMask }
+        try NiftiWriter.writeMask(mask, basedOn: vol, kind: .atlas, to: url, gzip: isGzipURL(url))
+
+        // Sidecar LUT next to the atlas: <base>_LUT.txt
+        var name = url.lastPathComponent
+        if name.lowercased().hasSuffix(".nii.gz") { name = String(name.dropLast(7)) }
+        else if name.lowercased().hasSuffix(".nii") { name = String(name.dropLast(4)) }
+        let lutURL = url.deletingLastPathComponent().appendingPathComponent(name + "_LUT.txt")
+        try NiftiWriter.writeLUT(regions: calcRegions, to: lutURL)
+    }
+
     // MARK: - Re-render
 
     /// Re-drive the affected MPR panels. When `box` is given, only panels whose
