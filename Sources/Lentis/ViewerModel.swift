@@ -246,6 +246,8 @@ class ViewerModel: ObservableObject {
     var maskOverlayAlpha: Double = 0.45
 
     // MARK: - Calcification segmentation (Phase 9)
+    /// Which tab the trailing inspector shows.
+    @Published var inspectorTab: InspectorTab = .layers
     /// Committed calcification regions (top-first, like the layer list). Each
     /// owns a distinct label value (1…254) in the base volume's `labelMask`.
     @Published var calcRegions: [CalcificationRegion] = []

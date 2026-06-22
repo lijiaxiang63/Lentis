@@ -18,12 +18,30 @@ struct LayerInspectorView: View {
     }
 
     var body: some View {
-        VSplitView {
-            layersPane
-                .frame(minHeight: 140, idealHeight: 230)
+        VStack(spacing: 0) {
+            // Tabbed trailing inspector: Layers · Segment (Phase 9).
+            Picker("", selection: $model.inspectorTab) {
+                Text("Layers").tag(InspectorTab.layers)
+                Text("Segment").tag(InspectorTab.segment)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
+            Divider()
 
-            detailsPane
-                .frame(minHeight: 240)
+            switch model.inspectorTab {
+            case .layers:
+                VSplitView {
+                    layersPane
+                        .frame(minHeight: 140, idealHeight: 230)
+                    detailsPane
+                        .frame(minHeight: 240)
+                }
+            case .segment:
+                SegmentInspectorView(model: model)
+            }
         }
         // No opaque .background here: forcing one tints the inspector's toolbar
         // segment a different shade than the detail's, splitting the unified
@@ -31,7 +49,7 @@ struct LayerInspectorView: View {
         .onDrop(of: [.fileURL], isTargeted: nil, perform: handleDrop)
         .onDeleteCommand(perform: removeSelectedLayer)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Layers inspector")
+        .accessibilityLabel("Inspector")
         // Declaring toolbar items INSIDE the inspector's view builder renders them
         // in a dedicated toolbar section above the inspector. That inserts the
         // tracking separator which confines the main content's toolbar to the
@@ -44,24 +62,36 @@ struct LayerInspectorView: View {
         .toolbar {
             if model.showLayerInspector {
                 ToolbarItemGroup(placement: .primaryAction) {
-                    if model.isImportingLayers {
-                        ProgressView()
-                            .controlSize(.small)
-                            .help("Loading and aligning layers")
-                    }
-                    Button(action: removeSelectedLayer) {
-                        Image(systemName: "minus")
-                    }
-                    .disabled(store.selectedLayerID == nil)
-                    .help("Remove Layer")
-                    .accessibilityLabel("Remove selected layer")
+                    if model.inspectorTab == .layers {
+                        if model.isImportingLayers {
+                            ProgressView()
+                                .controlSize(.small)
+                                .help("Loading and aligning layers")
+                        }
+                        Button(action: removeSelectedLayer) {
+                            Image(systemName: "minus")
+                        }
+                        .disabled(store.selectedLayerID == nil)
+                        .help("Remove Layer")
+                        .accessibilityLabel("Remove selected layer")
 
-                    Button(action: model.openLayerFiles) {
-                        Image(systemName: "plus")
+                        Button(action: model.openLayerFiles) {
+                            Image(systemName: "plus")
+                        }
+                        .disabled(model.niftiDataset == nil || model.isImportingLayers)
+                        .help("Add Mask or Atlas Layer")
+                        .accessibilityLabel("Add layer")
+                    } else {
+                        Menu {
+                            Button("Threshold in ROI") { model.beginRegion(method: .thresholdInROI) }
+                            Button("Grow from Seed") { model.beginRegion(method: .growFromSeed) }
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .disabled(model.segmentationVolume == nil)
+                        .help("New calcification region")
+                        .accessibilityLabel("New calcification region")
                     }
-                    .disabled(model.niftiDataset == nil || model.isImportingLayers)
-                    .help("Add Mask or Atlas Layer")
-                    .accessibilityLabel("Add layer")
                 }
 
                 ToolbarSpacer(.fixed, placement: .primaryAction)
@@ -69,8 +99,8 @@ struct LayerInspectorView: View {
                     Button { model.showLayerInspector = false } label: {
                         Image(systemName: "sidebar.right")
                     }
-                    .help("Hide Layers Inspector")
-                    .accessibilityLabel("Hide Layers inspector")
+                    .help("Hide Inspector")
+                    .accessibilityLabel("Hide inspector")
                 }
             }
         }
@@ -159,7 +189,7 @@ struct LayerInspectorView: View {
 /// optional muted trailing hint. Used to title each form section in place of the
 /// old bordered `GroupBox`, matching the borderless sectioning of native macOS
 /// inspectors (Keynote, Pages, Numbers).
-private struct InspectorSectionHeader: View {
+struct InspectorSectionHeader: View {
     let title: String
     var trailing: String? = nil
 
@@ -184,7 +214,7 @@ private struct InspectorSectionHeader: View {
 /// A titled, borderless inspector section: a `InspectorSectionHeader` above its
 /// content, inset to align with the header. Keynote-style replacement for
 /// `GroupBox` in the layer detail form.
-private struct InspectorSection<Content: View>: View {
+struct InspectorSection<Content: View>: View {
     let title: String
     @ViewBuilder var content: Content
 

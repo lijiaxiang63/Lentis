@@ -19,37 +19,8 @@ import Foundation
 import Combine
 import simd
 
-/// One calcification region: its label value in the mask plus presentation and
-/// the parameters/box used to (re-)compute it.
-final class CalcificationRegion: ObservableObject, Identifiable {
-    let id = UUID()
-    /// Distinct value this region occupies in the base volume's `labelMask`.
-    let label: UInt8
-    @Published var name: String
-    @Published var color: SIMD3<Double>
-    @Published var parameters: SegmentationParameters
-    @Published var box: VoxelBox
-    /// Which voxel axis (0=i,1=j,2=k) is the box's slab (the plane it was drawn
-    /// on), so the slab-depth slider re-extends the right axis.
-    @Published var slabAxis: Int = 2
-    @Published var voxelCount: Int = 0
-    @Published var anatomicalName: String? = nil
-    @Published var isVisible: Bool = true
-    // Draft-only live state (mirrors the last preview run).
-    @Published var previewVoxelCount: Int = 0
-    @Published var previewTruncated: Bool = false
-
-    var method: SegmentationMethod { parameters.method }
-
-    init(label: UInt8, name: String, color: SIMD3<Double>,
-         parameters: SegmentationParameters, box: VoxelBox) {
-        self.label = label
-        self.name = name
-        self.color = color
-        self.parameters = parameters
-        self.box = box
-    }
-}
+/// Which pane the trailing inspector shows.
+enum InspectorTab: String { case layers, segment }
 
 extension ViewerModel {
 
@@ -134,7 +105,9 @@ extension ViewerModel {
             box: VoxelBox(xRange: 0..<0, yRange: 0..<0, zRange: 0..<0))
         draftRegion = region
         activeRegionID = region.id
-        activeTool = .roiBox   // ready to drag the ROI box
+        activeTool = .roiBox          // ready to drag the ROI box
+        showLayerInspector = true     // surface the Segment controls
+        inspectorTab = .segment
         return region
     }
 
@@ -190,6 +163,25 @@ extension ViewerModel {
         }
         draft.box = box.clamped(to: vol)
         updateActiveRegionPreview()
+    }
+
+    /// Switch the draft's method, adjusting hysteresis/grow defaults, and preview.
+    func setActiveRegionMethod(_ method: SegmentationMethod) {
+        guard let draft = draftRegion else { return }
+        draft.parameters.method = method
+        draft.parameters.growBeyondROI = (method == .growFromSeed)
+        if method == .thresholdInROI {
+            draft.parameters.highThresholdHU = draft.parameters.lowThresholdHU
+        } else if draft.parameters.highThresholdHU <= draft.parameters.lowThresholdHU {
+            draft.parameters.highThresholdHU = draft.parameters.lowThresholdHU + 150
+        }
+        updateActiveRegionPreview()
+    }
+
+    /// Re-render committed regions after an appearance change (color/visibility).
+    func refreshSegmentationRender() {
+        segmentationRevision &+= 1
+        rerenderSegmentation()
     }
 
     /// Re-run the segmenter for the draft and paint the preview (label 255).
