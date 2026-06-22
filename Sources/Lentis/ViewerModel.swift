@@ -245,6 +245,33 @@ class ViewerModel: ObservableObject {
     var maskOverlayColor: SIMD3<Double> = SIMD3<Double>(1.0, 0.23, 0.19)
     var maskOverlayAlpha: Double = 0.45
 
+    // MARK: - Calcification segmentation (Phase 9)
+    /// Committed calcification regions (top-first, like the layer list). Each
+    /// owns a distinct label value (1…254) in the base volume's `labelMask`.
+    @Published var calcRegions: [CalcificationRegion] = []
+    /// The region currently being created/edited (box + params + live preview,
+    /// painted with the reserved preview label 255). nil when not segmenting.
+    @Published var draftRegion: CalcificationRegion? = nil
+    /// Selected committed region (drives recolor/rename/delete/re-edit + brush).
+    @Published var activeRegionID: UUID? = nil
+    /// Brain constraint layer (loaded mask or SynthSeg parcellation), if any.
+    @Published var brainMaskLayer: OverlayLayer? = nil
+    @Published var brainMaskStatus: String = ""
+    @Published var isRunningSynthSeg: Bool = false
+    @Published var synthSegProgress: Double = 0
+    @Published var synthSegStatus: String = ""
+    /// Touch-up brush state (manual voxel edit of the selected region).
+    @Published var calcBrushRadius: Int = 2
+    @Published var calcBrushErase: Bool = false
+    /// Bumped on every segmentation mask edit; `loadMPRSlice` drops in-flight
+    /// renders that predate the latest edit (segmentation-edit sync contract,
+    /// analogous to `LayerStore.revision`). All mask mutations happen on the
+    /// main thread before this is bumped + a re-render enqueued.
+    var segmentationRevision: UInt64 = 0
+    /// Voxel values under the current draft preview, so clearing the preview
+    /// restores committed labels instead of zeroing them.
+    var segPreviewBackup: [(x: Int, y: Int, z: Int, prev: UInt8)] = []
+
     /// Register a pre-built NIfTI volume under `cacheKey` so panels can display
     /// it. Returns the series index.
     @discardableResult
@@ -407,6 +434,7 @@ class ViewerModel: ObservableObject {
                 self.currentImageInfo = ""
                 self.loadedFileName = url.lastPathComponent
                 self.layerStore.removeAll()
+                self.resetSegmentation()
                 self.resetAllPanels()
                 self.loadNifti(url: url)
             }
@@ -1348,6 +1376,9 @@ class ViewerModel: ObservableObject {
             let showMask = self.showMaskOverlay
             let maskColor = self.maskOverlayColor
             let maskAlpha = self.maskOverlayAlpha
+            // Per-label calcification colors (empty ⇒ flat/no segmentation).
+            let segColors = self.calcMaskColorTable()
+            let segRevision = self.segmentationRevision
             let layerSnapshot = self.layerStore.renderSnapshot()
 
             // --- background: extract + render; coalesce via cancel + staleness check ---
@@ -1374,6 +1405,7 @@ class ViewerModel: ObservableObject {
                       let mprSlice = slice,
                       let image = MPREngine.renderSlice(mprSlice, ww: ww, wc: wc, invert: invert,
                                                         mask: maskSlice, maskColor: maskColor, maskAlpha: maskAlpha,
+                                                        maskAtlasColors: segColors.isEmpty ? nil : segColors,
                                                         layers: layerSlices) else {
                     DispatchQueue.main.async { panel.isLoading = false }
                     return
@@ -1383,7 +1415,8 @@ class ViewerModel: ObservableObject {
                     guard let self = self else { return }
                     // Drop stale results: a newer scroll target or mode switch wins.
                     guard panel.panelMode == mode, panel.mprSliceIndex == targetIndex,
-                          self.layerStore.revision == layerSnapshot.revision else {
+                          self.layerStore.revision == layerSnapshot.revision,
+                          self.segmentationRevision == segRevision else {
                         panel.isLoading = false
                         return
                     }
