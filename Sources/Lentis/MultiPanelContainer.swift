@@ -1505,8 +1505,8 @@ struct ModalityBadge: View {
 
     private var badgeColor: Color {
         switch modality {
-        case .ct:  return Color(red: 0.85, green: 0.52, blue: 0.10)   // amber
-        case .mri: return Color(red: 0.10, green: 0.55, blue: 0.62)   // teal
+        case .ct:  return .lentisCT   // amber
+        case .mri: return .lentisMRI  // teal
         }
     }
 }

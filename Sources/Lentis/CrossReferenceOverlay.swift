@@ -34,8 +34,9 @@ struct CrossReferenceOverlay: View {
     @ObservedObject var crosshair: CrosshairState
 
     /// Single shared crosshair color (the point is one world coordinate, not
-    /// per-panel like the old plane-intersection lines).
-    static let crosshairColor = Color(red: 0.3, green: 1.0, blue: 0.5)
+    /// per-panel like the old plane-intersection lines). Matches the toolbar's
+    /// crosshair toggle tint.
+    static let crosshairColor = Color.lentisCrosshair
 
     var body: some View {
         GeometryReader { geo in

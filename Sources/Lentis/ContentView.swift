@@ -155,6 +155,9 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: model.isLoading)
         .preferredColorScheme(.dark)
+        // Drive every accent-aware native control (segmented pickers, selection,
+        // glass-prominent buttons, toggles) from the signature Lentis accent.
+        .tint(.lentisAccent)
         .background(WindowAccessor(model: model))
     }
 
@@ -225,7 +228,7 @@ private struct NiftiLoadingOverlay: View {
             }
             .padding(.horizontal, 28)
             .padding(.vertical, 22)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .glassEffect(.regular, in: RoundedRectangle(cornerRadius: Radius.card))
             .shadow(radius: 12)
         }
         .accessibilityElement(children: .combine)
@@ -239,23 +242,23 @@ struct SidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Series")
+                Text("Files")
                     .font(.headline)
                     .foregroundStyle(.primary)
 
                 Spacer()
-                
+
                 Button(action: openFile) {
                     Label("Open", systemImage: "folder")
                         .labelStyle(.titleAndIcon)
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.glassProminent)
                 .controlSize(.small)
                 .help("Open NIfTI File")
                 .disabled(model.isLoading)
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.horizontal, Spacing.m)
+            .padding(.vertical, Spacing.s)
             
             SeriesListView(model: model)
         }
@@ -277,10 +280,10 @@ struct SeriesListView: View {
     /// Row background color for a given series index
     private func rowBackground(for index: Int) -> Color? {
         if index == activeSeriesIndex {
-            return Color.blue.opacity(0.15)
+            return Color.lentisAccent.opacity(0.18)
         }
         if model.panels.contains(where: { $0.seriesIndex == index }) {
-            return Color.blue.opacity(0.05)
+            return Color.lentisAccent.opacity(0.06)
         }
         return nil
     }
@@ -414,10 +417,10 @@ struct PanelPositionIndicator: View {
                         let panelIdx = row * cols + col
                         let isFilled = panelIdx < model.panels.count && model.panels[panelIdx].seriesIndex == seriesIndex
                         RoundedRectangle(cornerRadius: 1.5)
-                            .fill(isFilled ? Color.blue : Color.clear)
+                            .fill(isFilled ? Color.lentisAccent : Color.clear)
                             .overlay(
                                 RoundedRectangle(cornerRadius: 1.5)
-                                    .strokeBorder(Color.blue.opacity(isFilled ? 1 : 0.4), lineWidth: 1)
+                                    .strokeBorder(Color.lentisAccent.opacity(isFilled ? 1 : 0.4), lineWidth: 1)
                             )
                             .frame(width: cellSize, height: cellSize)
                     }
