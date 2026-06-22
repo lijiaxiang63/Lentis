@@ -95,6 +95,41 @@ private func clampRange(_ r: Range<Int>, _ lo: Int, _ hi: Int) -> Range<Int> {
     return l..<u
 }
 
+extension VoxelBox {
+    /// Build a 3D slab box from two opposite raw-pixel corners of an in-plane
+    /// drag on an orthogonal MPR plane. The two in-plane axes come from the rect
+    /// (via `PlaneGeometry` → world → voxel, using the ONE orientation source);
+    /// the third (slab) axis is centered on the plane's current slice with the
+    /// given depth. Returns the box plus which voxel axis (0=i,1=j,2=k) is the
+    /// slab, so the inspector slab slider knows which axis to re-extend.
+    static func fromPlanePoints(_ a: CGPoint, _ b: CGPoint,
+                                geometry g: PlaneGeometry, volume: VolumeData,
+                                mode: PanelMode, sliceIndex: Int, slabDepth: Int)
+        -> (box: VoxelBox, slabAxis: Int)? {
+        let worldA = g.world(col: Double(a.x), row: Double(a.y))
+        let worldB = g.world(col: Double(b.x), row: Double(b.y))
+        let va = volume.worldToVoxel(worldA)
+        let vb = volume.worldToVoxel(worldB)
+        guard va.x.isFinite, va.y.isFinite, va.z.isFinite,
+              vb.x.isFinite, vb.y.isFinite, vb.z.isFinite else { return nil }
+        let lo = simd_min(va, vb), hi = simd_max(va, vb)
+        var box = VoxelBox(
+            corner: (Int(lo.x.rounded()), Int(lo.y.rounded()), Int(lo.z.rounded())),
+            corner: (Int(hi.x.rounded()), Int(hi.y.rounded()), Int(hi.z.rounded())))
+
+        let half = max(0, slabDepth / 2)
+        let slab = (sliceIndex - half)..<(sliceIndex + half + 1)
+        let slabAxis: Int
+        switch mode {
+        case .mprAxial:    box.zRange = slab; slabAxis = 2
+        case .mprSagittal: box.xRange = slab; slabAxis = 0
+        case .mprCoronal:  box.yRange = slab; slabAxis = 1
+        default: return nil
+        }
+        return (box.clamped(to: volume), slabAxis)
+    }
+}
+
 // MARK: - Method / parameters
 
 enum SegmentationMethod: String, Codable, CaseIterable, Identifiable {

@@ -93,6 +93,11 @@ enum ActiveTool: String, CaseIterable, Identifiable {
     case ruler = "Ruler"
     case angle = "Angle"
     case eraser = "Eraser"
+    /// Phase 9 — draw a 3D ROI box around a calcification (drag a rect on a
+    /// plane; slab depth from the Segment inspector).
+    case roiBox = "ROI Box"
+    /// Phase 9 — manual voxel touch-up of the selected calcification region.
+    case calcBrush = "Brush"
 
     var id: String { rawValue }
 
@@ -107,6 +112,8 @@ enum ActiveTool: String, CaseIterable, Identifiable {
         case .ruler: return "ruler"
         case .angle: return "angle"
         case .eraser: return "eraser"
+        case .roiBox: return "cube"
+        case .calcBrush: return "paintbrush.pointed.fill"
         }
     }
 
@@ -121,6 +128,8 @@ enum ActiveTool: String, CaseIterable, Identifiable {
         case .ruler: return "D"
         case .angle: return "N"
         case .eraser: return "E"
+        case .roiBox: return "B"
+        case .calcBrush: return "K"
         }
     }
 
@@ -128,6 +137,8 @@ enum ActiveTool: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .windowLevel: return "Window/Level"
+        case .roiBox:      return "Calcification ROI"
+        case .calcBrush:   return "Calcification Brush"
         default:           return rawValue
         }
     }

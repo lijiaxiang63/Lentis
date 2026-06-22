@@ -29,6 +29,9 @@ final class CalcificationRegion: ObservableObject, Identifiable {
     @Published var color: SIMD3<Double>
     @Published var parameters: SegmentationParameters
     @Published var box: VoxelBox
+    /// Which voxel axis (0=i,1=j,2=k) is the box's slab (the plane it was drawn
+    /// on), so the slab-depth slider re-extends the right axis.
+    @Published var slabAxis: Int = 2
     @Published var voxelCount: Int = 0
     @Published var anatomicalName: String? = nil
     @Published var isVisible: Bool = true
@@ -131,6 +134,7 @@ extension ViewerModel {
             box: VoxelBox(xRange: 0..<0, yRange: 0..<0, zRange: 0..<0))
         draftRegion = region
         activeRegionID = region.id
+        activeTool = .roiBox   // ready to drag the ROI box
         return region
     }
 
@@ -145,6 +149,46 @@ extension ViewerModel {
             draft.parameters.lowThresholdHU = t
             draft.parameters.highThresholdHU = t
         }
+        updateActiveRegionPreview()
+    }
+
+    /// Build the ROI box from a drag's two raw-pixel corners on an MPR panel,
+    /// using the panel's plane geometry + the slab depth. Auto-creates a draft
+    /// region (threshold method) if none is in progress, so dragging the ROI Box
+    /// tool just works.
+    func setActiveRegionBox(fromRawCornerA a: CGPoint, cornerB b: CGPoint, panel: PanelState) {
+        guard panel.panelMode.isMPR, let vol = segmentationVolume,
+              let g = panel.displayedPlaneGeometry else { return }
+        if draftRegion == nil { beginRegion(method: .thresholdInROI) }
+        guard let draft = draftRegion,
+              let result = VoxelBox.fromPlanePoints(a, b, geometry: g, volume: vol,
+                                                    mode: panel.panelMode,
+                                                    sliceIndex: panel.mprSliceIndex,
+                                                    slabDepth: calcSlabDepth) else { return }
+        draft.slabAxis = result.slabAxis
+        setActiveRegionBox(result.box)
+    }
+
+    /// Re-extend the draft box's slab axis to the new depth (centered) and
+    /// refresh the preview.
+    func setActiveRegionSlabDepth(_ depth: Int) {
+        calcSlabDepth = max(1, depth)
+        guard let draft = draftRegion, let vol = segmentationVolume, !draft.box.isEmpty else { return }
+        let half = max(0, calcSlabDepth / 2)
+        let axis = draft.slabAxis
+        var box = draft.box
+        switch axis {
+        case 0:
+            let c = (box.xRange.lowerBound + box.xRange.upperBound) / 2
+            box.xRange = (c - half)..<(c + half + 1)
+        case 1:
+            let c = (box.yRange.lowerBound + box.yRange.upperBound) / 2
+            box.yRange = (c - half)..<(c + half + 1)
+        default:
+            let c = (box.zRange.lowerBound + box.zRange.upperBound) / 2
+            box.zRange = (c - half)..<(c + half + 1)
+        }
+        draft.box = box.clamped(to: vol)
         updateActiveRegionPreview()
     }
 

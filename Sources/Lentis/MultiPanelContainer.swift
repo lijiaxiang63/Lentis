@@ -203,6 +203,14 @@ struct PanelView: View {
                     .zIndex(10)
             }
 
+            // Calcification ROI box overlay: the draft region's 3D box drawn as
+            // its cross-section + corner markers on every MPR plane.
+            if panel.image != nil, panel.panelMode.isMPR, let draft = model.draftRegion,
+               let vol = model.cachedVolume(forSeriesIndex: panel.seriesIndex) {
+                SegmentationBoxOverlay(panel: panel, region: draft, volume: vol)
+                    .zIndex(11)
+            }
+
             // ROI rectangle overlay
             if panel.image != nil, panel.panelMode != .volume3D, let roiRect = panel.roiRect {
                 ROIOverlay(panel: panel, roiRect: roiRect)
@@ -576,6 +584,12 @@ struct PanelInteractiveImageView: NSViewRepresentable {
             case "e":
                 model.activeTool = .eraser
                 return true
+            case "b":
+                model.activeTool = .roiBox
+                return true
+            case "k":
+                model.activeTool = .calcBrush
+                return true
             case "]", ".":
                 model.rotateClockwiseForPanel(model.activePanel)
                 return true
@@ -615,7 +629,7 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 desiredCursor = .resizeUpDown
             case .zoom:
                 desiredCursor = .crosshair
-            case .roiWL, .roiStats, .ruler, .angle:
+            case .roiWL, .roiStats, .ruler, .angle, .roiBox, .calcBrush:
                 desiredCursor = .crosshair
             case .eraser:
                 desiredCursor = .disappearingItem
@@ -726,6 +740,16 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                   model.showCrossReference, model.panels.count > 1,
                   let world = crosshairWorld(at: event) else { return }
             model.setCrosshair(world, from: panel)
+        }
+
+        /// Canonical voxel under the cursor on this MPR plane — for the
+        /// calcification touch-up brush. nil off an MPR panel / with no volume.
+        private func brushVoxel(at event: NSEvent) -> (Int, Int, Int)? {
+            guard let model = model, let world = crosshairWorld(at: event),
+                  let vol = model.segmentationVolume else { return nil }
+            let v = vol.worldToVoxel(world)
+            guard v.x.isFinite, v.y.isFinite, v.z.isFinite else { return nil }
+            return (Int(v.x.rounded()), Int(v.y.rounded()), Int(v.z.rounded()))
         }
 
         override func mouseDown(with event: NSEvent) {
@@ -865,6 +889,19 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                     if let idx = bestIdx, bestDist < threshold {
                         panel.annotations.remove(at: idx)
                     }
+                }
+
+            case .roiBox:
+                // Start an in-plane ROI rect (display pixels); finalized into a
+                // 3D slab box on mouseUp. The live rect is drawn by ROIOverlay.
+                if panel.panelMode.isMPR, let px = screenToPixel(event) {
+                    roiStartPixel = px
+                    panel.roiRect = CGRect(x: px.x, y: px.y, width: 0, height: 0)
+                }
+
+            case .calcBrush:
+                if let v = brushVoxel(at: event) {
+                    model.paintBrush(atVoxel: v, radius: model.calcBrushRadius, erase: model.calcBrushErase)
                 }
             }
         }
@@ -1164,6 +1201,20 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                     panel.anglePreviewPoints = preview
                 }
 
+            case .roiBox:
+                if let start = roiStartPixel, let current = screenToPixel(event) {
+                    let x = min(start.x, current.x)
+                    let y = min(start.y, current.y)
+                    let w = abs(current.x - start.x)
+                    let h = abs(current.y - start.y)
+                    panel.roiRect = CGRect(x: x, y: y, width: w, height: h)
+                }
+
+            case .calcBrush:
+                if let v = brushVoxel(at: event) {
+                    model.paintBrush(atVoxel: v, radius: model.calcBrushRadius, erase: model.calcBrushErase)
+                }
+
             case .eraser:
                 break
             }
@@ -1209,6 +1260,24 @@ struct PanelInteractiveImageView: NSViewRepresentable {
             case .windowLevel:
                 flushPendingWindowLevelIfNeeded(force: true)
                 lastDragLocation = nil
+
+            case .roiBox:
+                // Finalize the in-plane rect into a 3D slab box (raw pixels →
+                // plane geometry → voxel) and drive the segmentation preview.
+                if let start = roiStartPixel {
+                    let endDisplay = screenToPixel(event) ?? start
+                    let rawA = rawPixel(fromDisplayPixel: start, panel: panel)
+                    let rawB = rawPixel(fromDisplayPixel: endDisplay, panel: panel)
+                    if abs(rawA.x - rawB.x) > 1 || abs(rawA.y - rawB.y) > 1 {
+                        model.setActiveRegionBox(fromRawCornerA: rawA, cornerB: rawB, panel: panel)
+                    }
+                }
+                roiStartPixel = nil
+                panel.roiRect = nil
+
+            case .calcBrush:
+                // Reconcile per-region counts after a brush stroke.
+                model.recomputeRegionVoxelCounts()
 
             default:
                 break
