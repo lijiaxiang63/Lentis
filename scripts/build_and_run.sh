@@ -12,7 +12,7 @@ fi
 
 APP_NAME="Lentis"
 BUNDLE_ID="com.kalicooper.lentis"
-MIN_SYSTEM_VERSION="14.0"
+MIN_SYSTEM_VERSION="26.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
