@@ -11,24 +11,22 @@
 
 import SwiftUI
 
-/// Docked bottom status bar — the one place viewer readouts now live.
+/// Floating Liquid Glass status pill — the one place viewer readouts now live.
+/// Anchored bottom-leading over the viewport (out of the diagnostic center) and
+/// content-sized rather than a full-width docked bar. Non-interactive so it never
+/// steals events from the panel beneath it.
 struct ViewerStatusBar: View {
     @ObservedObject var model: ViewerModel
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: Spacing.m) {
             // StatusBarPanelInfo observes the panel itself, so it updates when the
             // panel's async render lands its image (which fires the panel's
             // objectWillChange, not the model's). Gating on panel.image here in the
             // model observer would leave it stuck on the initial empty state.
             if let panel = model.activePanel {
                 StatusBarPanelInfo(panel: panel)
-            } else {
-                Text("No volume loaded")
-                    .foregroundStyle(.secondary)
             }
-
-            Spacer(minLength: 8)
 
             // Cursor readout follows whichever panel the mouse is over. Each row
             // observes its own panel, because a panel's @Published change does not
@@ -37,13 +35,13 @@ struct ViewerStatusBar: View {
                 StatusBarCursorInfo(panel: p)
             }
         }
-        .font(.system(.caption, design: .monospaced))
+        .font(.lentisReadout)
         .lineLimit(1)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 3)
-        .frame(maxWidth: .infinity, minHeight: 24)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .top) { Divider() }
+        .fixedSize()
+        .padding(.horizontal, Spacing.m)
+        .padding(.vertical, Spacing.s)
+        .glassChrome(in: Capsule())
+        .allowsHitTesting(false)
     }
 }
 

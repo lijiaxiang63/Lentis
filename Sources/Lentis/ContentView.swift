@@ -32,31 +32,35 @@ struct ContentView: View {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 250, ideal: 300)
         } detail: {
-            VStack(spacing: 0) {
-                ZStack(alignment: .leading) {
-                    MultiPanelContainer(model: model, isFocused: $isFocused)
-                        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                            _ = handleDrop(providers: providers)
-                            return true
-                        }
-                        .onTapGesture {
-                            isFocused = true
-                        }
-
-                    // Floating glass tool capsule, vertically centered on the
-                    // viewport's leading edge.
-                    ToolPalette(model: model)
-                        .padding(.leading, Spacing.m)
-
-                    if model.isLoading {
-                        NiftiLoadingOverlay()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .transition(.opacity)
-                            .zIndex(1_000)
+            ZStack(alignment: .leading) {
+                MultiPanelContainer(model: model, isFocused: $isFocused)
+                    .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                        _ = handleDrop(providers: providers)
+                        return true
                     }
-                }
+                    .onTapGesture {
+                        isFocused = true
+                    }
 
-                ViewerStatusBar(model: model)
+                // Floating glass tool capsule, vertically centered on the
+                // viewport's leading edge.
+                ToolPalette(model: model)
+                    .padding(.leading, Spacing.m)
+
+                if model.isLoading {
+                    NiftiLoadingOverlay()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(.opacity)
+                        .zIndex(1_000)
+                }
+            }
+            // Floating glass status pill, bottom-leading (only once a file is open).
+            .overlay(alignment: .bottomLeading) {
+                if !model.allSeries.isEmpty {
+                    ViewerStatusBar(model: model)
+                        .padding(.leading, Spacing.m)
+                        .padding(.bottom, Spacing.m)
+                }
             }
             // The window title is now the open file (native macOS pattern) — this
             // replaces the old custom centered-title hack in WindowAccessor.
