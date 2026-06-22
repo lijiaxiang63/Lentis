@@ -35,21 +35,11 @@ struct ViewerToolbar: ToolbarContent {
             }
         }
 
-        // A glass gap isolates the inspector toggle in the trailing corner,
-        // separating it from the per-panel controls (the native macOS pattern)
-        // so the corner above the inspector doesn't read as cluttered.
-        ToolbarSpacer(.fixed, placement: .primaryAction)
-
-        ToolbarItem(placement: .primaryAction) {
-            // A plain toolbar toggle — the visible inspector is its own active
-            // indicator, so no heavy accent fill is needed.
-            Button {
-                model.showLayerInspector.toggle()
-            } label: {
-                Image(systemName: "sidebar.right")
-            }
-            .help(model.showLayerInspector ? "Hide Layers Inspector" : "Show Layers Inspector")
-        }
+        // NOTE: the inspector show/hide toggle is intentionally NOT declared here.
+        // ContentView owns the closed-state Show control; LayerInspectorView owns
+        // the open-state Hide control so it can sit at the window's top-right
+        // corner above the inspector. Keeping it out of this nested ToolbarContent
+        // avoids stale re-evaluation and duplicate drawer buttons.
     }
 }
 

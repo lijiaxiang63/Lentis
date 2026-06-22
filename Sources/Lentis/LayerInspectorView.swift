@@ -18,30 +18,12 @@ struct LayerInspectorView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
+        VSplitView {
+            layersPane
+                .frame(minHeight: 140, idealHeight: 230)
 
-            VSplitView {
-                layerList
-                    .frame(minHeight: 130, idealHeight: 220)
-
-                if let layer = store.selectedLayer {
-                    LayerDetailsView(model: model, store: store, layer: layer)
-                        .id(layer.id)
-                        .frame(minHeight: 260)
-                } else {
-                    ContentUnavailableView(
-                        "No Layer Selected",
-                        systemImage: "square.3.layers.3d",
-                        description: Text(store.layers.isEmpty
-                                          ? "Add a mask or atlas label NIfTI file."
-                                          : "Select a layer to edit its appearance.")
-                    )
-                    .frame(minHeight: 220)
-                }
-            }
-
-            footer
+            detailsPane
+                .frame(minHeight: 240)
         }
         // No opaque .background here: forcing one tints the inspector's toolbar
         // segment a different shade than the detail's, splitting the unified
@@ -50,22 +32,60 @@ struct LayerInspectorView: View {
         .onDeleteCommand(perform: removeSelectedLayer)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Layers inspector")
-    }
+        // Declaring toolbar items INSIDE the inspector's view builder renders them
+        // in a dedicated toolbar section above the inspector. That inserts the
+        // tracking separator which confines the main content's toolbar to the
+        // viewport (the Keynote pattern), so the per-panel plane / modality / W-L
+        // controls no longer float over the inspector. While the inspector is open,
+        // keep at least one item here or the separator collapses and the spill-over
+        // returns. Gate the whole section on showLayerInspector so no inspector
+        // controls leak into the closed state if macOS keeps the toolbar section
+        // alive during the hide transition.
+        .toolbar {
+            if model.showLayerInspector {
+                ToolbarItemGroup(placement: .primaryAction) {
+                    if model.isImportingLayers {
+                        ProgressView()
+                            .controlSize(.small)
+                            .help("Loading and aligning layers")
+                    }
+                    Button(action: removeSelectedLayer) {
+                        Image(systemName: "minus")
+                    }
+                    .disabled(store.selectedLayerID == nil)
+                    .help("Remove Layer")
+                    .accessibilityLabel("Remove selected layer")
 
-    private var header: some View {
-        HStack(spacing: 8) {
-            Text("Layers")
-                .font(.headline)
-            Spacer()
-            if model.isImportingLayers {
-                ProgressView()
-                    .controlSize(.small)
-                    .help("Loading and aligning layers")
+                    Button(action: model.openLayerFiles) {
+                        Image(systemName: "plus")
+                    }
+                    .disabled(model.niftiDataset == nil || model.isImportingLayers)
+                    .help("Add Mask or Atlas Layer")
+                    .accessibilityLabel("Add layer")
+                }
+
+                ToolbarSpacer(.fixed, placement: .primaryAction)
+                ToolbarItem(placement: .primaryAction) {
+                    Button { model.showLayerInspector = false } label: {
+                        Image(systemName: "sidebar.right")
+                    }
+                    .help("Hide Layers Inspector")
+                    .accessibilityLabel("Hide Layers inspector")
+                }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .overlay(alignment: .bottom) { Divider() }
+    }
+
+    // MARK: - Layers source list (top pane)
+
+    private var layersPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            InspectorSectionHeader(
+                title: "Layers",
+                trailing: store.layers.count > 1 ? "Top renders last" : nil
+            )
+            layerList
+        }
     }
 
     private var layerList: some View {
@@ -80,6 +100,7 @@ struct LayerInspectorView: View {
             .onMove(perform: store.move)
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
         .overlay {
             if store.layers.isEmpty {
                 ContentUnavailableView {
@@ -93,34 +114,23 @@ struct LayerInspectorView: View {
         }
     }
 
-    private var footer: some View {
-        HStack(spacing: 4) {
-            Button(action: model.openLayerFiles) {
-                Image(systemName: "plus")
-                    .frame(width: 22, height: 20)
-            }
-            .buttonStyle(.borderless)
-            .disabled(model.niftiDataset == nil || model.isImportingLayers)
-            .help("Add Mask or Atlas Layer")
-            .accessibilityLabel("Add layer")
+    // MARK: - Selected-layer details (bottom pane)
 
-            Button(action: removeSelectedLayer) {
-                Image(systemName: "minus")
-                    .frame(width: 22, height: 20)
-            }
-            .buttonStyle(.borderless)
-            .disabled(store.selectedLayerID == nil)
-            .help("Remove Layer")
-            .accessibilityLabel("Remove selected layer")
-
-            Spacer()
-            Text("Top layer renders last")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+    @ViewBuilder
+    private var detailsPane: some View {
+        if let layer = store.selectedLayer {
+            LayerDetailsView(model: model, store: store, layer: layer)
+                .id(layer.id)
+        } else {
+            ContentUnavailableView(
+                "No Layer Selected",
+                systemImage: "square.3.layers.3d",
+                description: Text(store.layers.isEmpty
+                                  ? "Add a mask or atlas label NIfTI file."
+                                  : "Select a layer to edit its appearance.")
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .overlay(alignment: .top) { Divider() }
     }
 
     private func removeSelectedLayer() {
@@ -142,6 +152,48 @@ struct LayerInspectorView: View {
             }
         }
         return accepted
+    }
+}
+
+/// A Keynote-style inspector section header: a bold, left-aligned title with an
+/// optional muted trailing hint. Used to title each form section in place of the
+/// old bordered `GroupBox`, matching the borderless sectioning of native macOS
+/// inspectors (Keynote, Pages, Numbers).
+private struct InspectorSectionHeader: View {
+    let title: String
+    var trailing: String? = nil
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary)
+            Spacer(minLength: 8)
+            if let trailing {
+                Text(trailing)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+    }
+}
+
+/// A titled, borderless inspector section: a `InspectorSectionHeader` above its
+/// content, inset to align with the header. Keynote-style replacement for
+/// `GroupBox` in the layer detail form.
+private struct InspectorSection<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            InspectorSectionHeader(title: title)
+            content
+                .padding(.horizontal, 12)
+        }
     }
 }
 
@@ -240,13 +292,15 @@ private struct LayerDetailsView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 0) {
                     appearanceSection
                     if layer.kind == .atlas {
+                        Divider().padding(.horizontal, 12).padding(.vertical, 8)
                         HoveredAtlasLabel(model: model, store: store, layer: layer)
+                            .padding(.horizontal, 12)
                     }
                 }
-                .padding(12)
+                .padding(.vertical, 4)
             }
             .frame(maxHeight: layer.kind == .atlas ? 260 : .infinity)
 
@@ -257,6 +311,7 @@ private struct LayerDetailsView: View {
                     AtlasLabelRow(store: store, layer: layer, label: label)
                 }
                 .listStyle(.inset)
+                .scrollContentBackground(.hidden)
             }
         }
         .sheet(isPresented: $showLUTManager) {
@@ -273,7 +328,7 @@ private struct LayerDetailsView: View {
     }
 
     private var appearanceSection: some View {
-        GroupBox("Appearance") {
+        InspectorSection(title: "Appearance") {
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
                 GridRow {
                     Text("Type").foregroundStyle(.secondary)
@@ -352,10 +407,10 @@ private struct LayerDetailsView: View {
     }
 
     private var atlasHeader: some View {
-        VStack(spacing: 8) {
-            HStack {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
                 Text("Labels")
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
                 Spacer()
                 Menu {
                     Button("Show All") { store.showAllLabels(in: layer.id) }
@@ -365,13 +420,15 @@ private struct LayerDetailsView: View {
                     Image(systemName: "ellipsis.circle")
                 }
                 .menuStyle(.borderlessButton)
+                .fixedSize()
                 .help("Label Visibility Actions")
             }
             TextField("Search labels", text: $searchText)
                 .textFieldStyle(.roundedBorder)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
     }
 
     private func importLUT() {
@@ -417,7 +474,9 @@ private struct HoveredAtlasLabelForPanel: View {
             )
             let entry = store.lookupTable(id: layer.lutID)?[label]
                 ?? ColorLookupTable.fallbackEntry(for: label)
-            GroupBox("Cursor Label") {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Cursor Label")
+                    .font(.subheadline.weight(.semibold))
                 HStack(spacing: 8) {
                     Circle().fill(label == 0 ? Color.clear : Color(lutEntry: entry))
                         .overlay(Circle().stroke(.separator, lineWidth: 1))
@@ -427,8 +486,11 @@ private struct HoveredAtlasLabelForPanel: View {
                     Spacer()
                     Text("\(label)").monospacedDigit().foregroundStyle(.secondary)
                 }
-                .padding(.top, 3)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Radius.chip))
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

@@ -66,7 +66,27 @@ struct ContentView: View {
             // replaces the old custom centered-title hack in WindowAccessor.
             .navigationTitle(windowTitle)
             .navigationSubtitle(windowSubtitle)
-            .toolbar { ViewerToolbar(model: model) }
+            .toolbar {
+                ViewerToolbar(model: model)
+
+                // Closed-state Layers Inspector drawer toggle. When the drawer is
+                // open, the matching Hide toggle moves into LayerInspectorView's
+                // toolbar section so it stays pinned to the window's top-right
+                // corner above the inspector. Keep the two declarations mutually
+                // exclusive: otherwise macOS can render duplicate sidebar buttons.
+                if !model.showLayerInspector {
+                    ToolbarSpacer(.fixed, placement: .primaryAction)
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            model.showLayerInspector = true
+                        } label: {
+                            Image(systemName: "sidebar.right")
+                        }
+                        .help("Show Layers Inspector")
+                        .accessibilityLabel("Show Layers inspector")
+                    }
+                }
+            }
         }
         // Keyboard Handlers — route through active panel
         .focusable()
