@@ -1970,29 +1970,27 @@ struct AnnotationOverlay: View {
 
 // MARK: - Tool Palette
 
+/// Floating vertical Liquid Glass capsule of tools, overlaid on the viewport's
+/// leading edge. The active tool tints with the signature accent; neighbouring
+/// glass buttons blend within the GlassEffectContainer.
 struct ToolPalette: View {
     @ObservedObject var model: ViewerModel
 
     var body: some View {
-        VStack(spacing: 2) {
-            ForEach(ActiveTool.allCases) { tool in
-                Button(action: { model.activeTool = tool }) {
-                    Image(systemName: tool.icon)
-                        .font(.system(size: 14))
-                        .frame(width: 32, height: 28)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(model.activeTool == tool ? Color.accentColor.opacity(0.3) : Color.clear)
-                        )
-                        .foregroundStyle(model.activeTool == tool ? .white : .secondary)
+        GlassEffectContainer(spacing: Spacing.xs) {
+            VStack(spacing: Spacing.xs) {
+                ForEach(ActiveTool.allCases) { tool in
+                    GlassIconButton(
+                        systemName: tool.icon,
+                        isActive: model.activeTool == tool,
+                        size: 34,
+                        help: "\(tool.displayName) (\(tool.shortcutHint))"
+                    ) {
+                        model.activeTool = tool
+                    }
                 }
-                .buttonStyle(.plain)
-                .help("\(tool.displayName) (\(tool.shortcutHint))")
             }
         }
-        .padding(4)
-        .background(.ultraThinMaterial)
-        .cornerRadius(8)
     }
 }
 

@@ -32,35 +32,31 @@ struct ContentView: View {
             SidebarView(model: model)
                 .navigationSplitViewColumnWidth(min: 250, ideal: 300)
         } detail: {
-            HStack(spacing: 0) {
-                // Fixed tool palette column (becomes a floating glass capsule in a
-                // later step of the redesign).
-                ToolPalette(model: model)
-                    .padding(.vertical, 8)
-
-                // Main viewer area: the panel grid in the middle, one docked
-                // status bar at the bottom.
-                VStack(spacing: 0) {
-                    ZStack {
-                        MultiPanelContainer(model: model, isFocused: $isFocused)
-                            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                                _ = handleDrop(providers: providers)
-                                return true
-                            }
-                            .onTapGesture {
-                                isFocused = true
-                            }
-
-                        if model.isLoading {
-                            NiftiLoadingOverlay()
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .transition(.opacity)
-                                .zIndex(1_000)
+            VStack(spacing: 0) {
+                ZStack(alignment: .leading) {
+                    MultiPanelContainer(model: model, isFocused: $isFocused)
+                        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                            _ = handleDrop(providers: providers)
+                            return true
                         }
-                    }
+                        .onTapGesture {
+                            isFocused = true
+                        }
 
-                    ViewerStatusBar(model: model)
+                    // Floating glass tool capsule, vertically centered on the
+                    // viewport's leading edge.
+                    ToolPalette(model: model)
+                        .padding(.leading, Spacing.m)
+
+                    if model.isLoading {
+                        NiftiLoadingOverlay()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .transition(.opacity)
+                            .zIndex(1_000)
+                    }
                 }
+
+                ViewerStatusBar(model: model)
             }
             // The window title is now the open file (native macOS pattern) — this
             // replaces the old custom centered-title hack in WindowAccessor.
