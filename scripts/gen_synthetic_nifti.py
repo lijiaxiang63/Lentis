@@ -67,6 +67,27 @@ for t in range(nt):
     m4[t]=vol
 write_nifti(OUT / "synthetic_mri_4d.nii.gz", m4, 16, 32, aff)
 
+# ---- Calcification segmentation fixture (Phase 9): air/tissue + a high-HU skull
+#      shell + several SEPARATED calcification blobs of known HU, plus a matching
+#      brain mask (interior, nonzero). Used for GUI / standalone engine checks. ----
+cc = np.full((nz,ny,nx), -1000, np.int16)
+brain_interior = ((xx-cx)/23)**2 + ((yy-cy)/27)**2 + ((zz-cz)/17)**2 <= 1.0
+cc[brain_interior] = 40                                   # soft tissue
+cc[skull] = 1500                                          # dense bone shell (excluded by brain mask)
+# Three separated calcifications inside the brain at distinct locations/HU.
+calc_central = ((xx-cx)**2 + (yy-cy)**2 + (zz-cz)**2) <= 9            # pineal-ish, central
+calc_left    = ((xx-(cx-12))**2 + (yy-cy)**2 + (zz-cz)**2) <= 16     # patient-right hemisphere in array (x<cx)
+calc_right   = ((xx-(cx+13))**2 + (yy-(cy+6))**2 + (zz-cz)**2) <= 12
+cc[calc_central] = 520
+cc[calc_left]    = 400
+cc[calc_right]   = 360
+write_nifti(OUT / "synthetic_calc.nii.gz", cc, 4, 16, aff)
+
+# Brain mask aligned to the same grid: 1 inside the brain interior, 0 elsewhere.
+bm = np.zeros((nz,ny,nx), np.uint8)
+bm[brain_interior] = 1
+write_nifti(OUT / "synthetic_calc_brainmask.nii.gz", bm, 2, 8, aff)
+
 # ---- Orientation markers: distinct intensities per octant (for Phase 4 checks) ----
 om = np.zeros((nz,ny,nx), np.int16)
 om[zz<cz] += 0;     om[zz>=cz]+=4
