@@ -8,7 +8,10 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: macos-15
+    # macos-26 provides Xcode 26 (Swift 6.2+) and the macOS 26 SDK, both required:
+    # Package.swift pins tools-version 6.2 (the minimum that exposes .macOS(.v26))
+    # for the Liquid Glass UI. macos-15 ships Xcode 16.4 / Swift 6.1 and fails.
+    runs-on: macos-26
     steps:
       - name: Checkout
         uses: actions/checkout@v4
