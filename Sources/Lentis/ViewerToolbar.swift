@@ -33,12 +33,21 @@ struct ViewerToolbar: ToolbarContent {
             if let ds = model.niftiDataset, ds.isMultiVolume {
                 TimepointToolbarControls(model: model, dataset: ds)
             }
+        }
+
+        // A glass gap isolates the inspector toggle in the trailing corner,
+        // separating it from the per-panel controls (the native macOS pattern)
+        // so the corner above the inspector doesn't read as cluttered.
+        ToolbarSpacer(.fixed, placement: .primaryAction)
+
+        ToolbarItem(placement: .primaryAction) {
+            // A plain toolbar toggle — the visible inspector is its own active
+            // indicator, so no heavy accent fill is needed.
             Button {
                 model.showLayerInspector.toggle()
             } label: {
                 Image(systemName: "sidebar.right")
             }
-            .foregroundStyle(model.showLayerInspector ? Color.lentisAccent : .secondary)
             .help(model.showLayerInspector ? "Hide Layers Inspector" : "Show Layers Inspector")
         }
     }
