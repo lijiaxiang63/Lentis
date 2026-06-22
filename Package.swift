@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.2
 // Package.swift — Lentis
 // Licensed under the MIT License. See LICENSE for details.
 
@@ -7,7 +7,9 @@ import PackageDescription
 let package = Package(
     name: "Lentis",
     platforms: [
-        .macOS(.v14)
+        // macOS 26 (Tahoe): required for the native Liquid Glass APIs
+        // (glassEffect / GlassEffectContainer / .buttonStyle(.glass)).
+        .macOS(.v26)
     ],
     products: [
         .executable(name: "Lentis", targets: ["Lentis"]),
@@ -29,5 +31,9 @@ let package = Package(
                 .product(name: "Testing", package: "swift-testing")
             ]
         ),
-    ]
+    ],
+    // Keep the Swift 5 language mode: bumping the tools version to reach
+    // .macOS(.v26) would otherwise default to the Swift 6 language mode, whose
+    // strict concurrency checking is out of scope for this UI-only redesign.
+    swiftLanguageModes: [.v5]
 )
