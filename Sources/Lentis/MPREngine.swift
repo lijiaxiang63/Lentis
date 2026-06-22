@@ -280,14 +280,31 @@ class MPREngine {
             }
             return MaskSlice(labels: out, width: w, height: h)
         case .mprSagittal:
+            // Sagittal is the cache-hostile gather (fixes i, spans j×k). Mirror
+            // the gray `sagittalSlice` raw-pointer walk parallelised across
+            // z-planes (disjoint output rows), byte-identical to the `labelAt`
+            // loop above — orientation still comes from `planeGeometry`, locked
+            // by SegmentationSeamTests. This is the masked-path hot spot flagged
+            // in CLAUDE.md Known-issue #3.
             guard sliceIndex >= 0, sliceIndex < volume.width else { return nil }
-            let w = volume.height, h = volume.depth
+            let w = volume.height    // j / A
+            let h = volume.depth     // k / S
+            let width = volume.width
+            let height = volume.height
+            let depth = volume.depth
+            let stride = width * height
             var out = [UInt8](repeating: 0, count: w * h)
-            for z in 0..<volume.depth {
-                let outRow = (volume.depth - 1 - z) * w   // Superior at top
-                for y in 0..<volume.height {
-                    let outCol = (w - 1) - y               // Anterior at left
-                    out[outRow + outCol] = mask.labelAt(x: sliceIndex, y: y, z: z)
+            out.withUnsafeMutableBufferPointer { dstBuf in
+                guard let dst = dstBuf.baseAddress, let src = mask.labels.baseAddress else { return }
+                DispatchQueue.concurrentPerform(iterations: depth) { z in
+                    let outRow = (depth - 1 - z) * w   // Superior at top
+                    var s = z * stride + sliceIndex    // (x=sliceIndex, y=0, z)
+                    var outCol = w - 1                  // y=0 → Anterior at left
+                    for _ in 0..<height {
+                        dst[outRow + outCol] = src[s]
+                        s += width                      // y += 1
+                        outCol -= 1
+                    }
                 }
             }
             return MaskSlice(labels: out, width: w, height: h)
@@ -418,6 +435,7 @@ class MPREngine {
                             mask: MaskSlice? = nil,
                             maskColor: SIMD3<Double> = SIMD3<Double>(1.0, 0.23, 0.19),
                             maskAlpha: Double = 0.45,
+                            maskAtlasColors: [Int32: LayerRGBA]? = nil,
                             layers: [LayerRenderSlice] = []) -> NSImage? {
         let totalPixels = slice.width * slice.height
         guard totalPixels > 0, ww > 0 else { return nil }
@@ -425,22 +443,26 @@ class MPREngine {
         var compositeLayers = layers.filter {
             $0.width == slice.width && $0.height == slice.height && $0.labels.count == totalPixels
         }
-        // Compatibility adapter for the existing editable UInt8 segmentation
-        // seam. It becomes an ordinary top layer without copying the 3D mask.
+        // Compatibility adapter for the editable UInt8 segmentation mask. It
+        // becomes an ordinary top layer without copying the 3D mask. When a
+        // per-label color table is supplied (multi-region calcification, Phase 9)
+        // the mask renders as an ATLAS — each label value gets its own color;
+        // otherwise it stays the original single flat-color mask (Phase 7 demo +
+        // grayscale fast path unchanged).
         if let mask = mask, mask.width == slice.width, mask.height == slice.height,
            mask.labels.count == totalPixels {
+            let flat = LayerRGBA(
+                red: Float(max(0, min(1, maskColor.x))),
+                green: Float(max(0, min(1, maskColor.y))),
+                blue: Float(max(0, min(1, maskColor.z))),
+                alpha: Float(max(0, min(1, maskAlpha))))
             compositeLayers.append(LayerRenderSlice(
                 labels: mask.labels.map(Int32.init),
                 width: mask.width,
                 height: mask.height,
-                kind: .mask,
-                maskColor: LayerRGBA(
-                    red: Float(max(0, min(1, maskColor.x))),
-                    green: Float(max(0, min(1, maskColor.y))),
-                    blue: Float(max(0, min(1, maskColor.z))),
-                    alpha: Float(max(0, min(1, maskAlpha)))
-                ),
-                atlasColors: [:]
+                kind: maskAtlasColors == nil ? .mask : .atlas,
+                maskColor: flat,
+                atlasColors: maskAtlasColors ?? [:]
             ))
         }
         if !compositeLayers.isEmpty {
