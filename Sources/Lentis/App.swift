@@ -12,7 +12,10 @@ struct LentisApp: App {
     @StateObject private var model = ViewerModel()
 
     var body: some Scene {
-        WindowGroup {
+        // The visible window title is the centered AppKit label installed by
+        // WindowAccessor. Keep SwiftUI's scene title empty so Inspector-driven
+        // titlebar rebuilds cannot briefly restore a leading "Lentis" title.
+        WindowGroup("") {
             ContentView(model: model)
                 .task {
                     // Auto-open a file/directory if passed via --benchmark /path

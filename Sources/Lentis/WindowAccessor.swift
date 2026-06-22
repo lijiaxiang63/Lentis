@@ -102,10 +102,10 @@ struct WindowAccessor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async {
-            if let window = nsView.window {
-                context.coordinator.attach(to: window)
-            }
+        if let window = nsView.window {
+            // Apply this in the same SwiftUI update pass. Deferring the hide by
+            // one run-loop turn lets AppKit draw its leading title for a frame.
+            context.coordinator.attach(to: window)
         }
     }
 
@@ -150,6 +150,9 @@ struct WindowAccessor: NSViewRepresentable {
         }
 
         private func scheduleTitleEnforcement() {
+            // Hide the native title immediately. The asynchronous repeat below
+            // catches any final mutation SwiftUI performs after the notification.
+            enforceCenteredTitle()
             guard !enforcementPending else { return }
             enforcementPending = true
             DispatchQueue.main.async { [weak self] in
@@ -162,8 +165,19 @@ struct WindowAccessor: NSViewRepresentable {
         private func enforceCenteredTitle() {
             guard let window else { return }
 
-            if window.title != "Lentis" {
-                window.title = "Lentis"
+            // The visible title is our centered NSTextField below. Keeping the
+            // native title empty prevents a one-frame leading-title flash even
+            // if SwiftUI temporarily restores titleVisibility while rebuilding
+            // the Inspector. Preserve the human-readable name for accessibility
+            // and the minimized-window label.
+            if !window.title.isEmpty {
+                window.title = ""
+            }
+            if window.accessibilityLabel() != "Lentis" {
+                window.setAccessibilityLabel("Lentis")
+            }
+            if window.miniwindowTitle != "Lentis" {
+                window.miniwindowTitle = "Lentis"
             }
             if window.titleVisibility != .hidden {
                 window.titleVisibility = .hidden
