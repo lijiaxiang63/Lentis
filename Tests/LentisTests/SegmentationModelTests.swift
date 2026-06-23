@@ -153,6 +153,55 @@ final class SegmentationModelTests: XCTestCase {
         XCTAssertEqual(count(vol.labelMask, label: label), 125, "re-committing repaints the real label")
     }
 
+    func testGrowFromSeedSeedsHighFromBoxMean() {
+        // The box is, by Method B's contract, entirely calcification → the seed
+        // (high) threshold is seeded to the box's mean HU, and that mean is the
+        // stable center of the Seed slider's mean±20 range.
+        let (model, _) = makeModel(blob: 18..<23)   // 5³ cube of 400 HU
+        model.beginRegion(method: .growFromSeed)
+        guard let draft = model.draftRegion else { return XCTFail("no draft") }
+
+        model.setActiveRegionBox(VoxelBox(xRange: 18..<23, yRange: 18..<23, zRange: 18..<23))   // exactly the cube
+        XCTAssertEqual(draft.seedMeanHU ?? .nan, 400, accuracy: 0.001, "seed mean = box mean HU")
+        XCTAssertEqual(draft.parameters.highThresholdHU, 400, accuracy: 0.001,
+                       "high (seed) threshold seeded to the box mean")
+
+        // The grow boundary stays in its fixed 40–80 HU band.
+        XCTAssertTrue(SegmentationParameters.growBoundaryHURange.contains(draft.parameters.lowThresholdHU),
+                      "grow boundary remains within 40–80 HU")
+    }
+
+    func testThresholdInROIKeepsFixedDefaultOnBoxDraw() {
+        // Method A starts at a fixed 55 HU and no longer auto-seeds Otsu on box
+        // draw, so the threshold stays in its 40–100 band.
+        let (model, _) = makeModel(blob: 18..<23)   // 5³ cube of 400 HU, rest 40
+        model.beginRegion(method: .thresholdInROI)
+        guard let draft = model.draftRegion else { return XCTFail("no draft") }
+        XCTAssertEqual(draft.parameters.lowThresholdHU, 55, accuracy: 0.001, "default threshold is 55 HU")
+
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))
+        XCTAssertEqual(draft.parameters.lowThresholdHU, 55, accuracy: 0.001, "box draw doesn't move the threshold")
+        XCTAssertEqual(draft.previewVoxelCount, 125, "55 HU keeps the 400-HU cube, drops the 40-HU background")
+    }
+
+    func testGrowSeedReTracksWhenBoxChanges() {
+        // Changing the box re-seeds the grow mean (the same helper resize uses):
+        // a tight box on the 400-HU cube means 400; a box padded with 40-HU
+        // background pulls the mean down.
+        let (model, _) = makeModel(blob: 18..<23)
+        model.beginRegion(method: .growFromSeed)
+        guard let draft = model.draftRegion else { return XCTFail("no draft") }
+
+        model.setActiveRegionBox(VoxelBox(xRange: 18..<23, yRange: 18..<23, zRange: 18..<23))   // exactly the cube
+        XCTAssertEqual(draft.seedMeanHU ?? .nan, 400, accuracy: 0.001)
+
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))   // padded with background
+        let mean = draft.seedMeanHU ?? .nan
+        XCTAssertLessThan(mean, 400, "mean re-tracks the larger box")
+        XCTAssertGreaterThan(mean, 40)
+        XCTAssertEqual(draft.parameters.highThresholdHU, mean, accuracy: 0.001, "seed follows the re-tracked mean")
+    }
+
     func testTouchUpBrushAddsAndErases() {
         let (model, vol) = makeModel()
         model.beginRegion(method: .thresholdInROI)

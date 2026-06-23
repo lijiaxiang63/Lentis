@@ -96,7 +96,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:mask:…)` (CPU W/L — **Float + precomputed-reciprocal, parallelised across 8 bands** for ≥512² slices, `parallelToneMapThreshold`; RGBA composite when a mask is present). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors, cross-ref metadata, **and `maskSlice` (Phase 7 seam)** all read it. **Crosshair geometry (Phase 6):** `PlaneGeometry.world(col:row:)`/`pixel(of:)` (exact-inverse pixel↔world) + `orthogonalSliceIndex(for:containing:)` (world→slice index). (`VolumeBuilder` removed in Phase 3.) |
 | `CrossReferenceOverlay.swift` | **3D crosshair overlay (Phase 6, rewritten).** Draws two lines + center dot through `crosshair.world`'s in-plane projection, on MPR panels only; bridges raw→display pixels then reuses the image's `pixelToScreen` transform. `PanelState.displayedPlaneGeometry` helper. **Hosts `CrosshairState`** (tiny ObservableObject) and observes **it** (not the model) — so a crosshair drag invalidates only this overlay, not the whole quad (drag-lag fix). (Replaced the old `computeCrossReference` lines.) |
 | `MetalVolumeRenderer.swift` | **Phase-8 direct volume renderer.** Metal compute ray marching over a cached `.r16Sint` 3D texture; physical-spacing-aware ray/AABB geometry, window-selective transfer function, front-to-back alpha compositing, early termination, gradient lighting, W/L in stored units. 192² interactive preview / 512² final render. |
-| `CalcificationSegmenter.swift` | **Phase-9 segmentation engine** (pure). `VoxelBox` (+ `fromPlanePoints` rect→slab-box, **+ `handles(plane:sliceIndex:)`/`resize(plane:gripA:gripB:toVoxel:)`/`inPlaneAxes`/`slabAxis` for interactive 3D resize** — all on the ONE orientation source), `SegmentationMethod`/`Connectivity`/`Parameters`, and one configurable hysteresis dual-threshold + 3D connected-component + brain-mask AND + min-size grower (`segment`), Otsu (plateau-midpoint), ROI histogram, `BrainConstraint`. Works in canonical voxel HU via `VolumeData.calibratedValue`. |
+| `CalcificationSegmenter.swift` | **Phase-9 segmentation engine** (pure). `VoxelBox` (+ `fromPlanePoints` rect→slab-box, **+ `handles(plane:sliceIndex:)`/`resize(plane:gripA:gripB:toVoxel:)`/`inPlaneAxes`/`slabAxis` for interactive 3D resize** — all on the ONE orientation source), `SegmentationMethod`/`Connectivity`/`Parameters`, and one configurable hysteresis dual-threshold + 3D connected-component + brain-mask AND + min-size grower (`segment`), Otsu (plateau-midpoint), `meanHU` (Method-B seed), ROI histogram, `BrainConstraint`. Works in canonical voxel HU via `VolumeData.calibratedValue`. `Parameters.growMarginVoxels: Int?` (nil = unlimited grow, the `.growFromSeed` default); `growBoundaryHURange` 40…80 + `thresholdHURange` 40…100 back the fixed-band sliders. |
 | `CalcificationRegion.swift` | One region's data model (ObservableObject): label value, name/color/visibility, `parameters`, `box` + `slabAxis`, voxel/anatomical name. |
 | `ViewerModel+Segmentation.swift` | **Multi-region orchestration.** Region lifecycle (begin/setBox/preview/commit/cancel/delete/re-edit), per-label color table for `loadMPRSlice`, touch-up `paintBrush`, brain-mask load + SynthSeg drive, mask/atlas export. Editable mask = `VolumeData.labelMask` (1…254 = regions, 255 = transient preview); all mask writes on main, then bump `segmentationRevision` + re-render (sync contract). |
 | `SegmentationBoxOverlay.swift` | Draws the draft box's cross-section + corner markers on each intersecting MPR plane, reusing the `CrossReferenceOverlay` pixel→screen transform. 3D excluded. |
@@ -850,6 +850,28 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   (362–1754, median 606) — i.e. the calcifications, with a few skull-edge voxels the "no brain mask"
   warning correctly flagged. **Deferred:** Metal mask-texture overlay on the 3D panel; 4D-timepoint
   segmentation (CT is 3D).
+  - **Follow-up (2026-06-24) — parameter tuning for the "the box IS calcification" workflow.** 1 commit.
+    **(1) Grow reach is configurable + unlimited by default.** New per-region
+    `SegmentationParameters.growMarginVoxels: Int?` — `nil` (the **default** for `.growFromSeed`) floods
+    the **whole volume**, bounded by the brain mask when constrained else only by the `maxResultVoxels`
+    safety cap; a finite value dilates the box by that many voxels. The Segment inspector gains an
+    **"Unlimited grow" toggle** + a **Reach** slider (shown when finite; disabled when the brain mask
+    bounds the flood). `defaultGrowMarginVoxels = 24` is the finite fallback.
+    **(2) Method B seeds from the box mean.** Since the drawn box is, by Method B's contract, entirely
+    calcification, the **seed (high) threshold auto-seeds from the box's mean HU** (`CalcificationSegmenter.meanHU`),
+    and the **"Seed ≥" slider spans mean±20** (anchored on a stable `CalcificationRegion.seedMeanHU`, not
+    the live value, so dragging doesn't drift the range). The mean is (re)computed on box **draw,
+    method-switch, AND resize** via `seedGrowThresholdFromBoxMean`. The **"Grow ≥" boundary** slider is a
+    fixed **40–80 HU** band at **0.1-HU** precision (initial **55**). In grow mode the **Otsu button
+    becomes "Mean"** (re-center the seed on the box mean — Otsu is meaningless when the box is all calc).
+    **(3) Method A is a fixed low band.** The **"Threshold ≥"** slider is a fixed **40–100 HU** band at
+    **0.1-HU** precision (initial **55**); **box-draw no longer auto-runs Otsu** (kept as a manual,
+    range-clamped button) so the fixed initial value holds. Shared engine constants
+    `growBoundaryHURange` (40…80) + `thresholdHURange` (40…100) back the sliders, the `setActiveRegionMethod`
+    clamps, and the Otsu clamp. **Sliders avoid `step:`** (round to 0.1 in the binding) to dodge the
+    documented SwiftUI tick-mark layout cost. **Not GUI-verified** (no real-CT GUI pass yet); locked by
+    unit tests — engine `meanHU`, reach finite-vs-unlimited flood, box-mean seeding + re-tracking, and the
+    fixed Method-A default. **swift test green (105 XCTest + 59 swift-testing = 164).**
 
 ---
 

@@ -268,30 +268,47 @@ struct SegmentationParameters: Equatable, Codable {
     var constrainToBrainMask: Bool
     /// Method B grows past the ROI box; Method A stays box-bounded.
     var growBeyondROI: Bool
+    /// How far the Method-B grow may reach past the ROI box (voxels) when it is
+    /// NOT bounded by a brain mask. `nil` = unlimited — flood the whole volume
+    /// (only the engine's safety cap stops a runaway). Ignored for Method A and
+    /// when constrained to a brain mask (the mask bounds the flood instead).
+    var growMarginVoxels: Int?
 
     /// Typical lower bound for intracranial calcification on CT.
     static let defaultCalcificationHU: Double = 130
+
+    /// Fixed HU range the Method-B grow boundary (`lowThresholdHU`) is tuned in,
+    /// independent of the image histogram. The UI slider and the method-switch
+    /// clamp both read this.
+    static let growBoundaryHURange: ClosedRange<Double> = 40...80
+
+    /// Fixed HU range the Method-A "Threshold ≥" slider is tuned in, independent
+    /// of the image histogram. The UI slider, the Otsu-button clamp, and the
+    /// method-switch clamp all read this.
+    static let thresholdHURange: ClosedRange<Double> = 40...100
 
     static func defaults(for method: SegmentationMethod) -> SegmentationParameters {
         switch method {
         case .thresholdInROI:
             return SegmentationParameters(
                 method: .thresholdInROI,
-                lowThresholdHU: defaultCalcificationHU,
-                highThresholdHU: defaultCalcificationHU,
+                lowThresholdHU: 55,
+                highThresholdHU: 55,
                 connectivity: .twentySix,
                 minVoxelCount: 3,
                 constrainToBrainMask: true,
-                growBeyondROI: false)
+                growBeyondROI: false,
+                growMarginVoxels: CalcificationSegmenter.defaultGrowMarginVoxels)
         case .growFromSeed:
             return SegmentationParameters(
                 method: .growFromSeed,
-                lowThresholdHU: 100,
+                lowThresholdHU: 55,
                 highThresholdHU: 300,
                 connectivity: .twentySix,
                 minVoxelCount: 1,
                 constrainToBrainMask: true,
-                growBeyondROI: true)
+                growBeyondROI: true,
+                growMarginVoxels: nil)   // unlimited by default — flood the whole volume
         }
     }
 }
@@ -378,9 +395,11 @@ final class CalcificationSegmenter {
     private let depth: Int
     private let sliceStride: Int
 
-    /// Margin (voxels) the grow region extends past the box for Method B when no
-    /// brain mask is present — caps the flood so it can't wander into the skull.
-    static let growMarginVoxels = 24
+    /// Default margin (voxels) the grow region extends past the box for Method B
+    /// when no brain mask is present — caps the flood so it can't wander into the
+    /// skull. The user can override it per-region (`SegmentationParameters
+    /// .growMarginVoxels`), including `nil` for unlimited growth.
+    static let defaultGrowMarginVoxels = 24
     /// Safety cap on a single grow's voxel count (runaway Method B w/o brain mask).
     static let maxResultVoxels = 5_000_000
     /// Otsu / threshold results are never returned below soft tissue.
@@ -414,12 +433,19 @@ final class CalcificationSegmenter {
         guard !box.isEmpty else { return .empty }
 
         // The region the grow is allowed to expand into.
+        let fullVolume = VoxelBox(xRange: 0..<width, yRange: 0..<height, zRange: 0..<depth)
         let growBounds: VoxelBox
         if p.growBeyondROI {
             if p.constrainToBrainMask, brainMask != nil {
-                growBounds = VoxelBox(xRange: 0..<width, yRange: 0..<height, zRange: 0..<depth)
+                // The brain mask bounds the flood, so grow over the whole volume.
+                growBounds = fullVolume
+            } else if let margin = p.growMarginVoxels {
+                // Finite reach: box ± margin, so the flood can't wander far.
+                growBounds = box.dilated(by: margin).clamped(to: volume)
             } else {
-                growBounds = box.dilated(by: Self.growMarginVoxels).clamped(to: volume)
+                // Unlimited grow: flood the whole volume; only the safety cap
+                // (`maxResultVoxels`) stops a runaway when there's no mask.
+                growBounds = fullVolume
             }
         } else {
             growBounds = box
@@ -533,6 +559,28 @@ final class CalcificationSegmenter {
         let threshold = binCenterHU((firstBest + lastBest) / 2)
         // Never below soft tissue; never above a dense-calcification ceiling.
         return min(max(threshold, Self.softTissueFloorHU), 2000)
+    }
+
+    /// Mean HU over the box (∩ brain mask). Seeds Method B's high-confidence
+    /// threshold: the box is, by that method's contract, entirely calcification,
+    /// so its mean intensity is the natural seed level for THIS calcification
+    /// (adapts to faint vs dense deposits). Falls back to the default
+    /// calcification HU when the box has no in-brain voxels.
+    func meanHU(in rawBox: VoxelBox, constrainToBrainMask: Bool = true) -> Double {
+        let box = rawBox.clamped(to: volume)
+        guard !box.isEmpty else { return SegmentationParameters.defaultCalcificationHU }
+        var sum = 0.0
+        var n = 0
+        for z in box.zRange {
+            for y in box.yRange {
+                for x in box.xRange {
+                    if constrainToBrainMask, !inBrain(x, y, z, true) { continue }
+                    sum += hu(x, y, z)
+                    n += 1
+                }
+            }
+        }
+        return n > 0 ? sum / Double(n) : SegmentationParameters.defaultCalcificationHU
     }
 
     /// HU histogram over the box (∩ brain), for the inspector's ROI histogram.

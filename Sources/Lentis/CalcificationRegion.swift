@@ -19,6 +19,9 @@ final class CalcificationRegion: ObservableObject, Identifiable {
     @Published var color: SIMD3<Double>
     @Published var parameters: SegmentationParameters
     @Published var box: VoxelBox
+    /// Mean HU of the drawn box (Method B): the stable center of the "Seed ≥"
+    /// slider's mean±20 range. Set when the box is (re)drawn; nil before then.
+    @Published var seedMeanHU: Double? = nil
     @Published var voxelCount: Int = 0
     @Published var anatomicalName: String? = nil
     @Published var isVisible: Bool = true

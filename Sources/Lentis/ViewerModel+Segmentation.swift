@@ -112,17 +112,28 @@ extension ViewerModel {
     }
 
     /// Set the draft region's ROI box (e.g. from a drag) and refresh the preview.
-    /// Seeds Method A's threshold from Otsu over the box.
+    /// Method B seeds its high-confidence (seed) level from the box's mean HU —
+    /// the box is, by that method's contract, entirely calcification. Method A
+    /// keeps its fixed-band threshold (default 55 HU; the manual Otsu button is
+    /// still available) so the threshold doesn't jump out of its 40–100 range.
     func setActiveRegionBox(_ box: VoxelBox) {
         guard let draft = draftRegion, let vol = segmentationVolume else { return }
         let clamped = box.clamped(to: vol)
         draft.box = clamped
-        if draft.parameters.method == .thresholdInROI, let seg = makeSegmenter(), !clamped.isEmpty {
-            let t = seg.otsuThreshold(in: clamped, constrainToBrainMask: draft.parameters.constrainToBrainMask)
-            draft.parameters.lowThresholdHU = t
-            draft.parameters.highThresholdHU = t
+        if !clamped.isEmpty, draft.parameters.method == .growFromSeed, let seg = makeSegmenter() {
+            seedGrowThresholdFromBoxMean(draft, segmenter: seg)
         }
         updateActiveRegionPreview()
+    }
+
+    /// Seed Method B's high (seed) threshold from the mean HU of the draft box,
+    /// and record that mean as the stable center of the "Seed ≥" mean±20 slider.
+    /// No-op for an empty box or the threshold method.
+    private func seedGrowThresholdFromBoxMean(_ draft: CalcificationRegion, segmenter seg: CalcificationSegmenter) {
+        guard draft.parameters.method == .growFromSeed, !draft.box.isEmpty else { return }
+        let mean = seg.meanHU(in: draft.box, constrainToBrainMask: draft.parameters.constrainToBrainMask)
+        draft.seedMeanHU = mean
+        draft.parameters.highThresholdHU = mean
     }
 
     /// Build the ROI box from a drag's two raw-pixel corners on an MPR panel,
@@ -152,8 +163,9 @@ extension ViewerModel {
     /// move; the cursor's raw-pixel position fixes their new voxel value. The
     /// plane's slab (through-plane) axis is untouched, so dragging handles on
     /// axial edits i,j and on coronal/sagittal edits the depth — full 3D control.
-    /// Unlike the initial drag this does NOT re-seed Otsu, preserving the user's
-    /// threshold while they refine the box.
+    /// Method B re-seeds its seed level from the new box's mean HU (the box is
+    /// confirmed calcification, so the mean tracks its size); Method A keeps its
+    /// Otsu threshold so a refine-drag doesn't jump the threshold around.
     func resizeActiveRegionBox(gripA: BoxGrip, gripB: BoxGrip, rawPixel p: CGPoint, panel: PanelState) {
         guard panel.panelMode.isMPR, let draft = draftRegion, let vol = segmentationVolume,
               !draft.box.isEmpty, let g = panel.displayedPlaneGeometry else { return }
@@ -164,6 +176,9 @@ extension ViewerModel {
         var box = draft.box
         box.resize(plane: panel.panelMode, gripA: gripA, gripB: gripB, toVoxel: target)
         draft.box = box.clamped(to: vol)
+        if draft.parameters.method == .growFromSeed, let seg = makeSegmenter() {
+            seedGrowThresholdFromBoxMean(draft, segmenter: seg)
+        }
         updateActiveRegionPreview()
     }
 
@@ -173,9 +188,20 @@ extension ViewerModel {
         draft.parameters.method = method
         draft.parameters.growBeyondROI = (method == .growFromSeed)
         if method == .thresholdInROI {
+            // Pull a carried-over threshold into Method A's fixed 40–100 HU band.
+            let r = SegmentationParameters.thresholdHURange
+            draft.parameters.lowThresholdHU = min(max(draft.parameters.lowThresholdHU, r.lowerBound), r.upperBound)
             draft.parameters.highThresholdHU = draft.parameters.lowThresholdHU
-        } else if draft.parameters.highThresholdHU <= draft.parameters.lowThresholdHU {
-            draft.parameters.highThresholdHU = draft.parameters.lowThresholdHU + 150
+        } else {
+            // The grow boundary lives in a fixed 40–80 HU band; pull a carried-over
+            // threshold (e.g. an Otsu value from threshold mode) back into range.
+            let r = SegmentationParameters.growBoundaryHURange
+            draft.parameters.lowThresholdHU = min(max(draft.parameters.lowThresholdHU, r.lowerBound), r.upperBound)
+            // Seed the high (seed) level from the box mean if a box is drawn.
+            if let seg = makeSegmenter() { seedGrowThresholdFromBoxMean(draft, segmenter: seg) }
+            if draft.parameters.highThresholdHU <= draft.parameters.lowThresholdHU {
+                draft.parameters.highThresholdHU = draft.parameters.lowThresholdHU + 150
+            }
         }
         updateActiveRegionPreview()
     }

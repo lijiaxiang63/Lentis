@@ -204,6 +204,23 @@ final class CalcificationSegmenterTests: XCTestCase {
         XCTAssertLessThan(t, 400, "Otsu separates 40-HU tissue from 400-HU calcification")
     }
 
+    // MARK: - Mean HU (Method B seed)
+
+    func testMeanHUOverBox() {
+        let vol = makeCTVolume(40, 40, 40) { x, y, z in
+            inCube(x, y, z, 18..<23, 18..<23, 18..<23) ? 400 : nil   // 125 voxels of 400, rest 40
+        }
+        let seg = CalcificationSegmenter(volume: vol, brainMask: nil)
+        // Box exactly the calc cube → mean is the cube's HU.
+        XCTAssertEqual(seg.meanHU(in: VoxelBox(xRange: 18..<23, yRange: 18..<23, zRange: 18..<23),
+                                  constrainToBrainMask: false), 400, accuracy: 0.001)
+        // Box padded with background → mean falls between background and calc.
+        let padded = seg.meanHU(in: VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25),
+                                constrainToBrainMask: false)
+        XCTAssertGreaterThan(padded, 40)
+        XCTAssertLessThan(padded, 400)
+    }
+
     // MARK: - Method B: grow from seed past the box
 
     func testGrowFromSeedExtendsPastBox() {
@@ -226,5 +243,28 @@ final class CalcificationSegmenterTests: XCTestCase {
         thresh.constrainToBrainMask = false; thresh.minVoxelCount = 1
         XCTAssertEqual(seg.segment(in: innerBox, parameters: thresh).voxelCount, 125,
                        "threshold-in-ROI stays bounded to the box")
+    }
+
+    func testGrowReachBoundsFloodAndUnlimitedFloodsWholeBlob() {
+        // A 50-voxel-long calcification bar; the user's box sits in the middle.
+        let vol = makeCTVolume(60, 20, 20) { x, y, z in
+            (y == 10 && z == 10 && (5..<55).contains(x)) ? 400 : nil   // bar of 50
+        }
+        let seg = CalcificationSegmenter(volume: vol, brainMask: nil)
+        let box = VoxelBox(xRange: 25..<30, yRange: 10..<11, zRange: 10..<11)   // 5 seeds in the bar
+
+        var grow = SegmentationParameters.defaults(for: .growFromSeed)
+        grow.lowThresholdHU = 130; grow.highThresholdHU = 300
+        grow.constrainToBrainMask = false; grow.minVoxelCount = 1
+
+        // Finite reach bounds the flood to box ± margin (x 23..<32 ∩ the bar).
+        grow.growMarginVoxels = 2
+        XCTAssertEqual(seg.segment(in: box, parameters: grow).voxelCount, 9,
+                       "finite reach keeps the grow within box ± margin voxels")
+
+        // Unlimited reach (nil) floods the entire connected bar.
+        grow.growMarginVoxels = nil
+        XCTAssertEqual(seg.segment(in: box, parameters: grow).voxelCount, 50,
+                       "unlimited grow reaches the whole connected calcification")
     }
 }

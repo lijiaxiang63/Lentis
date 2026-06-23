@@ -236,6 +236,10 @@ private struct ActiveRegionEditor: View {
     @ObservedObject var model: ViewerModel
     @ObservedObject var draft: CalcificationRegion
 
+    /// Fixed HU range for the Method-B grow boundary ("Grow ≥") slider, tuned at
+    /// 0.1-HU precision regardless of the image histogram.
+    static let growThresholdRange = SegmentationParameters.growBoundaryHURange
+
     private var hist: (counts: [Int], minHU: Double, maxHU: Double)? {
         guard !draft.box.isEmpty, let seg = model.makeSegmenter() else { return nil }
         return seg.histogram(in: draft.box, bins: 48, constrainToBrainMask: draft.parameters.constrainToBrainMask)
@@ -256,7 +260,6 @@ private struct ActiveRegionEditor: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    let range = thresholdRange
                     if let h = hist {
                         ROIHistogramView(counts: h.counts, minHU: h.minHU, maxHU: h.maxHU,
                                          low: draft.parameters.lowThresholdHU,
@@ -266,21 +269,29 @@ private struct ActiveRegionEditor: View {
                     }
 
                     if draft.parameters.method == .growFromSeed {
-                        thresholdSlider("Seed ≥", value: bindHigh, range: range, unit: "HU")
-                        thresholdSlider("Grow ≥", value: bindLow, range: range, unit: "HU")
+                        thresholdSlider("Seed ≥", value: bindHigh, range: seedRange, unit: "HU")
+                        thresholdSlider("Grow ≥", value: bindLow, range: Self.growThresholdRange, unit: "HU", decimals: 1)
+                        growReach
                     } else {
-                        thresholdSlider("Threshold ≥", value: bindThreshold, range: range, unit: "HU")
+                        thresholdSlider("Threshold ≥", value: bindThreshold,
+                                        range: SegmentationParameters.thresholdHURange, unit: "HU", decimals: 1)
                     }
 
                     HStack {
-                        Button { otsu() } label: { Label("Otsu", systemImage: "wand.and.stars") }
+                        Button { autoSeed() } label: {
+                            Label(draft.parameters.method == .growFromSeed ? "Mean" : "Otsu",
+                                  systemImage: "wand.and.stars")
+                        }
                             .buttonStyle(.glass)
+                            .help(draft.parameters.method == .growFromSeed
+                                  ? "Re-center the seed on the box's mean HU"
+                                  : "Auto-pick the threshold (Otsu) over the box")
                         Spacer()
                         Text("\(draft.previewVoxelCount) voxels")
                             .font(.lentisReadout).foregroundStyle(.secondary)
                     }
                     if draft.previewTruncated {
-                        Label("Grow hit the safety cap — add a brain mask.", systemImage: "exclamationmark.triangle")
+                        Label("Grow hit the safety cap — add a brain mask or lower the reach.", systemImage: "exclamationmark.triangle")
                             .font(.caption2).foregroundStyle(.orange)
                     }
 
@@ -294,6 +305,44 @@ private struct ActiveRegionEditor: View {
                     Button { model.cancelActiveRegion() } label: { Text("Cancel") }
                         .buttonStyle(.glass)
                 }
+            }
+        }
+    }
+
+    // How far the grow may reach past the ROI box (Method B). A continuous
+    // slider (no `step:` — a stepped slider lays out one tick label per step,
+    // which is the documented SwiftUI layout trap) plus an Unlimited toggle that
+    // floods the whole volume. Bounded by the brain mask when one constrains it.
+    @ViewBuilder private var growReach: some View {
+        let masked = draft.parameters.constrainToBrainMask && model.hasBrainMask
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            Toggle("Unlimited grow", isOn: Binding(
+                get: { draft.parameters.growMarginVoxels == nil },
+                set: { draft.parameters.growMarginVoxels = $0 ? nil
+                            : CalcificationSegmenter.defaultGrowMarginVoxels
+                       model.updateActiveRegionPreview() }))
+                .font(.caption)
+                .disabled(masked)
+            if draft.parameters.growMarginVoxels != nil {
+                HStack {
+                    Text("Reach").font(.caption).foregroundStyle(.secondary)
+                        .frame(width: 64, alignment: .leading)
+                    Slider(value: Binding(
+                        get: { Double(draft.parameters.growMarginVoxels
+                                      ?? CalcificationSegmenter.defaultGrowMarginVoxels) },
+                        set: { draft.parameters.growMarginVoxels = max(1, Int($0.rounded()))
+                               model.updateActiveRegionPreview() }),
+                        in: 1...256)
+                        .disabled(masked)
+                    Text("\(draft.parameters.growMarginVoxels ?? 0) vox")
+                        .font(.lentisReadout).foregroundStyle(.secondary)
+                        .frame(width: 56, alignment: .trailing)
+                }
+            }
+            if masked {
+                Text("Reach is bounded by the brain mask while it constrains the grow.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -325,40 +374,56 @@ private struct ActiveRegionEditor: View {
 
     // Threshold bindings re-run the preview on every change.
     private var bindThreshold: Binding<Double> {
+        // Snap to 0.1 HU so Method A's threshold carries one decimal place.
         Binding(get: { draft.parameters.lowThresholdHU },
-                set: { draft.parameters.lowThresholdHU = $0; draft.parameters.highThresholdHU = $0
+                set: { let v = ($0 * 10).rounded() / 10
+                       draft.parameters.lowThresholdHU = v; draft.parameters.highThresholdHU = v
                        model.updateActiveRegionPreview() })
     }
     private var bindLow: Binding<Double> {
+        // Snap to 0.1 HU so the grow boundary carries one decimal place.
         Binding(get: { draft.parameters.lowThresholdHU },
-                set: { draft.parameters.lowThresholdHU = $0; model.updateActiveRegionPreview() })
+                set: { draft.parameters.lowThresholdHU = ($0 * 10).rounded() / 10
+                       model.updateActiveRegionPreview() })
     }
     private var bindHigh: Binding<Double> {
         Binding(get: { draft.parameters.highThresholdHU },
                 set: { draft.parameters.highThresholdHU = $0; model.updateActiveRegionPreview() })
     }
 
-    private var thresholdRange: ClosedRange<Double> {
-        if let h = hist, h.maxHU > h.minHU { return h.minHU...h.maxHU }
-        return -100...2000
+    /// "Seed ≥" range for Method B: the box's mean HU ± 20, since the box is
+    /// confirmed calcification. Anchored to the stable stored mean (not the live
+    /// slider value) so dragging doesn't drift the range under the thumb.
+    private var seedRange: ClosedRange<Double> {
+        let center = draft.seedMeanHU ?? draft.parameters.highThresholdHU
+        return (center - 20)...(center + 20)
     }
 
-    private func thresholdSlider(_ label: String, value: Binding<Double>, range: ClosedRange<Double>, unit: String) -> some View {
+    private func thresholdSlider(_ label: String, value: Binding<Double>, range: ClosedRange<Double>,
+                                 unit: String, decimals: Int = 0) -> some View {
         HStack {
             Text(label).font(.caption).foregroundStyle(.secondary).frame(width: 64, alignment: .leading)
             Slider(value: value, in: range)
-            Text("\(Int(value.wrappedValue)) \(unit)").font(.lentisReadout).foregroundStyle(.secondary)
+            Text("\(String(format: "%.\(decimals)f", value.wrappedValue)) \(unit)")
+                .font(.lentisReadout).foregroundStyle(.secondary)
                 .frame(width: 56, alignment: .trailing)
         }
     }
 
-    private func otsu() {
-        guard let seg = model.makeSegmenter() else { return }
-        let t = seg.otsuThreshold(in: draft.box, constrainToBrainMask: draft.parameters.constrainToBrainMask)
+    private func autoSeed() {
+        guard let seg = model.makeSegmenter(), !draft.box.isEmpty else { return }
         if draft.parameters.method == .growFromSeed {
-            draft.parameters.highThresholdHU = t
-            draft.parameters.lowThresholdHU = max(thresholdRange.lowerBound, t - 100)
+            // The box is confirmed calcification → re-center the seed on its mean
+            // HU (the mean±20 slider re-centers with it). The grow boundary stays
+            // under the user's control in its fixed 40–80 HU range.
+            let mean = seg.meanHU(in: draft.box, constrainToBrainMask: draft.parameters.constrainToBrainMask)
+            draft.seedMeanHU = mean
+            draft.parameters.highThresholdHU = mean
         } else {
+            // Clamp Otsu into the fixed 40–100 HU band so the slider stays valid.
+            let r = SegmentationParameters.thresholdHURange
+            let t = min(max(seg.otsuThreshold(in: draft.box, constrainToBrainMask: draft.parameters.constrainToBrainMask),
+                            r.lowerBound), r.upperBound)
             draft.parameters.lowThresholdHU = t
             draft.parameters.highThresholdHU = t
         }
