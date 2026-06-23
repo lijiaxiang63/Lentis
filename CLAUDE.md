@@ -804,12 +804,15 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   multi-region lifecycle, ROI-box mapping, NIfTI writer round-trip incl. write-back orientation +
   gzip, brain-constraint); a standalone E2E on a real `.nii.gz`; and exported `.nii`/`.nii.gz` read
   back correctly by **nibabel** (shape, dtype, labels/counts, zooms, sform, affine) — confirming
-  FreeSurfer/fsleyes compatibility. App builds clean and launches healthy with all Phase-9 code.
-  **Not yet done:** the by-hand interactive GUI pass (draw box → live red preview → Add → export)
-  couldn't be automated here — the window wouldn't materialize for screen capture in the headless
-  automation session (the app itself runs fine). Recommended manual check:
-  `./scripts/build_and_run.sh run --benchmark TestData/synthetic_calc.nii.gz`. **Deferred:** Metal
-  mask-texture overlay on the 3D panel; 4D-timepoint segmentation (CT is 3D).
+  FreeSurfer/fsleyes compatibility. **GUI-verified end-to-end on the real CT
+  (`sub-zdr_ses-20250312_ct.nii`, 512×512×221, real bilateral basal-ganglia calcifications):** open →
+  quad renders → ROI Box tool → drag box → draft auto-created, Segment tab auto-opened, Otsu seeded
+  (361 HU), **live red preview of 2916 voxels on all three MPR planes** → Add Region → "Calcification 1
+  · 2916 vox" in the Regions list → Export Mask → the written `.nii.gz`, re-read by **nibabel**, has
+  the **same shape + affine as the source CT** (overlays 1:1) with all labeled voxels high-HU
+  (362–1754, median 606) — i.e. the calcifications, with a few skull-edge voxels the "no brain mask"
+  warning correctly flagged. **Deferred:** Metal mask-texture overlay on the 3D panel; 4D-timepoint
+  segmentation (CT is 3D).
 
 ---
 
