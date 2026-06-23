@@ -96,13 +96,13 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:mask:…)` (CPU W/L — **Float + precomputed-reciprocal, parallelised across 8 bands** for ≥512² slices, `parallelToneMapThreshold`; RGBA composite when a mask is present). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors, cross-ref metadata, **and `maskSlice` (Phase 7 seam)** all read it. **Crosshair geometry (Phase 6):** `PlaneGeometry.world(col:row:)`/`pixel(of:)` (exact-inverse pixel↔world) + `orthogonalSliceIndex(for:containing:)` (world→slice index). (`VolumeBuilder` removed in Phase 3.) |
 | `CrossReferenceOverlay.swift` | **3D crosshair overlay (Phase 6, rewritten).** Draws two lines + center dot through `crosshair.world`'s in-plane projection, on MPR panels only; bridges raw→display pixels then reuses the image's `pixelToScreen` transform. `PanelState.displayedPlaneGeometry` helper. **Hosts `CrosshairState`** (tiny ObservableObject) and observes **it** (not the model) — so a crosshair drag invalidates only this overlay, not the whole quad (drag-lag fix). (Replaced the old `computeCrossReference` lines.) |
 | `MetalVolumeRenderer.swift` | **Phase-8 direct volume renderer.** Metal compute ray marching over a cached `.r16Sint` 3D texture; physical-spacing-aware ray/AABB geometry, window-selective transfer function, front-to-back alpha compositing, early termination, gradient lighting, W/L in stored units. 192² interactive preview / 512² final render. |
-| `CalcificationSegmenter.swift` | **Phase-9 segmentation engine** (pure). `VoxelBox` (+ `fromPlanePoints` rect→slab-box on the ONE orientation source), `SegmentationMethod`/`Connectivity`/`Parameters`, and one configurable hysteresis dual-threshold + 3D connected-component + brain-mask AND + min-size grower (`segment`), Otsu (plateau-midpoint), ROI histogram, `BrainConstraint`. Works in canonical voxel HU via `VolumeData.calibratedValue`. |
+| `CalcificationSegmenter.swift` | **Phase-9 segmentation engine** (pure). `VoxelBox` (+ `fromPlanePoints` rect→slab-box, **+ `handles(plane:sliceIndex:)`/`resize(plane:gripA:gripB:toVoxel:)`/`inPlaneAxes`/`slabAxis` for interactive 3D resize** — all on the ONE orientation source), `SegmentationMethod`/`Connectivity`/`Parameters`, and one configurable hysteresis dual-threshold + 3D connected-component + brain-mask AND + min-size grower (`segment`), Otsu (plateau-midpoint), ROI histogram, `BrainConstraint`. Works in canonical voxel HU via `VolumeData.calibratedValue`. |
 | `CalcificationRegion.swift` | One region's data model (ObservableObject): label value, name/color/visibility, `parameters`, `box` + `slabAxis`, voxel/anatomical name. |
 | `ViewerModel+Segmentation.swift` | **Multi-region orchestration.** Region lifecycle (begin/setBox/preview/commit/cancel/delete/re-edit), per-label color table for `loadMPRSlice`, touch-up `paintBrush`, brain-mask load + SynthSeg drive, mask/atlas export. Editable mask = `VolumeData.labelMask` (1…254 = regions, 255 = transient preview); all mask writes on main, then bump `segmentationRevision` + re-render (sync contract). |
 | `SegmentationBoxOverlay.swift` | Draws the draft box's cross-section + corner markers on each intersecting MPR plane, reusing the `CrossReferenceOverlay` pixel→screen transform. 3D excluded. |
 | `SegmentInspectorView.swift` | Segment tab of the trailing inspector: Brain Mask, Active Region (method, ROI histogram, threshold sliders, Otsu, connectivity/min-size/slab, live preview, Add/Cancel), Regions list (recolor/rename/re-edit/delete/brush), Export Mask…/Atlas…. |
 | `NiftiWriter.swift` | **NIfTI-1 writer** (the reader is decode-only). Header serialize (offsets match `parseHeader`), UInt8/UInt16/Int32 voxel encode, **write-back to the original input grid** via `reorientation`+`originalAffine`, gzip (Compression raw DEFLATE wrapped in an RFC-1952 container + CRC32) read by the pure-Swift inflater, `writeVolume` (gray CT for SynthSeg), FreeSurfer LUT sidecar. |
-| `SynthSegRunner.swift` | Runs FreeSurfer `mri_synthseg --parc --robust` via `Foundation.Process` (off-main, streamed progress, cancel). Locates the binary ($FREESURFER_HOME/bin → PATH → /Applications/freesurfer/<ver>/bin → user override) and sets the child's FreeSurfer env so it works when launched from Finder. |
+| `SynthSegRunner.swift` | Runs FreeSurfer `mri_synthseg --parc --robust --ct --cpu --threads 1` via `Foundation.Process` (off-main, streamed progress, cancel). Locates the binary ($FREESURFER_HOME/bin → PATH → /Applications/freesurfer/<ver>/bin → user override) and sets a **clean** child env (writable HOME/TMPDIR, strips toxic inherited `PYTHON*`/`CONDA*`) so it works when launched from Finder. Reports **signal-vs-exit** (`status 6` = SIGABRT, a TF abort) and surfaces the captured stderr tail. |
 | `MultiPanelContainer.swift` (~1960 lines) | Multi-panel views + gestures. MPR panels keep pixel-bound orientation/crosshair/annotation/scroller overlays. Cursor tracking maps aspect-corrected display pixels back to raw slice pixels before HU lookup and then uses the panel geometry + cached volume affine to publish canonical voxel `x,y,z` for the status bar. **Phase 8:** Select-drag on `.volume3D` is a 60 Hz coalesced trackball-style yaw/pitch camera; it derives motion from absolute cursor-position differences (not unreliable `NSEvent.deltaX/Y`), and mouse-up settles at full quality. 3D deliberately hides 2D overlays, cursor sampling, and slice scroller. |
 | `ViewerToolbar.swift` | **Native macOS Liquid Glass toolbar** (UI redesign; replaced the docked `ViewerControlBar`). `ToolbarContent` attached via `.toolbar` on the `NavigationSplitView` detail — the chrome gets glass/overflow/customization for free. Leading: layout segmented `Picker` + MPR + sync/crosshair toggles. Trailing: per-active-panel cluster (plane `Picker`, `ModalityBadge`, a W/L popover with histogram + presets/Auto, a transform menu) and the 4D stepper. Per-panel sub-views observe the panel (async image arrival). 3D density lives in a popover (the no-`step:` slider is preserved). **The inspector show/hide toggle is intentionally NOT declared here** — to keep it pinned to the window's top-right corner above the inspector, `ContentView` owns the closed-state Show button and `LayerInspectorView` owns the open-state Hide button; keeping it out of this nested `ToolbarContent` also avoids stale re-evaluation and duplicate drawer buttons. |
 | `ViewerStatusBar.swift` | **Floating Liquid Glass status pill** (UI redesign; was a docked bar). Content-sized capsule anchored bottom-leading over the viewport, non-interactive (`allowsHitTesting(false)`), shown only once a file is open. Active-panel readout once (file · slice · `WL/WW` +`HU` for CT); cursor readout (RAS mm / value / canonical voxel `px`) follows the hovered panel via `ForEach(model.panels)` of `StatusBarCursorInfo` — both observe their `@ObservedObject panel`. |
@@ -804,7 +804,44 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   multi-region lifecycle, ROI-box mapping, NIfTI writer round-trip incl. write-back orientation +
   gzip, brain-constraint); a standalone E2E on a real `.nii.gz`; and exported `.nii`/`.nii.gz` read
   back correctly by **nibabel** (shape, dtype, labels/counts, zooms, sform, affine) — confirming
-  FreeSurfer/fsleyes compatibility. **GUI-verified end-to-end on the real CT
+  FreeSurfer/fsleyes compatibility.
+  - **Follow-up (2026-06-23) — resizable ROI box + SynthSeg crash hardening.**
+    **(1) ROI box is now draggable-to-resize in 3D.** After drawing, the draft box shows 8 grab
+    handles (4 corners + 4 edge mids) on every MPR plane it intersects (`SegmentationBoxOverlay`).
+    Dragging a handle on **axial** resizes the in-plane i,j extent; dragging on **coronal/sagittal**
+    resizes the through-plane depth (coronal edits i,k; sagittal edits j,k) — the slab axis for the
+    dragged plane is left untouched, so the box is fully reshapeable in 3D from any view. The pure
+    geometry (`VoxelBox.handles(plane:sliceIndex:)` + `resize(plane:gripA:gripB:toVoxel:)` +
+    `inPlaneAxes`/`slabAxis`) is in `CalcificationSegmenter` and locked by
+    `SegmentationBoxResizeTests` (8 tests). Hit-testing (`roiHandleGrip` in `MultiPanelContainer`)
+    and the overlay both project handles through ONE shared forward transform,
+    `PanelState.viewPoint(forRawPixel:viewSize:)` (the inverse of `screenToPixel`), so grab targets
+    can't drift from the drawn dots under zoom/pan/rotate/flip. Empty-space drag still draws a new box
+    (replace); handle drag resizes. On draw, the other MPR panels relocate to the box center
+    (`setCrosshair`) so handles are immediately visible on coronal/sagittal. Resize re-runs the
+    bounded preview but does **not** re-seed Otsu (preserves the user's threshold). **The Slab
+    slider was removed** — a freshly drawn box gets a fixed initial through-plane thickness
+    (`ViewerModel.calcSlabDepth = 5`, now a constant) and depth is refined via the handles;
+    `setActiveRegionSlabDepth` + `CalcificationRegion.slabAxis` were deleted as dead.
+    **(2) SynthSeg "exited with status 6" → diagnosed + hardened.** Status 6 is **SIGABRT** (a
+    TensorFlow/Apple-Silicon abort), NOT a clean exit — the `mri_synthseg` Python script only ever
+    `sys.exit(1)`. Confirmed by reproduction: the CLI succeeds (exit 0) on both the original CT and
+    the app's *exact* `NiftiWriter.writeVolume` output with `--parc --robust`, and even under the
+    app's minimal env-derivation + a sparse launchd-style env — so the abort is specific to the GUI
+    launch context (not reproducible headlessly). `SynthSegRunner` now: passes **`--ct`** (the
+    documented correct CT mode, clips HU to [0,80]) since the segmentation volume is always a brain
+    CT; pins **`--cpu --threads 1`**; provides a clean complete environment (guarantees writable
+    `HOME`/`TMPDIR`, strips toxic inherited `PYTHONHOME`/`PYTHONPATH`/`VIRTUAL_ENV`/`CONDA_*` that
+    hijack fspython, sets `TF_CPP_MIN_LOG_LEVEL`/`OMP_NUM_THREADS`); and **distinguishes signal-vs-exit**
+    (`SynthSegError.aborted(signal:tail:)` names SIGABRT/SIGILL/etc.) while surfacing the captured
+    stderr **tail** so the real abort message is shown instead of "status 6". The new arg combo
+    (`--parc --robust --ct --cpu --threads 1`) was verified to still produce a valid parcellation on
+    the real CT. The `cancelled` flag and output tail are lock-guarded (read from the termination
+    queue). **Not GUI-verified** (the live drag can't be reliably driven by synthetic events, and
+    ScreenCaptureKit was failing in the verify environment); correctness of the resize is held by the
+    unit tests + the shared-transform construction, and the SynthSeg path by the CLI repro — the next
+    real GUI run will now show the actual crash cause if it still aborts. **159 tests green.**
+  - **GUI-verified end-to-end on the real CT
   (`sub-zdr_ses-20250312_ct.nii`, 512×512×221, real bilateral basal-ganglia calcifications):** open →
   quad renders → ROI Box tool → drag box → draft auto-created, Segment tab auto-opened, Otsu seeded
   (361 HU), **live red preview of 2916 voxels on all three MPR planes** → Add Region → "Calcification 1

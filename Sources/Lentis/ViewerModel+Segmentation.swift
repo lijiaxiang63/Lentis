@@ -126,9 +126,10 @@ extension ViewerModel {
     }
 
     /// Build the ROI box from a drag's two raw-pixel corners on an MPR panel,
-    /// using the panel's plane geometry + the slab depth. Auto-creates a draft
-    /// region (threshold method) if none is in progress, so dragging the ROI Box
-    /// tool just works.
+    /// using the panel's plane geometry + a fixed initial through-plane thickness
+    /// (`calcSlabDepth`); the user then refines the depth by dragging the box's
+    /// handles on coronal/sagittal. Auto-creates a draft region (threshold method)
+    /// if none is in progress, so dragging the ROI Box tool just works.
     func setActiveRegionBox(fromRawCornerA a: CGPoint, cornerB b: CGPoint, panel: PanelState) {
         guard panel.panelMode.isMPR, let vol = segmentationVolume,
               let g = panel.displayedPlaneGeometry else { return }
@@ -138,29 +139,30 @@ extension ViewerModel {
                                                     mode: panel.panelMode,
                                                     sliceIndex: panel.mprSliceIndex,
                                                     slabDepth: calcSlabDepth) else { return }
-        draft.slabAxis = result.slabAxis
         setActiveRegionBox(result.box)
+        // Relocate the OTHER MPR panels onto the box so its cross-section + resize
+        // handles are immediately visible there — letting the user refine the 3D
+        // extent (depth) from coronal/sagittal without first scrolling to find it.
+        let c = draft.box.centerVoxel
+        setCrosshair(vol.voxelToWorld(SIMD3(Double(c.x), Double(c.y), Double(c.z))), from: panel)
     }
 
-    /// Re-extend the draft box's slab axis to the new depth (centered) and
-    /// refresh the preview.
-    func setActiveRegionSlabDepth(_ depth: Int) {
-        calcSlabDepth = max(1, depth)
-        guard let draft = draftRegion, let vol = segmentationVolume, !draft.box.isEmpty else { return }
-        let half = max(0, calcSlabDepth / 2)
-        let axis = draft.slabAxis
+    /// Resize the draft box by dragging one of its handles on an MPR panel.
+    /// `gripA`/`gripB` (from the grabbed `BoxHandle`) say which in-plane bounds
+    /// move; the cursor's raw-pixel position fixes their new voxel value. The
+    /// plane's slab (through-plane) axis is untouched, so dragging handles on
+    /// axial edits i,j and on coronal/sagittal edits the depth — full 3D control.
+    /// Unlike the initial drag this does NOT re-seed Otsu, preserving the user's
+    /// threshold while they refine the box.
+    func resizeActiveRegionBox(gripA: BoxGrip, gripB: BoxGrip, rawPixel p: CGPoint, panel: PanelState) {
+        guard panel.panelMode.isMPR, let draft = draftRegion, let vol = segmentationVolume,
+              !draft.box.isEmpty, let g = panel.displayedPlaneGeometry else { return }
+        let world = g.world(col: Double(p.x), row: Double(p.y))
+        let v = vol.worldToVoxel(world)
+        guard v.x.isFinite, v.y.isFinite, v.z.isFinite else { return }
+        let target = SIMD3<Int>(Int(v.x.rounded()), Int(v.y.rounded()), Int(v.z.rounded()))
         var box = draft.box
-        switch axis {
-        case 0:
-            let c = (box.xRange.lowerBound + box.xRange.upperBound) / 2
-            box.xRange = (c - half)..<(c + half + 1)
-        case 1:
-            let c = (box.yRange.lowerBound + box.yRange.upperBound) / 2
-            box.yRange = (c - half)..<(c + half + 1)
-        default:
-            let c = (box.zRange.lowerBound + box.zRange.upperBound) / 2
-            box.zRange = (c - half)..<(c + half + 1)
-        }
+        box.resize(plane: panel.panelMode, gripA: gripA, gripB: gripB, toVoxel: target)
         draft.box = box.clamped(to: vol)
         updateActiveRegionPreview()
     }
@@ -388,8 +390,11 @@ extension ViewerModel {
             }
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.synthSegStatus = "Running SynthSeg… (this takes minutes)"
+                self.synthSegStatus = "Running SynthSeg on CPU… (this takes several minutes)"
+                // The segmentation volume is always a brain CT here → pass --ct
+                // (clip HU to [0,80]) for correct CT handling.
                 runner.run(inputURL: inputURL, outputURL: outputURL, parcellation: true, robust: true,
+                           ct: true,
                            userOverride: override,
                            progress: { [weak self] chunk in
                                if let s = SynthSegRunner.briefStatus(chunk) { self?.synthSegStatus = s }

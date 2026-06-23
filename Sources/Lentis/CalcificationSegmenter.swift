@@ -87,6 +87,26 @@ struct VoxelBox: Equatable, Codable {
          (yRange.lowerBound + yRange.upperBound) / 2,
          (zRange.lowerBound + zRange.upperBound) / 2)
     }
+
+    // MARK: - Per-axis access (for interactive resize)
+
+    /// Inclusive lower bound on a voxel axis (0=i,1=j,2=k).
+    func lowerInclusive(axis: Int) -> Int {
+        switch axis { case 0: return xRange.lowerBound; case 1: return yRange.lowerBound; default: return zRange.lowerBound }
+    }
+    /// Inclusive upper bound on a voxel axis (upperBound − 1).
+    func upperInclusive(axis: Int) -> Int {
+        switch axis { case 0: return xRange.upperBound - 1; case 1: return yRange.upperBound - 1; default: return zRange.upperBound - 1 }
+    }
+    /// Continuous center coordinate on a voxel axis.
+    func center(axis: Int) -> Double {
+        Double(lowerInclusive(axis: axis) + upperInclusive(axis: axis)) / 2
+    }
+    /// Set a voxel axis to span the inclusive `[a,b]` (either order).
+    mutating func setSpan(axis: Int, _ a: Int, _ b: Int) {
+        let r = min(a, b)..<(max(a, b) + 1)
+        switch axis { case 0: xRange = r; case 1: yRange = r; default: zRange = r }
+    }
 }
 
 private func clampRange(_ r: Range<Int>, _ lo: Int, _ hi: Int) -> Range<Int> {
@@ -127,6 +147,89 @@ extension VoxelBox {
         default: return nil
         }
         return (box.clamped(to: volume), slabAxis)
+    }
+}
+
+// MARK: - Interactive resize handles
+
+/// Which bound of one in-plane axis a resize handle moves while dragging.
+enum BoxGrip: Equatable { case lower, upper, fixed }
+
+/// A draggable resize handle of a box's in-plane cross-section: which bound of
+/// each in-plane axis it moves, plus the continuous voxel coordinate where it is
+/// drawn (mapped to screen by the caller through the ONE orientation source).
+struct BoxHandle: Equatable {
+    let gripA: BoxGrip      // for the plane's first in-plane voxel axis
+    let gripB: BoxGrip      // for the plane's second in-plane voxel axis
+    let voxel: SIMD3<Double>
+}
+
+extension VoxelBox {
+    /// The voxel axis that is the slab (through-plane) for an MPR plane:
+    /// axial→k(2), sagittal→i(0), coronal→j(1). nil for non-orthogonal modes.
+    static func slabAxis(forPlane mode: PanelMode) -> Int? {
+        switch mode {
+        case .mprAxial: return 2
+        case .mprSagittal: return 0
+        case .mprCoronal: return 1
+        default: return nil
+        }
+    }
+
+    /// The two in-plane voxel axes (the non-slab axes) for an MPR plane, in
+    /// ascending order. axial→(i,j), sagittal→(j,k), coronal→(i,k).
+    static func inPlaneAxes(forPlane mode: PanelMode) -> (Int, Int)? {
+        guard let slab = slabAxis(forPlane: mode) else { return nil }
+        let axes = [0, 1, 2].filter { $0 != slab }
+        return (axes[0], axes[1])
+    }
+
+    /// The 8 resize handles (4 corners + 4 edge midpoints) of this box's
+    /// cross-section on `mode` at `sliceIndex`, as continuous voxel coordinates.
+    /// Returns [] if the box doesn't intersect the slice. Pure — drawn by the
+    /// overlay and hit-tested by the gesture layer from this single definition.
+    func handles(plane mode: PanelMode, sliceIndex: Int) -> [BoxHandle] {
+        guard !isEmpty, let slab = Self.slabAxis(forPlane: mode),
+              let (axisA, axisB) = Self.inPlaneAxes(forPlane: mode) else { return [] }
+        let slabRange = [xRange, yRange, zRange][slab]
+        guard slabRange.contains(sliceIndex) else { return [] }
+
+        let loA = Double(lowerInclusive(axis: axisA)), upA = Double(upperInclusive(axis: axisA)), midA = center(axis: axisA)
+        let loB = Double(lowerInclusive(axis: axisB)), upB = Double(upperInclusive(axis: axisB)), midB = center(axis: axisB)
+        let slabVal = Double(sliceIndex)
+
+        func vox(_ a: Double, _ b: Double) -> SIMD3<Double> {
+            var arr = [0.0, 0.0, 0.0]
+            arr[axisA] = a; arr[axisB] = b; arr[slab] = slabVal
+            return SIMD3(arr[0], arr[1], arr[2])
+        }
+        // (gripA, gripB, aVal, bVal)
+        let specs: [(BoxGrip, BoxGrip, Double, Double)] = [
+            (.lower, .lower, loA, loB), (.upper, .lower, upA, loB),
+            (.lower, .upper, loA, upB), (.upper, .upper, upA, upB),   // corners
+            (.lower, .fixed, loA, midB), (.upper, .fixed, upA, midB),  // vertical-edge mids
+            (.fixed, .lower, midA, loB), (.fixed, .upper, midA, upB),  // horizontal-edge mids
+        ]
+        return specs.map { BoxHandle(gripA: $0.0, gripB: $0.1, voxel: vox($0.2, $0.3)) }
+    }
+
+    /// Move this box's in-plane bounds for `mode` so the handle described by
+    /// (`gripA`,`gripB`) is dragged to voxel coordinate `target`. The slab
+    /// (through-plane) axis is left untouched, so resizing on axial edits i,j;
+    /// coronal edits i,k; sagittal edits j,k — giving full 3D control.
+    mutating func resize(plane mode: PanelMode, gripA: BoxGrip, gripB: BoxGrip,
+                         toVoxel target: SIMD3<Int>) {
+        guard let (axisA, axisB) = Self.inPlaneAxes(forPlane: mode) else { return }
+        applyGrip(gripA, axis: axisA, target: target[axisA])
+        applyGrip(gripB, axis: axisB, target: target[axisB])
+    }
+
+    private mutating func applyGrip(_ grip: BoxGrip, axis: Int, target: Int) {
+        switch grip {
+        case .fixed: break
+        case .lower: setSpan(axis: axis, target, upperInclusive(axis: axis))
+        case .upper: setSpan(axis: axis, lowerInclusive(axis: axis), target)
+        }
     }
 }
 

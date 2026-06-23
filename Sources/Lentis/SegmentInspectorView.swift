@@ -252,7 +252,7 @@ private struct ActiveRegionEditor: View {
                 .pickerStyle(.segmented)
 
                 if draft.box.isEmpty {
-                    Text("Drag a box around the calcification on any plane.")
+                    Text("Drag a box around the calcification on any plane, then drag its handles (on axial, coronal, or sagittal) to resize it in 3D.")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
@@ -300,14 +300,6 @@ private struct ActiveRegionEditor: View {
 
     private var options: some View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
-            HStack {
-                Text("Slab").font(.caption).foregroundStyle(.secondary)
-                Slider(value: Binding(get: { Double(model.calcSlabDepth) },
-                                      set: { model.setActiveRegionSlabDepth(Int($0.rounded())) }),
-                       in: 1...41)
-                Text("\(model.calcSlabDepth)").font(.lentisReadout).foregroundStyle(.secondary)
-                    .frame(width: 22, alignment: .trailing)
-            }
             HStack {
                 Text("Min size").font(.caption).foregroundStyle(.secondary)
                 Stepper(value: Binding(get: { draft.parameters.minVoxelCount },

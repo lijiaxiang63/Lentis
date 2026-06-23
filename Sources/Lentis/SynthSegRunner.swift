@@ -21,7 +21,9 @@ import Foundation
 enum SynthSegError: LocalizedError {
     case notFound
     case launchFailed(String)
-    case nonZeroExit(Int32)
+    case nonZeroExit(Int32, tail: String)
+    /// The child was killed by a signal (e.g. SIGABRT=6 from a TensorFlow abort).
+    case aborted(signal: Int32, tail: String)
     case cancelled
     case outputMissing
 
@@ -30,9 +32,30 @@ enum SynthSegError: LocalizedError {
         case .notFound:
             return "mri_synthseg not found. Set $FREESURFER_HOME, or choose the binary."
         case .launchFailed(let m): return "Could not launch SynthSeg: \(m)"
-        case .nonZeroExit(let c): return "SynthSeg exited with status \(c)."
+        case .nonZeroExit(let c, let tail):
+            return "SynthSeg exited with status \(c)." + Self.tailSuffix(tail)
+        case .aborted(let sig, let tail):
+            let name = Self.signalName(sig)
+            return "SynthSeg crashed (signal \(sig)\(name.map { " · \($0)" } ?? "")). "
+                + "This is usually a TensorFlow/Apple-Silicon abort — try updating FreeSurfer "
+                + "(fs8.2 SynthSeg darwin_arm64 update)." + Self.tailSuffix(tail)
         case .cancelled: return "SynthSeg was cancelled."
         case .outputMissing: return "SynthSeg finished but produced no output."
+        }
+    }
+
+    private static func tailSuffix(_ tail: String) -> String {
+        let t = tail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "" : "\n\n\(t)"
+    }
+
+    private static func signalName(_ sig: Int32) -> String? {
+        switch sig {
+        case 4: return "SIGILL (illegal instruction)"
+        case 6: return "SIGABRT (abort)"
+        case 9: return "SIGKILL (likely out of memory)"
+        case 11: return "SIGSEGV (segfault)"
+        default: return nil
         }
     }
 }
@@ -42,6 +65,12 @@ final class SynthSegRunner {
 
     private var process: Process?
     private var cancelled = false
+    /// Rolling tail of the child's combined stdout/stderr, surfaced on failure
+    /// so a TensorFlow abort (SIGABRT) is diagnosable instead of "status 6".
+    /// Touched from the pipe's readability queue and the termination handler, so
+    /// guard it with a lock.
+    private var outputTail = ""
+    private let tailLock = NSLock()
 
     // MARK: - Locating the binary
 
@@ -84,37 +113,57 @@ final class SynthSegRunner {
 
     /// Launch SynthSeg. `progress` receives streamed stdout/stderr text on the
     /// main queue; `completion` fires on the main queue. Non-blocking.
+    ///
+    /// `ct` adds `--ct` (clip Hounsfield to [0,80]) — the documented correct way
+    /// to run SynthSeg on a CT, which the loaded brain CT always is here. The run
+    /// is pinned to CPU (`--cpu`, single-threaded) because the FreeSurfer 8.1
+    /// Apple-Silicon TensorFlow aborts with SIGABRT (reported by the app as
+    /// "status 6") when the GPU/Metal path initializes under a GUI-launched
+    /// process; CPU inference is slower but does not abort.
     func run(inputURL: URL, outputURL: URL, parcellation: Bool, robust: Bool,
+             ct: Bool = false, threads: Int = 1,
              userOverride: URL? = nil,
              progress: @escaping (String) -> Void,
              completion: @escaping (Result<URL, SynthSegError>) -> Void) {
         guard let binary = SynthSegRunner.locate(userOverride: userOverride) else {
             completion(.failure(.notFound)); return
         }
-        cancelled = false
+        setCancelled(false)
+        tailLock.lock(); outputTail = ""; tailLock.unlock()
         let process = Process()
         process.executableURL = binary
         var args = ["--i", inputURL.path, "--o", outputURL.path]
         if parcellation { args.append("--parc") }
         if robust { args.append("--robust") }
+        if ct { args.append("--ct") }
+        args.append(contentsOf: ["--cpu", "--threads", String(max(1, threads))])
         process.arguments = args
         process.environment = SynthSegRunner.environment(for: binary)
 
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-        pipe.fileHandleForReading.readabilityHandler = { handle in
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+            self?.appendTail(text)
             DispatchQueue.main.async { progress(text) }
         }
-        process.terminationHandler = { proc in
+        process.terminationHandler = { [weak self] proc in
             pipe.fileHandleForReading.readabilityHandler = nil
+            // Drain anything buffered after the last readability callback.
+            if let rest = try? pipe.fileHandleForReading.readToEnd(),
+               !rest.isEmpty, let text = String(data: rest, encoding: .utf8) {
+                self?.appendTail(text)
+            }
             let status = proc.terminationStatus
-            let cancelled = self.cancelled
+            let bySignal = proc.terminationReason == .uncaughtSignal
+            let cancelled = self?.isCancelled ?? false
+            let tail = self?.readTail() ?? ""
             DispatchQueue.main.async {
                 if cancelled { completion(.failure(.cancelled)) }
-                else if status != 0 { completion(.failure(.nonZeroExit(status))) }
+                else if bySignal { completion(.failure(.aborted(signal: status, tail: tail))) }
+                else if status != 0 { completion(.failure(.nonZeroExit(status, tail: tail))) }
                 else if !FileManager.default.fileExists(atPath: outputURL.path) { completion(.failure(.outputMissing)) }
                 else { completion(.success(outputURL)) }
             }
@@ -125,12 +174,38 @@ final class SynthSegRunner {
     }
 
     func cancel() {
-        cancelled = true
+        setCancelled(true)
         process?.terminate()
+    }
+
+    // `cancelled` is written from the caller (main) and read from the process
+    // termination queue, so guard it with the same lock as the output tail.
+    private func setCancelled(_ v: Bool) { tailLock.lock(); cancelled = v; tailLock.unlock() }
+    private var isCancelled: Bool { tailLock.lock(); defer { tailLock.unlock() }; return cancelled }
+
+    /// Keep the last ~4 KB of combined output so a crash can be explained.
+    private func appendTail(_ text: String) {
+        tailLock.lock(); defer { tailLock.unlock() }
+        outputTail += text
+        if outputTail.count > 4096 { outputTail = String(outputTail.suffix(4096)) }
+    }
+
+    private func readTail() -> String {
+        tailLock.lock(); defer { tailLock.unlock() }
+        return outputTail
     }
 
     /// Environment for the child: FreeSurfer wants FREESURFER_HOME set and its
     /// bin on PATH. Derive FREESURFER_HOME from the binary (.../<home>/bin/...).
+    ///
+    /// Robustness for GUI launches: a Finder/`open`-launched app inherits a sparse
+    /// environment, while a dev (`swift run`) launch can inherit a *toxic* one
+    /// (a conda `PYTHONHOME`/`PYTHONPATH`/`VIRTUAL_ENV` that hijacks fspython's
+    /// interpreter — observed to make fspython exit 1 with a "Python path
+    /// configuration" error). The fspython wrapper sets its own `PYTHONPATH`/
+    /// `PYTHONHOME`, so we strip any inherited Python interpreter vars, and we
+    /// guarantee a writable `HOME`/`TMPDIR` (TensorFlow/Keras write scratch and
+    /// `~/.keras`; a missing/unwritable HOME is another abort source).
     private static func environment(for binary: URL) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         let home = binary.deletingLastPathComponent().deletingLastPathComponent().path
@@ -140,6 +215,25 @@ final class SynthSegRunner {
         if !existing.contains(fsBin) { env["PATH"] = "\(fsBin):/usr/local/bin:/usr/bin:/bin:" + existing }
         if env["SUBJECTS_DIR"] == nil { env["SUBJECTS_DIR"] = home + "/subjects" }
         env["PYTHONUNBUFFERED"] = "1"
+
+        // Don't let an inherited Python environment hijack fspython.
+        for key in ["PYTHONHOME", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONEXECUTABLE",
+                    "VIRTUAL_ENV", "CONDA_PREFIX", "CONDA_DEFAULT_ENV"] {
+            env.removeValue(forKey: key)
+        }
+        // Quiet TensorFlow + keep BLAS single-threaded (matches --threads 1; a
+        // mismatched thread pool is a known macOS-arm64 abort trigger).
+        env["TF_CPP_MIN_LOG_LEVEL"] = env["TF_CPP_MIN_LOG_LEVEL"] ?? "3"
+        env["OMP_NUM_THREADS"] = env["OMP_NUM_THREADS"] ?? "1"
+
+        // Guarantee a usable HOME + TMPDIR (sparse GUI env may lack them).
+        let fm = FileManager.default
+        if (env["HOME"].map { !fm.isWritableFile(atPath: $0) } ?? true) {
+            env["HOME"] = NSHomeDirectory()
+        }
+        if (env["TMPDIR"].map { !fm.isWritableFile(atPath: $0) } ?? true) {
+            env["TMPDIR"] = NSTemporaryDirectory()
+        }
         return env
     }
 

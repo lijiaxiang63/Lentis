@@ -19,9 +19,6 @@ final class CalcificationRegion: ObservableObject, Identifiable {
     @Published var color: SIMD3<Double>
     @Published var parameters: SegmentationParameters
     @Published var box: VoxelBox
-    /// Which voxel axis (0=i,1=j,2=k) is the box's slab (the plane it was drawn
-    /// on), so the slab-depth slider re-extends the right axis.
-    @Published var slabAxis: Int = 2
     @Published var voxelCount: Int = 0
     @Published var anatomicalName: String? = nil
     @Published var isVisible: Bool = true

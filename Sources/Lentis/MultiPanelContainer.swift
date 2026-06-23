@@ -315,6 +315,9 @@ struct PanelInteractiveImageView: NSViewRepresentable {
         private var lastDragLocation: NSPoint?
         private var scrollAccumulator: CGFloat = 0.0
         private var roiStartPixel: CGPoint?  // ROI drag start in pixel coords
+        // When a roiBox drag began on a resize handle, which in-plane bounds it
+        // moves (nil = the drag is drawing a new box, the legacy behavior).
+        private var roiResizeGrip: (BoxGrip, BoxGrip)?
         private var isCrosshairCursorActive: Bool = false
         private var wlPendingDeltaWidth: Double = 0
         private var wlPendingDeltaCenter: Double = 0
@@ -752,6 +755,33 @@ struct PanelInteractiveImageView: NSViewRepresentable {
             return (Int(v.x.rounded()), Int(v.y.rounded()), Int(v.z.rounded()))
         }
 
+        /// If `event` is within grab distance of one of the draft box's resize
+        /// handles on this plane, return which in-plane bounds that handle moves.
+        /// Handle screen positions use the SAME forward transform the overlay
+        /// draws with (`panel.viewPoint(forRawPixel:)`), so the grab targets line
+        /// up with the drawn dots under any zoom/pan/rotate/flip.
+        private func roiHandleGrip(at event: NSEvent) -> (BoxGrip, BoxGrip)? {
+            guard let model = model, let panel = panel, panel.panelMode.isMPR,
+                  let draft = model.draftRegion, !draft.box.isEmpty,
+                  let g = panel.displayedPlaneGeometry,
+                  let vol = model.segmentationVolume else { return nil }
+            let handles = draft.box.handles(plane: panel.panelMode, sliceIndex: panel.mprSliceIndex)
+            guard !handles.isEmpty else { return nil }
+            let loc = convert(event.locationInWindow, from: nil)
+            // viewPoint returns top-left/y-down coords; NSView is y-up.
+            let cursor = CGPoint(x: loc.x, y: bounds.height - loc.y)
+            let threshold: CGFloat = 12
+            var best: (BoxGrip, BoxGrip)?
+            var bestDist = threshold
+            for h in handles {
+                let raw = g.pixel(of: vol.voxelToWorld(h.voxel))
+                let pt = panel.viewPoint(forRawPixel: raw, viewSize: bounds.size)
+                let d = hypot(pt.x - cursor.x, pt.y - cursor.y)
+                if d < bestDist { bestDist = d; best = (h.gripA, h.gripB) }
+            }
+            return best
+        }
+
         override func mouseDown(with event: NSEvent) {
             // Shift+click: toggle group selection via overlay
             if event.modifierFlags.contains(.shift), let panel = panel, let model = model, model.panels.count > 1 {
@@ -892,11 +922,17 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 }
 
             case .roiBox:
-                // Start an in-plane ROI rect (display pixels); finalized into a
-                // 3D slab box on mouseUp. The live rect is drawn by ROIOverlay.
-                if panel.panelMode.isMPR, let px = screenToPixel(event) {
-                    roiStartPixel = px
-                    panel.roiRect = CGRect(x: px.x, y: px.y, width: 0, height: 0)
+                // If the click grabbed a resize handle of the existing draft box,
+                // begin a resize drag; otherwise start a new in-plane rect
+                // (finalized into a 3D slab box on mouseUp; drawn by ROIOverlay).
+                roiResizeGrip = nil
+                if panel.panelMode.isMPR {
+                    if let grip = roiHandleGrip(at: event) {
+                        roiResizeGrip = grip
+                    } else if let px = screenToPixel(event) {
+                        roiStartPixel = px
+                        panel.roiRect = CGRect(x: px.x, y: px.y, width: 0, height: 0)
+                    }
                 }
 
             case .calcBrush:
@@ -1202,7 +1238,13 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 }
 
             case .roiBox:
-                if let start = roiStartPixel, let current = screenToPixel(event) {
+                if let grip = roiResizeGrip {
+                    // Live-resize the draft box by the grabbed handle.
+                    if let disp = screenToPixel(event) {
+                        let raw = rawPixel(fromDisplayPixel: disp, panel: panel)
+                        model.resizeActiveRegionBox(gripA: grip.0, gripB: grip.1, rawPixel: raw, panel: panel)
+                    }
+                } else if let start = roiStartPixel, let current = screenToPixel(event) {
                     let x = min(start.x, current.x)
                     let y = min(start.y, current.y)
                     let w = abs(current.x - start.x)
@@ -1262,9 +1304,12 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 lastDragLocation = nil
 
             case .roiBox:
-                // Finalize the in-plane rect into a 3D slab box (raw pixels →
-                // plane geometry → voxel) and drive the segmentation preview.
-                if let start = roiStartPixel {
+                if roiResizeGrip != nil {
+                    // The box was updated live during the drag; nothing to finalize.
+                    roiResizeGrip = nil
+                } else if let start = roiStartPixel {
+                    // Finalize the in-plane rect into a 3D slab box (raw pixels →
+                    // plane geometry → voxel) and drive the segmentation preview.
                     let endDisplay = screenToPixel(event) ?? start
                     let rawA = rawPixel(fromDisplayPixel: start, panel: panel)
                     let rawB = rawPixel(fromDisplayPixel: endDisplay, panel: panel)

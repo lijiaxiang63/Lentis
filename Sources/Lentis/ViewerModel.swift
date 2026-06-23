@@ -265,8 +265,10 @@ class ViewerModel: ObservableObject {
     /// Touch-up brush state (manual voxel edit of the selected region).
     @Published var calcBrushRadius: Int = 2
     @Published var calcBrushErase: Bool = false
-    /// Slab depth (slices) of a drawn ROI box, along the plane it's drawn on.
-    @Published var calcSlabDepth: Int = 5
+    /// Fixed initial through-plane thickness (slices) a freshly drawn ROI box
+    /// gets along the plane it's drawn on. The user then refines the depth by
+    /// dragging the box's handles on coronal/sagittal (there is no slab slider).
+    let calcSlabDepth: Int = 5
     /// Bumped on every segmentation mask edit; `loadMPRSlice` drops in-flight
     /// renders that predate the latest edit (segmentation-edit sync contract,
     /// analogous to `LayerStore.revision`). All mask mutations happen on the
