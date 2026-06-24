@@ -117,6 +117,35 @@ class ViewerModel: ObservableObject {
     }
     @Published var showHelp: Bool = false
     @Published var showLayerInspector: Bool = false
+
+    /// Transient success/info banner (Liquid-Glass HUD). Set via `presentToast`;
+    /// auto-clears after a delay. Drives the floating banner in ContentView.
+    @Published var toast: ViewerToast? = nil
+    private var toastDismissWorkItem: DispatchWorkItem?
+
+    /// Show a banner and auto-dismiss it after `duration` seconds. A new banner
+    /// supersedes any current one (its dismissal is rescheduled).
+    func presentToast(_ toast: ViewerToast, duration: TimeInterval = 4) {
+        self.toast = toast
+        toastDismissWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.toast?.id == toast.id else { return }
+            self.toast = nil
+        }
+        toastDismissWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+    }
+
+    func dismissToast() {
+        toastDismissWorkItem?.cancel()
+        toast = nil
+    }
+
+    /// Reveal the current banner's file in Finder (e.g. the just-exported mask).
+    func revealToastFile() {
+        guard let url = toast?.fileURL, FileManager.default.fileExists(atPath: url.path) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
     @Published var isImportingLayers: Bool = false
     @Published var layerImportError: String? = nil
     /// WindowGroup can restore more than one window, so command-line startup
@@ -159,6 +188,10 @@ class ViewerModel: ObservableObject {
     /// Shown in the sidebar row and the per-panel info overlay in place of the
     /// vestigial "Series 1/1" label (a NIfTI is always a single series).
     @Published var loadedFileName: String = ""
+
+    /// Full URL of the currently loaded NIfTI file. Drives the default output
+    /// location ("next to the source file") for generated mask/label files.
+    @Published var loadedFileURL: URL? = nil
 
     /// Toggle fullscreen for a panel (double-click behavior)
     func toggleFullscreen(for panel: PanelState) {
@@ -251,6 +284,56 @@ class ViewerModel: ObservableObject {
     var maskOverlayColor: SIMD3<Double> = SIMD3<Double>(1.0, 0.23, 0.19)
     var maskOverlayAlpha: Double = 0.45
 
+    // MARK: - Calcification segmentation (Phase 9)
+    /// Which tab the trailing inspector shows.
+    @Published var inspectorTab: InspectorTab = .layers
+    /// Committed calcification regions (top-first, like the layer list). Each
+    /// owns a distinct label value (1…254) in the base volume's `labelMask`.
+    @Published var calcRegions: [CalcificationRegion] = []
+    /// The region currently being created/edited (box + params + live preview,
+    /// painted with the reserved preview label 255). nil when not segmenting.
+    @Published var draftRegion: CalcificationRegion? = nil
+    /// Selected committed region (drives recolor/rename/delete/re-edit + brush).
+    @Published var activeRegionID: UUID? = nil
+    /// Brain constraint layer (loaded mask or SynthSeg parcellation), if any.
+    @Published var brainMaskLayer: OverlayLayer? = nil
+    @Published var brainMaskStatus: String = ""
+    @Published var isRunningSynthSeg: Bool = false
+    @Published var synthSegProgress: Double = 0
+    @Published var synthSegStatus: String = ""
+    /// Touch-up brush state (manual voxel edit of the selected region).
+    @Published var calcBrushRadius: Int = 2
+    @Published var calcBrushErase: Bool = false
+    /// Fixed initial through-plane thickness (slices) a freshly drawn ROI box
+    /// gets along the plane it's drawn on. The user then refines the depth by
+    /// dragging the box's handles on coronal/sagittal (there is no slab slider).
+    let calcSlabDepth: Int = 5
+    /// Bumped on every segmentation mask edit; `loadMPRSlice` drops in-flight
+    /// renders that predate the latest edit (segmentation-edit sync contract,
+    /// analogous to `LayerStore.revision`). All mask mutations happen on the
+    /// main thread before this is bumped + a re-render enqueued.
+    var segmentationRevision: UInt64 = 0
+    /// Voxel values under the current draft preview, so clearing the preview
+    /// restores committed labels instead of zeroing them.
+    var segPreviewBackup: [(x: Int, y: Int, z: Int, prev: UInt8)] = []
+    /// When a committed region is pulled into a draft for re-editing
+    /// (`reEditRegion`), remember where it lived in `calcRegions` and the exact
+    /// voxels it owned, so abandoning the edit (`cancelActiveRegion`) restores it
+    /// instead of silently destroying it. nil unless a re-edit is in flight.
+    var reEditingRegionIndex: Int? = nil
+    var reEditingCommittedCoords: [(x: Int, y: Int, z: Int)] = []
+    /// In-flight SynthSeg run (for cancel) + a user-chosen binary override.
+    var synthSegRunner: SynthSegRunner?
+    var synthSegBinaryOverride: URL?
+    /// Files written by the most recent SynthSeg run (label file + optional brain
+    /// mask), in the resolved output directory. Drives the "Show in Finder"
+    /// affordance so the user can find the generated output.
+    @Published var synthSegOutputFiles: [URL] = []
+    /// The directory the last SynthSeg run wrote into (first output file's parent).
+    var synthSegOutputDirectory: URL? { synthSegOutputFiles.first?.deletingLastPathComponent() }
+    /// Live settings subscriptions (overlay opacity → re-render).
+    var settingsCancellables = Set<AnyCancellable>()
+
     /// Register a pre-built NIfTI volume under `cacheKey` so panels can display
     /// it. Returns the series index.
     @discardableResult
@@ -285,6 +368,19 @@ class ViewerModel: ObservableObject {
             if Thread.isMainThread { self.refreshLayerRendering() }
             else { DispatchQueue.main.async { [weak self] in self?.refreshLayerRendering() } }
         }
+
+        // Drive the segmentation overlay translucency from the shared settings.
+        // Seed it now, then re-render whenever the user changes it in Settings.
+        maskOverlayAlpha = AppSettings.shared.overlayOpacity
+        AppSettings.shared.$overlayOpacity
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] value in
+                guard let self else { return }
+                self.maskOverlayAlpha = value
+                self.refreshSegmentationRender()
+            }
+            .store(in: &settingsCancellables)
 
         // Monitor Shift key globally for group selection overlay
         flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
@@ -412,7 +508,9 @@ class ViewerModel: ObservableObject {
                 self.currentSeriesInfo = ""
                 self.currentImageInfo = ""
                 self.loadedFileName = url.lastPathComponent
+                self.loadedFileURL = url
                 self.layerStore.removeAll()
+                self.resetSegmentation()
                 self.resetAllPanels()
                 self.loadNifti(url: url)
             }
@@ -1358,9 +1456,19 @@ class ViewerModel: ObservableObject {
             // Mask overlay (segmentation seam): captured on the main thread.
             // `engine.maskSlice` returns nil unless the volume carries a labelMask,
             // so renderSlice stays on the grayscale path in normal runs.
-            let showMask = self.showMaskOverlay
             let maskColor = self.maskOverlayColor
             let maskAlpha = self.maskOverlayAlpha
+            // Per-label calcification colors, or nil to use the legacy flat mask.
+            // When segmentation is active this is non-nil (possibly empty) so the
+            // labelMask renders as a per-label ATLAS — a HIDDEN region is absent
+            // from the table and draws nothing. (Routing it through the flat path
+            // would paint EVERY label one color, defeating the visibility toggle.)
+            let segAtlasColors = self.segmentationAtlasColors()
+            // Nothing to composite when every region is hidden (empty atlas) → keep
+            // the grayscale fast path. nil (no segmentation) leaves the flat Phase-7
+            // demo mask gated only by showMaskOverlay.
+            let showMask = self.showMaskOverlay && (segAtlasColors?.isEmpty != true)
+            let segRevision = self.segmentationRevision
             let layerSnapshot = self.layerStore.renderSnapshot()
 
             // --- background: extract + render; coalesce via cancel + staleness check ---
@@ -1387,6 +1495,7 @@ class ViewerModel: ObservableObject {
                       let mprSlice = slice,
                       let image = MPREngine.renderSlice(mprSlice, ww: ww, wc: wc, invert: invert,
                                                         mask: maskSlice, maskColor: maskColor, maskAlpha: maskAlpha,
+                                                        maskAtlasColors: segAtlasColors,
                                                         layers: layerSlices) else {
                     DispatchQueue.main.async { panel.isLoading = false }
                     return
@@ -1396,7 +1505,8 @@ class ViewerModel: ObservableObject {
                     guard let self = self else { return }
                     // Drop stale results: a newer scroll target or mode switch wins.
                     guard panel.panelMode == mode, panel.mprSliceIndex == targetIndex,
-                          self.layerStore.revision == layerSnapshot.revision else {
+                          self.layerStore.revision == layerSnapshot.revision,
+                          self.segmentationRevision == segRevision else {
                         panel.isLoading = false
                         return
                     }

@@ -91,6 +91,11 @@ private struct ViewToggleControls: View {
                 .foregroundStyle(model.showCrossReference ? Color.lentisCrosshair : .secondary)
         }
         .help(model.showCrossReference ? "Hide Crosshair (X)" : "Show Crosshair (X)")
+
+        SettingsLink {
+            Image(systemName: "gearshape")
+        }
+        .help("Settings (⌘,)")
     }
 }
 

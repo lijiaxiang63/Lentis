@@ -203,6 +203,14 @@ struct PanelView: View {
                     .zIndex(10)
             }
 
+            // Calcification ROI box overlay: the draft region's 3D box drawn as
+            // its cross-section + corner markers on every MPR plane.
+            if panel.image != nil, panel.panelMode.isMPR, let draft = model.draftRegion,
+               let vol = model.cachedVolume(forSeriesIndex: panel.seriesIndex) {
+                SegmentationBoxOverlay(panel: panel, region: draft, volume: vol)
+                    .zIndex(11)
+            }
+
             // ROI rectangle overlay
             if panel.image != nil, panel.panelMode != .volume3D, let roiRect = panel.roiRect {
                 ROIOverlay(panel: panel, roiRect: roiRect)
@@ -307,6 +315,9 @@ struct PanelInteractiveImageView: NSViewRepresentable {
         private var lastDragLocation: NSPoint?
         private var scrollAccumulator: CGFloat = 0.0
         private var roiStartPixel: CGPoint?  // ROI drag start in pixel coords
+        // When a roiBox drag began on a resize handle, which in-plane bounds it
+        // moves (nil = the drag is drawing a new box, the legacy behavior).
+        private var roiResizeGrip: (BoxGrip, BoxGrip)?
         private var isCrosshairCursorActive: Bool = false
         private var wlPendingDeltaWidth: Double = 0
         private var wlPendingDeltaCenter: Double = 0
@@ -576,6 +587,14 @@ struct PanelInteractiveImageView: NSViewRepresentable {
             case "e":
                 model.activeTool = .eraser
                 return true
+            case "b":
+                model.activeTool = .roiBox
+                return true
+            case "k":
+                // The touch-up brush edits a committed region; only arm it when one
+                // exists and no draft is in progress (otherwise it would no-op).
+                if model.hasSegmentation, model.draftRegion == nil { model.activeTool = .calcBrush }
+                return true
             case "]", ".":
                 model.rotateClockwiseForPanel(model.activePanel)
                 return true
@@ -615,7 +634,7 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 desiredCursor = .resizeUpDown
             case .zoom:
                 desiredCursor = .crosshair
-            case .roiWL, .roiStats, .ruler, .angle:
+            case .roiWL, .roiStats, .ruler, .angle, .roiBox, .calcBrush:
                 desiredCursor = .crosshair
             case .eraser:
                 desiredCursor = .disappearingItem
@@ -726,6 +745,43 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                   model.showCrossReference, model.panels.count > 1,
                   let world = crosshairWorld(at: event) else { return }
             model.setCrosshair(world, from: panel)
+        }
+
+        /// Canonical voxel under the cursor on this MPR plane — for the
+        /// calcification touch-up brush. nil off an MPR panel / with no volume.
+        private func brushVoxel(at event: NSEvent) -> (Int, Int, Int)? {
+            guard let model = model, let world = crosshairWorld(at: event),
+                  let vol = model.segmentationVolume else { return nil }
+            let v = vol.worldToVoxel(world)
+            guard v.x.isFinite, v.y.isFinite, v.z.isFinite else { return nil }
+            return (Int(v.x.rounded()), Int(v.y.rounded()), Int(v.z.rounded()))
+        }
+
+        /// If `event` is within grab distance of one of the draft box's resize
+        /// handles on this plane, return which in-plane bounds that handle moves.
+        /// Handle screen positions use the SAME forward transform the overlay
+        /// draws with (`panel.viewPoint(forRawPixel:)`), so the grab targets line
+        /// up with the drawn dots under any zoom/pan/rotate/flip.
+        private func roiHandleGrip(at event: NSEvent) -> (BoxGrip, BoxGrip)? {
+            guard let model = model, let panel = panel, panel.panelMode.isMPR,
+                  let draft = model.draftRegion, !draft.box.isEmpty,
+                  let g = panel.displayedPlaneGeometry,
+                  let vol = model.segmentationVolume else { return nil }
+            let handles = draft.box.handles(plane: panel.panelMode, sliceIndex: panel.mprSliceIndex)
+            guard !handles.isEmpty else { return nil }
+            let loc = convert(event.locationInWindow, from: nil)
+            // viewPoint returns top-left/y-down coords; NSView is y-up.
+            let cursor = CGPoint(x: loc.x, y: bounds.height - loc.y)
+            let threshold: CGFloat = 12
+            var best: (BoxGrip, BoxGrip)?
+            var bestDist = threshold
+            for h in handles {
+                let raw = g.pixel(of: vol.voxelToWorld(h.voxel))
+                let pt = panel.viewPoint(forRawPixel: raw, viewSize: bounds.size)
+                let d = hypot(pt.x - cursor.x, pt.y - cursor.y)
+                if d < bestDist { bestDist = d; best = (h.gripA, h.gripB) }
+            }
+            return best
         }
 
         override func mouseDown(with event: NSEvent) {
@@ -865,6 +921,25 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                     if let idx = bestIdx, bestDist < threshold {
                         panel.annotations.remove(at: idx)
                     }
+                }
+
+            case .roiBox:
+                // If the click grabbed a resize handle of the existing draft box,
+                // begin a resize drag; otherwise start a new in-plane rect
+                // (finalized into a 3D slab box on mouseUp; drawn by ROIOverlay).
+                roiResizeGrip = nil
+                if panel.panelMode.isMPR {
+                    if let grip = roiHandleGrip(at: event) {
+                        roiResizeGrip = grip
+                    } else if let px = screenToPixel(event) {
+                        roiStartPixel = px
+                        panel.roiRect = CGRect(x: px.x, y: px.y, width: 0, height: 0)
+                    }
+                }
+
+            case .calcBrush:
+                if let v = brushVoxel(at: event) {
+                    model.paintBrush(atVoxel: v, radius: model.calcBrushRadius, erase: model.calcBrushErase)
                 }
             }
         }
@@ -1164,6 +1239,26 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                     panel.anglePreviewPoints = preview
                 }
 
+            case .roiBox:
+                if let grip = roiResizeGrip {
+                    // Live-resize the draft box by the grabbed handle.
+                    if let disp = screenToPixel(event) {
+                        let raw = rawPixel(fromDisplayPixel: disp, panel: panel)
+                        model.resizeActiveRegionBox(gripA: grip.0, gripB: grip.1, rawPixel: raw, panel: panel)
+                    }
+                } else if let start = roiStartPixel, let current = screenToPixel(event) {
+                    let x = min(start.x, current.x)
+                    let y = min(start.y, current.y)
+                    let w = abs(current.x - start.x)
+                    let h = abs(current.y - start.y)
+                    panel.roiRect = CGRect(x: x, y: y, width: w, height: h)
+                }
+
+            case .calcBrush:
+                if let v = brushVoxel(at: event) {
+                    model.paintBrush(atVoxel: v, radius: model.calcBrushRadius, erase: model.calcBrushErase)
+                }
+
             case .eraser:
                 break
             }
@@ -1209,6 +1304,27 @@ struct PanelInteractiveImageView: NSViewRepresentable {
             case .windowLevel:
                 flushPendingWindowLevelIfNeeded(force: true)
                 lastDragLocation = nil
+
+            case .roiBox:
+                if roiResizeGrip != nil {
+                    // The box was updated live during the drag; nothing to finalize.
+                    roiResizeGrip = nil
+                } else if let start = roiStartPixel {
+                    // Finalize the in-plane rect into a 3D slab box (raw pixels →
+                    // plane geometry → voxel) and drive the segmentation preview.
+                    let endDisplay = screenToPixel(event) ?? start
+                    let rawA = rawPixel(fromDisplayPixel: start, panel: panel)
+                    let rawB = rawPixel(fromDisplayPixel: endDisplay, panel: panel)
+                    if abs(rawA.x - rawB.x) > 1 || abs(rawA.y - rawB.y) > 1 {
+                        model.setActiveRegionBox(fromRawCornerA: rawA, cornerB: rawB, panel: panel)
+                    }
+                }
+                roiStartPixel = nil
+                panel.roiRect = nil
+
+            case .calcBrush:
+                // Reconcile per-region counts after a brush stroke.
+                model.recomputeRegionVoxelCounts()
 
             default:
                 break

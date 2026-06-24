@@ -62,6 +62,17 @@ struct ContentView: View {
                         .padding(.bottom, Spacing.m)
                 }
             }
+            // Floating glass success banner (top-center), e.g. after a direct export.
+            .overlay(alignment: .top) {
+                if let toast = model.toast {
+                    ToastBanner(toast: toast) { model.revealToastFile() }
+                        .padding(.top, Spacing.l)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .zIndex(2_000)
+                        .onTapGesture { model.dismissToast() }
+                }
+            }
+            .animation(.spring(response: 0.4, dampingFraction: 0.85), value: model.toast)
             // The window title is now the open file (native macOS pattern) — this
             // replaces the old custom centered-title hack in WindowAccessor.
             .navigationTitle(windowTitle)

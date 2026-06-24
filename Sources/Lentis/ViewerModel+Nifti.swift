@@ -94,10 +94,23 @@ extension ViewerModel {
         guard let dataset = niftiDataset, dataset.isMultiVolume else { return }
         let clamped = min(max(0, t), dataset.timepointCount - 1)
         guard clamped != currentTimepoint else { return }
+
+        // Settle a live draft (restores a re-edit, drops a fresh draft) against the
+        // OLD volume's mask grid before swapping, then carry the segmentation mask
+        // forward — every timepoint shares the identical canonical voxel grid, so
+        // the same-grid LabelVolume stays valid and committed regions survive a
+        // timepoint step instead of being silently orphaned.
+        cancelActiveRegion()
+        let carriedMask = segmentationVolume?.labelMask
         currentTimepoint = clamped
 
         let volume = dataset.makeVolume(timepoint: clamped)
+        if let carriedMask, carriedMask.width == volume.width,
+           carriedMask.height == volume.height, carriedMask.depth == volume.depth {
+            volume.labelMask = carriedMask
+        }
         registerStandaloneVolume(volume, cacheKey: dataset.seriesID, description: dataset.displayName)
+        segmentationRevision &+= 1
 
         for panel in panels where panel.seriesIndex == niftiSeriesIndex {
             panel.rescaleSlope = volume.rescaleSlope

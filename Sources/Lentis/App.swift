@@ -10,6 +10,7 @@ import SwiftUI
 @main
 struct LentisApp: App {
     @StateObject private var model = ViewerModel()
+    @StateObject private var settings = AppSettings.shared
 
     var body: some Scene {
         // The window title is owned by the detail view's `.navigationTitle`
@@ -183,6 +184,13 @@ struct LentisApp: App {
                     model.showHelp = true
                 }
             }
+        }
+
+        // Native preferences window (⌘,). macOS adds the "Settings…" menu item
+        // automatically. Binds the shared AppSettings; the model supplies the
+        // read-only status lines (FreeSurfer availability, resolved output dir).
+        Settings {
+            SettingsView(model: model, settings: settings)
         }
     }
 

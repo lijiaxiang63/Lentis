@@ -182,4 +182,47 @@ extension PanelState {
             pixelSpacingX: ps.1,   // PanelState.pixelSpacing = (row-step mm, col-step mm)
             pixelSpacingY: ps.0)
     }
+
+    /// Forward map: a raw slice pixel (col, row) → panel view coordinates
+    /// (top-left origin, y-down), applying aspect-correction + fit + flip +
+    /// rotation + zoom + pan. This is the single shared implementation of the
+    /// transform the overlays draw with and the gesture layer hit-tests against
+    /// (it composes the per-overlay `pixelToScreen(rawToDisplay(_:))`), so the
+    /// drawn ROI handles and their grab targets cannot drift. The NSView's
+    /// `screenToPixel` is its inverse.
+    func viewPoint(forRawPixel raw: CGPoint, viewSize: CGSize) -> CGPoint {
+        let iw = CGFloat(max(1, imageWidth))
+        let ih = CGFloat(max(1, imageHeight))
+        let dw = displayImageWidth > 0 ? displayImageWidth : iw
+        let dh = displayImageHeight > 0 ? displayImageHeight : ih
+
+        // raw → aspect-corrected display-image space (rawToDisplay)
+        var x = raw.x * dw / iw
+        var y = raw.y * dh / ih
+
+        let vw = viewSize.width, vh = viewSize.height
+        let fitScale = min(vw / dw, vh / dh)
+        let offsetX = (vw - dw * fitScale) / 2
+        let offsetY = (vh - dh * fitScale) / 2
+        x = x * fitScale + offsetX
+        y = y * fitScale + offsetY
+
+        let cx = vw / 2, cy = vh / 2
+        x -= cx; y -= cy
+        if isFlippedH { x = -x }
+        if isFlippedV { y = -y }
+        let steps = rotationSteps % 4
+        if steps > 0 {
+            let angle = -CGFloat(steps) * .pi / 2
+            let cosA = cos(angle), sinA = sin(angle)
+            let rx = x * cosA - y * sinA
+            let ry = x * sinA + y * cosA
+            x = rx; y = ry
+        }
+        x *= scale; y *= scale
+        x += translation.x
+        y -= translation.y
+        x += cx; y += cy
+        return CGPoint(x: x, y: y)
+    }
 }

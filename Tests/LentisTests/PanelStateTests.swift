@@ -82,7 +82,7 @@ final class PanelStateTests: XCTestCase {
 
     func testActiveToolAllCases() {
         let cases = ActiveTool.allCases
-        XCTAssertEqual(cases.count, 9)
+        XCTAssertEqual(cases.count, 11)   // +roiBox, +calcBrush (Phase 9)
     }
 
     func testActiveToolRawValues() {

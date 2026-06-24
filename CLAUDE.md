@@ -96,6 +96,16 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | `MPREngine.swift` | CPU slice extraction (`axialSlice`/`sagittalSlice`/`coronalSlice`) + `renderSlice(ww:wc:mask:…)` (CPU W/L — **Float + precomputed-reciprocal, parallelised across 8 bands** for ≥512² slices, `parallelToneMapThreshold`; RGBA composite when a mask is present). **`planeGeometry(mode:sliceIndex:)` is the one place** that defines each plane's neurological flips + display dirs (Phase 4); extractors, cross-ref metadata, **and `maskSlice` (Phase 7 seam)** all read it. **Crosshair geometry (Phase 6):** `PlaneGeometry.world(col:row:)`/`pixel(of:)` (exact-inverse pixel↔world) + `orthogonalSliceIndex(for:containing:)` (world→slice index). (`VolumeBuilder` removed in Phase 3.) |
 | `CrossReferenceOverlay.swift` | **3D crosshair overlay (Phase 6, rewritten).** Draws two lines + center dot through `crosshair.world`'s in-plane projection, on MPR panels only; bridges raw→display pixels then reuses the image's `pixelToScreen` transform. `PanelState.displayedPlaneGeometry` helper. **Hosts `CrosshairState`** (tiny ObservableObject) and observes **it** (not the model) — so a crosshair drag invalidates only this overlay, not the whole quad (drag-lag fix). (Replaced the old `computeCrossReference` lines.) |
 | `MetalVolumeRenderer.swift` | **Phase-8 direct volume renderer.** Metal compute ray marching over a cached `.r16Sint` 3D texture; physical-spacing-aware ray/AABB geometry, window-selective transfer function, front-to-back alpha compositing, early termination, gradient lighting, W/L in stored units. 192² interactive preview / 512² final render. |
+| `CalcificationSegmenter.swift` | **Phase-9 segmentation engine** (pure). `VoxelBox` (+ `fromPlanePoints` rect→slab-box, **+ `handles(plane:sliceIndex:)`/`resize(plane:gripA:gripB:toVoxel:)`/`inPlaneAxes`/`slabAxis` for interactive 3D resize** — all on the ONE orientation source), `SegmentationMethod`/`Connectivity`/`Parameters`, and one configurable hysteresis dual-threshold + 3D connected-component + brain-mask AND + min-size grower (`segment`), Otsu (plateau-midpoint), `meanHU` (Method-B seed), ROI histogram, `BrainConstraint`. Works in canonical voxel HU via `VolumeData.calibratedValue`. `Parameters.growMarginVoxels: Int?` (nil = unlimited grow, the `.growFromSeed` default); `growBoundaryHURange` 40…80 + `thresholdHURange` 40…100 back the fixed-band sliders. |
+| `CalcificationRegion.swift` | One region's data model (ObservableObject): label value, name/color/visibility, `parameters`, `box` + `slabAxis`, voxel/anatomical name. |
+| `ViewerModel+Segmentation.swift` | **Multi-region orchestration.** Region lifecycle (begin/setBox/preview/commit/cancel/delete/re-edit), per-label color table for `loadMPRSlice`, touch-up `paintBrush`, brain-mask load + SynthSeg drive, mask/atlas export. Editable mask = `VolumeData.labelMask` (1…254 = regions, 255 = transient preview); all mask writes on main, then bump `segmentationRevision` + re-render (sync contract). |
+| `SegmentationBoxOverlay.swift` | Draws the draft box's cross-section + corner markers on each intersecting MPR plane, reusing the `CrossReferenceOverlay` pixel→screen transform. 3D excluded. |
+| `SegmentInspectorView.swift` | Segment tab of the trailing inspector: Brain Mask, Active Region (method, ROI histogram, threshold sliders, Otsu, connectivity/min-size/slab, live preview, Add/Cancel), Regions list (recolor/rename/re-edit/delete/brush), Export Mask…/Atlas…. |
+| `NiftiWriter.swift` | **NIfTI-1 writer** (the reader is decode-only). Header serialize (offsets match `parseHeader`), UInt8/UInt16/Int32 voxel encode, **write-back to the original input grid** via `reorientation`+`originalAffine`, gzip (Compression raw DEFLATE wrapped in an RFC-1952 container + CRC32) read by the pure-Swift inflater, `writeVolume` (gray CT for SynthSeg), FreeSurfer LUT sidecar. |
+| `SynthSegRunner.swift` | Runs FreeSurfer `mri_synthseg --parc --robust --ct --cpu --threads N` via `Foundation.Process` (off-main, streamed progress, cancel). Locates the binary (user override → persisted binary → **`AppSettings` FreeSurfer home** → $FREESURFER_HOME/bin → PATH → /Applications/freesurfer/<ver>/bin) and sets a **clean** child env (writable HOME/TMPDIR, strips toxic inherited `PYTHON*`/`CONDA*`) so it works when launched from Finder. Reports **signal-vs-exit** (`status 6` = SIGABRT, a TF abort) and surfaces the captured stderr tail. |
+| `AppSettings.swift` | **App-wide preferences** (UserDefaults-backed `ObservableObject` singleton `AppSettings.shared`): FreeSurfer home / `mri_synthseg` path (reuses `SynthSegRunner.defaultsKey`), SynthSeg `--robust`/`--parc`/threads, output-location mode (next-to-source / custom folder) + auto-load + write-brain-mask toggles, overlay opacity. `resolveOutputDirectory` (pure, tested) picks a writable dir with fallbacks; `niftiBaseName` strips `.nii`/`.nii.gz`. The viewer reads it on demand (SynthSeg) or subscribes (`$overlayOpacity` → live re-render). |
+| `SettingsView.swift` | **The Settings window (⌘,).** A `TabView` of grouped forms in the dark Liquid-Glass idiom: **General** (overlay opacity, output location + folder picker with a live "Files go to" preview, auto-load / write-brain-mask toggles, **Export File Names** suffix fields) and **FreeSurfer** (live `mri_synthseg` found/not-found status, FreeSurfer-home + binary pickers, `--robust`/`--parc`/threads). Binds `AppSettings`; reads `model.loadedFileURL` for the resolved-dir/preview. |
+| `Toast.swift` | **Liquid-Glass success/info HUD.** `ViewerToast` (icon/tint/title/subtitle/optional `fileURL`) + `ToastBanner` (glass capsule, optional "Show in Finder"). Hosted as a top-center `ContentView` overlay; driven by `ViewerModel.toast` (`presentToast` auto-dismisses after 4 s). Used to confirm a direct (no-dialog) segmentation export. |
 | `MultiPanelContainer.swift` (~1960 lines) | Multi-panel views + gestures. MPR panels keep pixel-bound orientation/crosshair/annotation/scroller overlays. Cursor tracking maps aspect-corrected display pixels back to raw slice pixels before HU lookup and then uses the panel geometry + cached volume affine to publish canonical voxel `x,y,z` for the status bar. **Phase 8:** Select-drag on `.volume3D` is a 60 Hz coalesced trackball-style yaw/pitch camera; it derives motion from absolute cursor-position differences (not unreliable `NSEvent.deltaX/Y`), and mouse-up settles at full quality. 3D deliberately hides 2D overlays, cursor sampling, and slice scroller. |
 | `ViewerToolbar.swift` | **Native macOS Liquid Glass toolbar** (UI redesign; replaced the docked `ViewerControlBar`). `ToolbarContent` attached via `.toolbar` on the `NavigationSplitView` detail — the chrome gets glass/overflow/customization for free. Leading: layout segmented `Picker` + MPR + sync/crosshair toggles. Trailing: per-active-panel cluster (plane `Picker`, `ModalityBadge`, a W/L popover with histogram + presets/Auto, a transform menu) and the 4D stepper. Per-panel sub-views observe the panel (async image arrival). **The plane `Picker` is intentionally `.disabled` while `model.isMPRLayout` is true** — in the coordinated MPR tri-planar layout (`setupMPRLayout`) the four panels have fixed axial/sagittal/coronal/3D roles the crosshair linkage relies on, so per-panel plane switching is locked; any plain `setLayout` (layout picker, ⌘1–4, context menu) clears the flag and re-enables it. Not a bug — don't "fix" the greyed-out picker. 3D density lives in a popover (the no-`step:` slider is preserved). **The inspector show/hide toggle is intentionally NOT declared here** — to keep it pinned to the window's top-right corner above the inspector, `ContentView` owns the closed-state Show button and `LayerInspectorView` owns the open-state Hide button; keeping it out of this nested `ToolbarContent` also avoids stale re-evaluation and duplicate drawer buttons. |
 | `ViewerStatusBar.swift` | **Floating Liquid Glass status pill** (UI redesign; was a docked bar). Content-sized capsule anchored bottom-leading over the viewport, non-interactive (`allowsHitTesting(false)`), shown only once a file is open. Active-panel readout once (file · slice · `WL/WW` +`HU` for CT); cursor readout (RAS mm / value / canonical voxel `px`) follows the hovered panel via `ForEach(model.panels)` of `StatusBarCursorInfo` — both observe their `@ObservedObject panel`. |
@@ -476,8 +486,10 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 > preserved for write-back). **GUI-verified** on real-ish synthetic CT/MRI: badge color + no-overlap in
 > single & quad; the `--benchmark` demo sphere composites translucent-red and registers in axial/
 > sagittal/coronal (MIP excluded by design). Orientation untouched. See the Phase-7 roadmap entry below.
-> **⚠ Next: Phase 9 (suggested) — real segmentation (paint into `labelMask` via Eraser/ROI; threshold
-> seed on CT HU), mask persistence/write-back through `originalAffine`, and Metal mask-texture overlay.**
+> **▶ Phase 9 — DONE (2026-06-23, branch `feature/calcification-segmentation` / worktree):
+> intracranial-calcification segmentation.** Real multi-region segmentation, NIfTI mask/atlas export,
+> brain-mask + FreeSurfer SynthSeg, and a tabbed Segment inspector. See the Phase-9 roadmap entry below.
+> The Metal mask-texture overlay (3D panel) remains the one deferred piece (3D excluded, as for Phase 7).
 > Phase 5 outcome (verified in GUI on real CT + real T1): CT defaults to the **Brain** HU preset
 > (WL 40/WW 80) with a preset menu (Brain/Subdural/Stroke/Bone/Soft-tissue, applied to all linked
 > panels); MRI auto-detects and uses a percentile auto-window (WL 899/WW 1798 on the T1, via an
@@ -774,6 +786,202 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   through inactive→active, layer select→blank deselect, and Inspector close→reopen transitions; Cua
   window enumeration reported an empty native title throughout and screenshots showed only the centered
   title. Full suite: **130 tests green (62 XCTest + 68 swift-testing)**.
+- [x] **Phase 9 — intracranial-calcification segmentation (2026-06-23, branch
+  `feature/calcification-segmentation` / worktree).** 7 commits (engine → per-label render →
+  multi-region model → ROI box+brush → NIfTI writer → brain mask/SynthSeg → inspector). The user
+  draws a 3D ROI box around a calcification and segments it by **Method A (threshold in ROI)** or
+  **Method B (grow from seed)** — both are one configurable engine: hysteresis dual-threshold + 3D
+  connected-component + brain-mask AND + min-size + Otsu (`CalcificationSegmenter`). Multiple
+  **regions** each take a distinct label in one editable `VolumeData.labelMask` (255 = transient
+  preview), render per-label-colored via the atlas path (`renderSlice(maskAtlasColors:)`; sagittal
+  `maskSlice` parallelised), and export as a **single-value mask** or **multi-value atlas** NIfTI
+  (+ FreeSurfer LUT) **written back to the original input grid** (`reorientation`+`originalAffine`,
+  gzip via Compression). A **brain mask** loads from NIfTI (reusing `OverlayLayerLoader`) or is
+  generated by **FreeSurfer SynthSeg** (`SynthSegRunner`, off-main `--parc --robust`); a parcellation
+  also auto-names regions by anatomy. UX: `ActiveTool.roiBox` (B, drag rect + slab) + `.calcBrush`
+  (K, touch-up), `SegmentationBoxOverlay` (box cross-section on all MPR planes), and a tabbed
+  **Layers · Segment** trailing inspector (`SegmentInspectorView`: brain mask, active-region
+  threshold/Otsu/histogram, regions list, export). All mask writes are main-thread then bump
+  `segmentationRevision` (drops stale in-flight renders). The 3D Metal panel is excluded (deferred,
+  as in Phase 7). **Verified:** 92 XCTest + swift-testing green (engine, per-label render alignment,
+  multi-region lifecycle, ROI-box mapping, NIfTI writer round-trip incl. write-back orientation +
+  gzip, brain-constraint); a standalone E2E on a real `.nii.gz`; and exported `.nii`/`.nii.gz` read
+  back correctly by **nibabel** (shape, dtype, labels/counts, zooms, sform, affine) — confirming
+  FreeSurfer/fsleyes compatibility.
+  - **Follow-up (2026-06-23) — resizable ROI box + SynthSeg crash hardening.**
+    **(1) ROI box is now draggable-to-resize in 3D.** After drawing, the draft box shows 8 grab
+    handles (4 corners + 4 edge mids) on every MPR plane it intersects (`SegmentationBoxOverlay`).
+    Dragging a handle on **axial** resizes the in-plane i,j extent; dragging on **coronal/sagittal**
+    resizes the through-plane depth (coronal edits i,k; sagittal edits j,k) — the slab axis for the
+    dragged plane is left untouched, so the box is fully reshapeable in 3D from any view. The pure
+    geometry (`VoxelBox.handles(plane:sliceIndex:)` + `resize(plane:gripA:gripB:toVoxel:)` +
+    `inPlaneAxes`/`slabAxis`) is in `CalcificationSegmenter` and locked by
+    `SegmentationBoxResizeTests` (8 tests). Hit-testing (`roiHandleGrip` in `MultiPanelContainer`)
+    and the overlay both project handles through ONE shared forward transform,
+    `PanelState.viewPoint(forRawPixel:viewSize:)` (the inverse of `screenToPixel`), so grab targets
+    can't drift from the drawn dots under zoom/pan/rotate/flip. Empty-space drag still draws a new box
+    (replace); handle drag resizes. On draw, the other MPR panels relocate to the box center
+    (`setCrosshair`) so handles are immediately visible on coronal/sagittal. Resize re-runs the
+    bounded preview but does **not** re-seed Otsu (preserves the user's threshold). **The Slab
+    slider was removed** — a freshly drawn box gets a fixed initial through-plane thickness
+    (`ViewerModel.calcSlabDepth = 5`, now a constant) and depth is refined via the handles;
+    `setActiveRegionSlabDepth` + `CalcificationRegion.slabAxis` were deleted as dead.
+    **(2) SynthSeg "exited with status 6" → diagnosed + hardened.** Status 6 is **SIGABRT** (a
+    TensorFlow/Apple-Silicon abort), NOT a clean exit — the `mri_synthseg` Python script only ever
+    `sys.exit(1)`. Confirmed by reproduction: the CLI succeeds (exit 0) on both the original CT and
+    the app's *exact* `NiftiWriter.writeVolume` output with `--parc --robust`, and even under the
+    app's minimal env-derivation + a sparse launchd-style env — so the abort is specific to the GUI
+    launch context (not reproducible headlessly). `SynthSegRunner` now: passes **`--ct`** (the
+    documented correct CT mode, clips HU to [0,80]) since the segmentation volume is always a brain
+    CT; pins **`--cpu --threads 1`**; provides a clean complete environment (guarantees writable
+    `HOME`/`TMPDIR`, strips toxic inherited `PYTHONHOME`/`PYTHONPATH`/`VIRTUAL_ENV`/`CONDA_*` that
+    hijack fspython, sets `TF_CPP_MIN_LOG_LEVEL`/`OMP_NUM_THREADS`); and **distinguishes signal-vs-exit**
+    (`SynthSegError.aborted(signal:tail:)` names SIGABRT/SIGILL/etc.) while surfacing the captured
+    stderr **tail** so the real abort message is shown instead of "status 6". The new arg combo
+    (`--parc --robust --ct --cpu --threads 1`) was verified to still produce a valid parcellation on
+    the real CT. The `cancelled` flag and output tail are lock-guarded (read from the termination
+    queue). **Not GUI-verified** (the live drag can't be reliably driven by synthetic events, and
+    ScreenCaptureKit was failing in the verify environment); correctness of the resize is held by the
+    unit tests + the shared-transform construction, and the SynthSeg path by the CLI repro — the next
+    real GUI run will now show the actual crash cause if it still aborts. **159 tests green.**
+  - **GUI-verified end-to-end on the real CT
+  (`sub-zdr_ses-20250312_ct.nii`, 512×512×221, real bilateral basal-ganglia calcifications):** open →
+  quad renders → ROI Box tool → drag box → draft auto-created, Segment tab auto-opened, Otsu seeded
+  (361 HU), **live red preview of 2916 voxels on all three MPR planes** → Add Region → "Calcification 1
+  · 2916 vox" in the Regions list → Export Mask → the written `.nii.gz`, re-read by **nibabel**, has
+  the **same shape + affine as the source CT** (overlays 1:1) with all labeled voxels high-HU
+  (362–1754, median 606) — i.e. the calcifications, with a few skull-edge voxels the "no brain mask"
+  warning correctly flagged. **Deferred:** Metal mask-texture overlay on the 3D panel; 4D-timepoint
+  segmentation (CT is 3D).
+  - **Follow-up (2026-06-24) — parameter tuning for the "the box IS calcification" workflow.** 1 commit.
+    **(1) Grow reach is configurable + unlimited by default.** New per-region
+    `SegmentationParameters.growMarginVoxels: Int?` — `nil` (the **default** for `.growFromSeed`) floods
+    the **whole volume**, bounded by the brain mask when constrained else only by the `maxResultVoxels`
+    safety cap; a finite value dilates the box by that many voxels. The Segment inspector gains an
+    **"Unlimited grow" toggle** + a **Reach** slider (shown when finite; disabled when the brain mask
+    bounds the flood). `defaultGrowMarginVoxels = 24` is the finite fallback.
+    **(2) Method B seeds from the box mean.** Since the drawn box is, by Method B's contract, entirely
+    calcification, the **seed (high) threshold auto-seeds from the box's mean HU** (`CalcificationSegmenter.meanHU`),
+    and the **"Seed ≥" slider spans mean±20** (anchored on a stable `CalcificationRegion.seedMeanHU`, not
+    the live value, so dragging doesn't drift the range). The mean is (re)computed on box **draw,
+    method-switch, AND resize** via `seedGrowThresholdFromBoxMean`. The **"Grow ≥" boundary** slider is a
+    fixed **40–80 HU** band at **0.1-HU** precision (initial **55**). In grow mode the **Otsu button
+    becomes "Mean"** (re-center the seed on the box mean — Otsu is meaningless when the box is all calc).
+    **(3) Method A is a fixed low band.** The **"Threshold ≥"** slider is a fixed **40–100 HU** band at
+    **0.1-HU** precision (initial **55**); **box-draw no longer auto-runs Otsu** (kept as a manual,
+    range-clamped button) so the fixed initial value holds. Shared engine constants
+    `growBoundaryHURange` (40…80) + `thresholdHURange` (40…100) back the sliders, the `setActiveRegionMethod`
+    clamps, and the Otsu clamp. **Sliders avoid `step:`** (round to 0.1 in the binding) to dodge the
+    documented SwiftUI tick-mark layout cost. **Not GUI-verified** (no real-CT GUI pass yet); locked by
+    unit tests — engine `meanHU`, reach finite-vs-unlimited flood, box-mean seeding + re-tracking, and the
+    fixed Method-A default. **swift test green (105 XCTest + 59 swift-testing = 164).**
+  - **Follow-up (2026-06-24) — segmentation UX/flow + data-loss hardening.** Driven by an
+    adversarially-verified multi-lens review of the create/select/add/delete flow. **(1) No silent data
+    loss (the must-fix):** `reEditRegion` previously `remove`d the region + zeroed its mask voxels on
+    entry, so a Cancel / click-away / "+ New Region" after re-editing destroyed it permanently (the
+    cancel path restored the post-zero backup, i.e. 0). Now `reEditRegion` stashes the region's prior
+    list index + its committed voxel coords (`reEditingRegionIndex`/`reEditingCommittedCoords` on the
+    model); `cancelActiveRegion` → `restoreReEditedRegionIfNeeded` repaints the original label + re-inserts
+    the region at its index; `commitActiveRegion` inserts at that index + clears the stash;
+    `resetSegmentation` clears the stash and **cancels an in-flight SynthSeg** (its completion now no-ops
+    via `synthSegRunner === runner` so a superseded run can't overwrite fresh state or attach a wrong-grid
+    mask — `loadBrainMask` also guards on the captured `seriesUID`). **4D:** `selectTimepoint` settles the
+    draft then **carries `labelMask` across timepoints** (identical canonical grid) instead of orphaning
+    committed regions. **(2) Discoverable, unambiguous flow:** every region row gets a visible trailing
+    ellipsis **Menu (Re-edit / Delete)** (the right-click contextMenu stays as the shortcut); the Segment
+    toolbar gains a **`minus`** button (▲ +/- symmetry with the Layers tab); a row tap routes through
+    `selectRegion`, which is a **no-op while a draft is live** (kills the dual-active draft+committed
+    state); the touch-up brush UI + the **K** shortcut are gated on `hasSegmentation && draftRegion == nil`
+    so the brush can't silently no-op. **(3) Legible science:** region rows + the live preview show
+    **physical volume (mm³/cm³)** next to the voxel count (`physicalVolumeString`/`regionSizeString` off
+    the volume spacing); the ROI **histogram** gains HU value labels above the threshold markers + min/max
+    axis ticks; an **always-visible, method-specific caption** explains each method (esp. Method B's "box
+    ENTIRELY inside the calcification" contract); a **non-CT advisory** + an `effectiveModality`-driven
+    unit string ("HU" vs "Intensity") replace the unconditional "HU"; the New-Region prompt is reworded.
+    **(4) Cheap correctness + cleanup:** `recomputeRegionVoxelCounts` credits the preview backup so a
+    recount under a live preview doesn't undercount overlapped regions; the empty-box preview branch resets
+    `previewVoxelCount`/`previewTruncated`; a **redraw preserves the box's refined through-plane depth**;
+    the brush shows an approximate **mm diameter**; stale slab-slider comments fixed. Orientation
+    (`MPREngine.planeGeometry`), the main-thread-write + `segmentationRevision` sync contract, and the
+    excluded 3D panel are all untouched. **Adversarially self-reviewed (no correctness regressions found);
+    locked by +5 `SegmentationModelTests` (re-edit→cancel restore, re-edit→new restore, re-edit→commit
+    no-dup, select-ignored-during-draft, recount-credits-preview). swift build clean; swift test green
+    (110 XCTest + 59 swift-testing = 169). Not yet GUI-verified — user to test.** Deferred (verified but
+    larger / behavioral): box translate-drag + handle-overlap tie-break + an inspector Depth stepper;
+    on-canvas brush-footprint overlay; widening Method-A's 40–100 HU band toward the 130-HU floor (needs
+    fixture + test re-validation).
+  - **Follow-up (2026-06-24) — region visibility-toggle bug + Regions-list polish + add-exits-box.**
+    **(1) Visibility toggle was a no-op when it mattered (the bug):** `loadMPRSlice` chose the mask
+    render path with `maskAtlasColors: segColors.isEmpty ? nil : segColors`. Hiding a region drops it
+    from `calcMaskColorTable()`; when that emptied the table (the common single-region case, or all
+    regions hidden), `maskAtlasColors` went `nil`, and `MPREngine.renderSlice` reads `nil` as the legacy
+    **flat single-color mask** — which paints **every** non-zero label one color, so the "hidden" region
+    stayed on screen in flat red. Fix: a guarded seam `ViewerModel.segmentationAtlasColors()` returns
+    `nil` **only** when no region/draft exists (the Phase-7 demo mask); whenever segmentation is active it
+    returns the (possibly empty) per-label table, so the `labelMask` always renders as a per-label
+    **atlas** and a hidden label composites nothing. `loadMPRSlice` also skips the mask entirely when the
+    atlas is empty (all hidden) → grayscale fast path. **(2) Add-Region exits ROI-box mode:**
+    `commitActiveRegion` now sets `activeTool = .select` (from `.roiBox`), so the next click navigates
+    instead of starting a new box; picking a method re-enters box mode via `beginRegion`. **(3) Regions
+    list polish:** section header shows the region count; each `RegionRow` gains a method badge
+    (`THRESHOLD`/`GROW`, mirroring the Layers kind badge), grouped voxel counts (`393,263`), a
+    dim-when-hidden row + clearer selection (accent fill **+** ring), a consistent eye toggle
+    (help/VoiceOver), and a **compact circular color swatch** (an opaque `Circle` over a hit-through
+    invisible `ColorPicker`) replacing the bulky native well that crowded the name. Orientation + the
+    main-thread-write/`segmentationRevision` sync contract untouched; the flat Phase-7 demo-mask path is
+    preserved (no `CalcificationRegion`s ⇒ `nil` ⇒ flat). **Locked by +3 `SegmentationModelTests`
+    (hidden-region renders nothing not everything, atlas excludes only hidden, commit-exits-box). swift
+    build clean; swift test green (113 XCTest + 59 swift-testing = 172).** Color-dot click (opens the
+    system color panel via the hit-through well) is the one item left for a by-hand GUI check.
+  - **Follow-up (2026-06-24) — findable SynthSeg output + auto-loaded layer + a Settings window.**
+    Driven by the user: SynthSeg "ran but took forever and the output vanished" (it wrote to a temp dir),
+    and FreeSurfer was only locatable from a one-off inspector panel. **(1) Output beside the source +
+    Show in Finder:** `generateBrainMaskWithSynthSeg` now resolves a writable directory
+    (`AppSettings.resolveOutputDirectory`: next-to-source by default, else a chosen folder, falling back
+    source → `~/Documents/Lentis` → temp) and points SynthSeg's `--o` straight at
+    `<base>_synthseg.nii.gz` there (no more temp output). `loadedFileURL` is retained on load to anchor
+    "beside source". The model tracks `synthSegOutputFiles`; the Segment inspector shows a **"Saved N
+    files · <dir>"** row with a **Show in Finder** button (`revealSynthSegOutputInFinder` →
+    `NSWorkspace.activateFileViewerSelecting`). **(2) Auto-load the label as a layer:** on success
+    `loadSynthSegResult` loads the parcellation once via `OverlayLayerLoader`, sets it as the brain
+    constraint (`brainMaskLayer`) **and** (when `autoLoadSynthSegResult`) adds the *same* `OverlayLayer`
+    instance to `layerStore` — shared, so no second full-grid allocation — so it shows in the Layers tab
+    (atlas → FreeSurfer-LUT colored regions; phantom collapses to a mask). When `writeDerivedBrainMask`
+    is on it also binarizes the parcellation (nonzero→1) on the base grid and writes
+    `<base>_brainmask.nii.gz` back on the **original CT grid** via `NiftiWriter.writeMask`. **(3) Settings
+    window (⌘,):** new `AppSettings` (UserDefaults-backed `ObservableObject` singleton; the SynthSeg
+    binary key reuses `SynthSegRunner.defaultsKey` for back-compat) is the single source of truth, read
+    by the viewer and bound by `SettingsView` (a `TabView`: **General** = overlay opacity + output
+    location/auto-load toggles; **FreeSurfer** = live `mri_synthseg` status, FreeSurfer-home/binary
+    pickers, `--robust`/`--parc`/threads). `SynthSegRunner.locate` now also consults the persisted
+    FreeSurfer home (so a Finder-launched app finds the binary). The model subscribes to
+    `$overlayOpacity` to re-render live. Entry points: the macOS Settings menu item, a toolbar **gear**
+    (`SettingsLink` in `ViewerToolbar`), and `SettingsLink`s in the Segment inspector (a gear by
+    "Generate", and "Set Up FreeSurfer…" when not found — the old NSOpenPanel "Locate" path was removed).
+    New files: `AppSettings.swift`, `SettingsView.swift`. **GUI-verified end-to-end** on `synthetic_calc`:
+    a real CPU SynthSeg run wrote `_synthseg`+`_brainmask` next to the source, the inspector showed
+    "Saved 2 files" + Show in Finder, the result auto-appeared in the Layers tab (Mask · 229 vox), and
+    both Settings tabs render in the dark Liquid-Glass idiom (the FreeSurfer tab live-detected the binary;
+    "Files go to" resolved to the source folder). **+8 `AppSettingsTests` (base-name strip, output-dir
+    resolution incl. fallbacks, persistence round-trip, defaults). swift build clean; swift test green
+    (113 XCTest + 66 swift-testing = 179).** Note: derived files use a fixed `<base>_{synthseg,brainmask}`
+    name → a re-run overwrites a prior run's output beside the source (intended).
+  - **Follow-up (2026-06-24) — direct (no-dialog) export + a Liquid-Glass success toast.** The
+    mask/atlas export `NSSavePanel` is gone. `ViewerModel.exportSegmentation(kind:)` writes straight to
+    `exportURL(for:)` — the same `AppSettings.resolveOutputDirectory` location as SynthSeg, named
+    `<base><suffix>.nii.gz` with configurable suffixes (`exportMaskSuffix`/`exportAtlasSuffix`, default
+    `_calcmask`/`_calcatlas`; `AppSettings.sanitizedSuffix` strips separators + empties). Success shows a
+    **floating glass banner** (`Toast.swift`: `ViewerToast` + `ToastBanner`, the macOS "it worked" HUD
+    idiom) at the viewport top-center — green check, "Mask/Atlas exported", filename, and a **Show in
+    Finder** button — auto-dismissing after 4 s (`ViewerModel.presentToast`/`dismissToast`/
+    `revealToastFile`, rendered as a `ContentView` overlay with a spring transition). The Segment
+    inspector's Export buttons are relabeled "Export Mask/Atlas" (no ellipsis) with a "Saves to <dir>/ —
+    change … in Settings" caption; Settings gains an **Export File Names** section (suffix fields +
+    `.nii.gz` + a live `<base><suffix>.nii.gz` footer preview). New file: `Toast.swift`. **GUI-verified
+    end-to-end** on `synthetic_calc`: drew + committed a Threshold region, clicked Export Mask → **no
+    dialog**, the toast appeared, and `synthetic_calc_calcmask.nii.gz` landed in `TestData/` (valid gzip
+    NIfTI). **+1 `AppSettingsTests` (suffix sanitize) + suffix coverage in persistence/defaults. swift
+    build clean; swift test green (113 XCTest + 67 swift-testing = 180).**
 
 ---
 
@@ -784,7 +992,9 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
 - Synthetic (regenerate: `python3 scripts/gen_synthetic_nifti.py`): `synthetic_ct.nii.gz` (air/tissue/skull +
   calcification blob → reads as CT), `synthetic_mri.nii.gz` (non-negative → MRI),
   `synthetic_mri_4d.nii.gz` (5 timepoints), `synthetic_orient.nii.gz` (octant markers for
-  orientation checks). All 64×64×48, 1 mm iso, RAS affine, origin at center.
+  orientation checks), `synthetic_calc.nii.gz` (Phase 9: tissue + dense skull shell + three separated
+  calcification blobs of known HU) + `synthetic_calc_brainmask.nii.gz` (matching interior mask). All
+  64×64×48, 1 mm iso, RAS affine, origin at center.
 - Standalone reader check (no DICOM/UI deps), fast real-data validation (entry file must be named
   `main.swift` for top-level code):
   ```bash
