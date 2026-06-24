@@ -230,14 +230,28 @@ struct SegmentInspectorView: View {
 
     private var exportSection: some View {
         InspectorSection(title: "Export") {
-            HStack(spacing: Spacing.s) {
-                Button { export(kind: .binaryMask) } label: { Label("Mask…", systemImage: "square.and.arrow.down") }
-                    .buttonStyle(.glass)
-                Button { export(kind: .atlas) } label: { Label("Atlas…", systemImage: "square.and.arrow.down.on.square") }
-                    .buttonStyle(.glass)
+            VStack(alignment: .leading, spacing: Spacing.s) {
+                HStack(spacing: Spacing.s) {
+                    Button { export(kind: .binaryMask) } label: { Label("Export Mask", systemImage: "square.and.arrow.down") }
+                        .buttonStyle(.glass)
+                    Button { export(kind: .atlas) } label: { Label("Export Atlas", systemImage: "square.and.arrow.down.on.square") }
+                        .buttonStyle(.glass)
+                }
+                .disabled(!model.hasSegmentation)
+
+                if model.hasSegmentation {
+                    Text("Saves to \(exportLocationHint)/ — change the folder & file suffixes in Settings.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            .disabled(!model.hasSegmentation)
         }
+    }
+
+    /// Abbreviated directory exports will be written to (for the inline hint).
+    private var exportLocationHint: String {
+        let dir = model.exportURL(for: .binaryMask).deletingLastPathComponent()
+        return (dir.lastPathComponent.isEmpty ? dir.path : dir.lastPathComponent)
     }
 
     // MARK: - Panels
@@ -255,24 +269,18 @@ struct SegmentInspectorView: View {
         if panel.runModal() == .OK, let url = panel.url { model.loadBrainMask(url: url) }
     }
 
-    private func defaultExportName(_ suffix: String) -> String {
-        var base = model.loadedFileName
-        if base.lowercased().hasSuffix(".nii.gz") { base = String(base.dropLast(7)) }
-        else if base.lowercased().hasSuffix(".nii") { base = String(base.dropLast(4)) }
-        if base.isEmpty { base = "segmentation" }
-        return base + suffix
-    }
-
+    /// Direct (no-dialog) export to the configured output location, confirmed by
+    /// a Liquid-Glass success banner. The destination + suffix come from Settings.
     private func export(kind: NiftiMaskKind) {
-        let panel = NSSavePanel()
-        panel.message = kind == .binaryMask ? "Export calcification mask" : "Export calcification atlas"
-        let t = niftiTypes(); if !t.isEmpty { panel.allowedContentTypes = t }
-        panel.nameFieldStringValue = defaultExportName(kind == .binaryMask ? "_calcmask.nii.gz" : "_calcatlas.nii.gz")
-        guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            if kind == .binaryMask { try model.exportMask(to: url) }
-            else { try model.exportAtlas(to: url) }
-        } catch { exportError = error.localizedDescription }
+            let url = try model.exportSegmentation(kind: kind)
+            model.presentToast(ViewerToast(
+                title: kind == .binaryMask ? "Mask exported" : "Atlas exported",
+                subtitle: url.lastPathComponent,
+                fileURL: url))
+        } catch {
+            exportError = error.localizedDescription
+        }
     }
 }
 

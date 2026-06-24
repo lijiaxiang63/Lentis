@@ -657,6 +657,31 @@ extension ViewerModel {
         url.pathExtension.lowercased() == "gz" || url.lastPathComponent.lowercased().hasSuffix(".nii.gz")
     }
 
+    /// The destination URL a direct export would write to, given the configured
+    /// output location + per-kind suffix (`<base><suffix>.nii.gz`).
+    func exportURL(for kind: NiftiMaskKind) -> URL {
+        let settings = AppSettings.shared
+        let dir = AppSettings.resolveOutputDirectory(sourceFile: loadedFileURL,
+                                                     mode: settings.outputMode,
+                                                     customDirectory: settings.customOutputDirectoryURL)
+        let base = AppSettings.niftiBaseName(loadedFileName)
+        let suffix = AppSettings.sanitizedSuffix(
+            kind == .binaryMask ? settings.exportMaskSuffix : settings.exportAtlasSuffix,
+            fallback: kind == .binaryMask ? AppSettings.defaultMaskSuffix : AppSettings.defaultAtlasSuffix)
+        return dir.appendingPathComponent("\(base)\(suffix).nii.gz")
+    }
+
+    /// Export the segmentation directly (no save dialog) to the configured output
+    /// location, returning the written file's URL. Overwrites a same-named prior
+    /// export by design.
+    @discardableResult
+    func exportSegmentation(kind: NiftiMaskKind) throws -> URL {
+        guard segmentationVolume?.labelMask != nil else { throw NiftiWriteError.noMask }
+        let url = exportURL(for: kind)
+        if kind == .binaryMask { try exportMask(to: url) } else { try exportAtlas(to: url) }
+        return url
+    }
+
     /// Export all regions as a single-value binary mask NIfTI (original grid).
     func exportMask(to url: URL) throws {
         guard let vol = segmentationVolume, let mask = vol.labelMask else { throw NiftiWriteError.noMask }

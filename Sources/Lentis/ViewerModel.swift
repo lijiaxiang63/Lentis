@@ -111,6 +111,35 @@ class ViewerModel: ObservableObject {
     }
     @Published var showHelp: Bool = false
     @Published var showLayerInspector: Bool = false
+
+    /// Transient success/info banner (Liquid-Glass HUD). Set via `presentToast`;
+    /// auto-clears after a delay. Drives the floating banner in ContentView.
+    @Published var toast: ViewerToast? = nil
+    private var toastDismissWorkItem: DispatchWorkItem?
+
+    /// Show a banner and auto-dismiss it after `duration` seconds. A new banner
+    /// supersedes any current one (its dismissal is rescheduled).
+    func presentToast(_ toast: ViewerToast, duration: TimeInterval = 4) {
+        self.toast = toast
+        toastDismissWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.toast?.id == toast.id else { return }
+            self.toast = nil
+        }
+        toastDismissWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+    }
+
+    func dismissToast() {
+        toastDismissWorkItem?.cancel()
+        toast = nil
+    }
+
+    /// Reveal the current banner's file in Finder (e.g. the just-exported mask).
+    func revealToastFile() {
+        guard let url = toast?.fileURL, FileManager.default.fileExists(atPath: url.path) else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
     @Published var isImportingLayers: Bool = false
     @Published var layerImportError: String? = nil
     /// WindowGroup can restore more than one window, so command-line startup

@@ -97,7 +97,20 @@ private struct GeneralSettingsView: View {
             } header: {
                 Text("Output Files")
             } footer: {
-                Text("SynthSeg writes a label file (`…_synthseg.nii.gz`) and, optionally, a brain mask (`…_brainmask.nii.gz`). “Next to the source file” keeps them beside your CT; if that folder is read-only Lentis falls back to ~/Documents/Lentis.")
+                Text("SynthSeg writes a label file (`…_synthseg.nii.gz`) and, optionally, a brain mask (`…_brainmask.nii.gz`); exports land here too. “Next to the source file” keeps them beside your CT; if that folder is read-only Lentis falls back to ~/Documents/Lentis.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                suffixRow(title: "Mask suffix", text: $settings.exportMaskSuffix,
+                          placeholder: AppSettings.defaultMaskSuffix)
+                suffixRow(title: "Atlas suffix", text: $settings.exportAtlasSuffix,
+                          placeholder: AppSettings.defaultAtlasSuffix)
+            } header: {
+                Text("Export File Names")
+            } footer: {
+                Text("Exporting a segmentation saves directly (no dialog) as `\(exampleBase)\(suffixPreview(settings.exportMaskSuffix, AppSettings.defaultMaskSuffix)).nii.gz`. The atlas also writes a matching `…_LUT.txt`.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -105,6 +118,27 @@ private struct GeneralSettingsView: View {
         .formStyle(.grouped)
         .scrollDisabled(true)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Example base name (the open file, sans extension) for the live preview.
+    private var exampleBase: String {
+        model.loadedFileName.isEmpty ? "scan" : AppSettings.niftiBaseName(model.loadedFileName)
+    }
+
+    private func suffixPreview(_ value: String, _ fallback: String) -> String {
+        AppSettings.sanitizedSuffix(value, fallback: fallback)
+    }
+
+    private func suffixRow(title: String, text: Binding<String>, placeholder: String) -> some View {
+        HStack(spacing: Spacing.s) {
+            Text(title)
+            Spacer(minLength: Spacing.s)
+            TextField(placeholder, text: text, prompt: Text(placeholder))
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 150)
+            Text(".nii.gz").foregroundStyle(.secondary)
+        }
     }
 
     private var folderDisplay: String {

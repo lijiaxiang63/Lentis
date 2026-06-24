@@ -23,6 +23,18 @@ struct AppSettingsTests {
         #expect(AppSettings.niftiBaseName("") == "segmentation")
     }
 
+    // MARK: - Export suffix
+
+    @Test func sanitizedSuffixStripsSeparatorsAndFallsBack() {
+        #expect(AppSettings.sanitizedSuffix("_seg", fallback: "_calcmask") == "_seg")
+        #expect(AppSettings.sanitizedSuffix("  _seg  ", fallback: "_calcmask") == "_seg")
+        // Path separators are stripped so a suffix can't escape the directory.
+        #expect(AppSettings.sanitizedSuffix("/../evil", fallback: "_calcmask") == "..evil")
+        // Empty / whitespace-only falls back.
+        #expect(AppSettings.sanitizedSuffix("", fallback: "_calcmask") == "_calcmask")
+        #expect(AppSettings.sanitizedSuffix("   ", fallback: "_calcatlas") == "_calcatlas")
+    }
+
     // MARK: - Output directory resolution
 
     @Test func besideSourceUsesTheSourceFolder() throws {
@@ -96,6 +108,8 @@ struct AppSettingsTests {
         a.autoLoadSynthSegResult = false
         a.writeDerivedBrainMask = false
         a.overlayOpacity = 0.72
+        a.exportMaskSuffix = "_mymask"
+        a.exportAtlasSuffix = "_myatlas"
 
         // A fresh instance over the same suite reflects every change.
         let b = AppSettings(defaults: suite)
@@ -109,6 +123,8 @@ struct AppSettingsTests {
         #expect(b.autoLoadSynthSegResult == false)
         #expect(b.writeDerivedBrainMask == false)
         #expect(b.overlayOpacity == 0.72)
+        #expect(b.exportMaskSuffix == "_mymask")
+        #expect(b.exportAtlasSuffix == "_myatlas")
     }
 
     @Test func defaultsAreSensibleOnFirstRun() throws {
@@ -125,5 +141,7 @@ struct AppSettingsTests {
         #expect(s.autoLoadSynthSegResult)
         #expect(s.writeDerivedBrainMask)
         #expect(s.overlayOpacity == 0.45)
+        #expect(s.exportMaskSuffix == "_calcmask")
+        #expect(s.exportAtlasSuffix == "_calcatlas")
     }
 }

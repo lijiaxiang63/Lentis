@@ -50,7 +50,13 @@ final class AppSettings: ObservableObject {
         static let autoLoadResult     = "LentisAutoLoadSynthSegResult"
         static let writeBrainMask     = "LentisWriteDerivedBrainMask"
         static let overlayOpacity     = "LentisOverlayOpacity"
+        static let exportMaskSuffix   = "LentisExportMaskSuffix"
+        static let exportAtlasSuffix  = "LentisExportAtlasSuffix"
     }
+
+    /// Built-in default suffixes for direct (no-dialog) segmentation exports.
+    static let defaultMaskSuffix = "_calcmask"
+    static let defaultAtlasSuffix = "_calcatlas"
 
     private let defaults: UserDefaults
 
@@ -110,6 +116,16 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(writeDerivedBrainMask, forKey: Key.writeBrainMask) }
     }
 
+    /// File-name suffix for a directly-exported binary mask (`<base><suffix>.nii.gz`).
+    @Published var exportMaskSuffix: String {
+        didSet { defaults.set(exportMaskSuffix, forKey: Key.exportMaskSuffix) }
+    }
+
+    /// File-name suffix for a directly-exported multi-value atlas.
+    @Published var exportAtlasSuffix: String {
+        didSet { defaults.set(exportAtlasSuffix, forKey: Key.exportAtlasSuffix) }
+    }
+
     // MARK: - Appearance
 
     /// Default opacity for the calcification/segmentation overlay (0…1).
@@ -134,6 +150,8 @@ final class AppSettings: ObservableObject {
         autoLoadSynthSegResult = (defaults.object(forKey: Key.autoLoadResult) as? Bool) ?? true
         writeDerivedBrainMask = (defaults.object(forKey: Key.writeBrainMask) as? Bool) ?? true
         overlayOpacity = (defaults.object(forKey: Key.overlayOpacity) as? Double) ?? 0.45
+        exportMaskSuffix = defaults.string(forKey: Key.exportMaskSuffix) ?? AppSettings.defaultMaskSuffix
+        exportAtlasSuffix = defaults.string(forKey: Key.exportAtlasSuffix) ?? AppSettings.defaultAtlasSuffix
     }
 
     // MARK: - Resolved URLs
@@ -184,6 +202,17 @@ final class AppSettings: ObservableObject {
             if isWritableDir(dir) { return dir }
         }
         return fm.temporaryDirectory
+    }
+
+    /// A safe, non-empty file-name suffix: trims whitespace and strips path
+    /// separators (so it can't escape the output directory); falls back to
+    /// `fallback` when the cleaned result is empty.
+    static func sanitizedSuffix(_ suffix: String, fallback: String) -> String {
+        let cleaned = suffix
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "")
+            .replacingOccurrences(of: ":", with: "")
+        return cleaned.isEmpty ? fallback : cleaned
     }
 
     /// Strip a `.nii` / `.nii.gz` extension from a file name, returning a clean
