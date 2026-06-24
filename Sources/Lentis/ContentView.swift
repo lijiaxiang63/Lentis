@@ -47,8 +47,8 @@ struct ContentView: View {
                 ToolPalette(model: model)
                     .padding(.leading, Spacing.m)
 
-                if model.isLoading {
-                    NiftiLoadingOverlay()
+                if model.isLoading || model.isScanningFolder {
+                    NiftiLoadingOverlay(scanningFolder: model.isScanningFolder && !model.isLoading)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .transition(.opacity)
                         .zIndex(1_000)
@@ -214,6 +214,9 @@ struct ContentView: View {
     // MARK: - Handlers
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        // Ignore drops while a load/scan is already in flight (mirrors the Open
+        // controls' guard) so two rapid drops can't race two concurrent loads.
+        guard !model.isLoading && !model.isScanningFolder else { return false }
         for provider in providers {
             if provider.canLoadObject(ofClass: URL.self) {
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
@@ -241,6 +244,9 @@ struct ContentView: View {
 /// byte-accurate progress, so this deliberately uses an indeterminate system
 /// progress indicator rather than presenting a misleading percentage.
 private struct NiftiLoadingOverlay: View {
+    /// True while scanning an opened folder into a dataset (vs. loading a volume).
+    var scanningFolder: Bool = false
+
     var body: some View {
         ZStack {
             Color.black.opacity(0.5)
@@ -250,9 +256,10 @@ private struct NiftiLoadingOverlay: View {
                     .controlSize(.large)
 
                 VStack(spacing: 4) {
-                    Text("Loading NIfTI…")
+                    Text(scanningFolder ? "Scanning folder…" : "Loading NIfTI…")
                         .font(.headline)
-                    Text("Decompressing and preparing the volume")
+                    Text(scanningFolder ? "Finding NIfTI images in the dataset"
+                                        : "Decompressing and preparing the volume")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -263,40 +270,81 @@ private struct NiftiLoadingOverlay: View {
             .shadow(radius: 12)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Loading NIfTI file")
+        .accessibilityLabel(scanningFolder ? "Scanning folder" : "Loading NIfTI file")
     }
 }
 
 struct SidebarView: View {
     @ObservedObject var model: ViewerModel
-    
+
+    /// Sidebar header title: the open dataset name, or "Files" for a single file.
+    private var headerTitle: String { model.dataset?.name ?? "Files" }
+
+    /// Subtitle under the header for an open dataset (subject + image counts).
+    private var headerSubtitle: String? {
+        guard let d = model.dataset else { return nil }
+        let images = "\(d.imageCount) \(d.imageCount == 1 ? "image" : "images")"
+        if d.isBIDS {
+            let subs = "\(d.subjectCount) \(d.subjectCount == 1 ? "subject" : "subjects")"
+            return "\(subs) · \(images)"
+        }
+        return "Folder · \(images)"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Files")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(headerTitle)
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let sub = headerSubtitle {
+                        Text(sub)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
                 Spacer()
 
-                Button(action: openFile) {
-                    Label("Open", systemImage: "folder")
-                        .labelStyle(.titleAndIcon)
-                }
-                .buttonStyle(.glassProminent)
-                .controlSize(.small)
-                .help("Open NIfTI File")
-                .disabled(model.isLoading)
+                OpenMenu(model: model)
             }
             .padding(.horizontal, Spacing.m)
             .padding(.vertical, Spacing.s)
-            
-            SeriesListView(model: model)
+
+            if let dataset = model.dataset {
+                BIDSNavigatorView(model: model, dataset: dataset)
+            } else {
+                SeriesListView(model: model)
+            }
         }
     }
-    
-    private func openFile() {
-        model.openFile()
+}
+
+/// The sidebar's primary Open control: a glass-prominent split button. A direct
+/// click opens the unified panel (file *or* folder); the menu offers the two
+/// explicit choices.
+struct OpenMenu: View {
+    @ObservedObject var model: ViewerModel
+
+    var body: some View {
+        Menu {
+            Button { model.openFile() } label: { Label("Open File…", systemImage: "doc") }
+            Button { model.openFolder() } label: { Label("Open Folder…", systemImage: "folder.badge.plus") }
+        } label: {
+            Label("Open", systemImage: "folder")
+                .labelStyle(.titleAndIcon)
+        } primaryAction: {
+            model.openFileOrFolder()
+        }
+        .menuStyle(.button)
+        .buttonStyle(.glassProminent)
+        .controlSize(.small)
+        .fixedSize()
+        .help("Open a NIfTI file or a folder / BIDS dataset")
+        .disabled(model.isLoading || model.isScanningFolder)
     }
 }
 
@@ -352,7 +400,7 @@ struct SeriesListView: View {
                  ContentUnavailableView {
                      Label("No file open", systemImage: "doc.badge.plus")
                  } description: {
-                     Text("Click Open above, or drag a .nii / .nii.gz file here.")
+                     Text("Open a `.nii` / `.nii.gz` file or a folder / BIDS dataset above, or drag one here.")
                  }
              }
         }

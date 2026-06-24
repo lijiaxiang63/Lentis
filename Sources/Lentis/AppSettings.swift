@@ -21,6 +21,10 @@ enum OutputLocationMode: String, CaseIterable, Identifiable {
     case besideSource
     /// A user-chosen folder.
     case customFolder
+    /// Into the open BIDS dataset's `derivatives/lentis/` tree, with BIDS-valid
+    /// derivative names. Falls back to `besideSource` when no BIDS dataset/file
+    /// is open (e.g. a single file or a loose folder).
+    case bidsDerivatives
 
     var id: String { rawValue }
 
@@ -28,6 +32,7 @@ enum OutputLocationMode: String, CaseIterable, Identifiable {
         switch self {
         case .besideSource: return "Next to the source file"
         case .customFolder: return "A folder I choose"
+        case .bidsDerivatives: return "BIDS derivatives folder"
         }
     }
 }
@@ -57,6 +62,9 @@ final class AppSettings: ObservableObject {
     /// Built-in default suffixes for direct (no-dialog) segmentation exports.
     static let defaultMaskSuffix = "_calcmask"
     static let defaultAtlasSuffix = "_calcatlas"
+
+    /// BIDS derivatives pipeline name — outputs land in `derivatives/<this>/`.
+    static let bidsPipelineName = "lentis"
 
     private let defaults: UserDefaults
 
@@ -184,7 +192,11 @@ final class AppSettings: ObservableObject {
 
         var candidates: [URL] = []
         switch mode {
-        case .besideSource:
+        // `.bidsDerivatives` needs the open dataset (root + the source file's
+        // entities), which this pure helper doesn't have, so the viewer resolves
+        // it directly (ViewerModel.resolveOutputURL); here it degrades to the
+        // beside-source behavior for any non-dataset / non-BIDS fallback.
+        case .besideSource, .bidsDerivatives:
             if let src = sourceFile { candidates.append(src.deletingLastPathComponent()) }
         case .customFolder:
             if let custom = customDirectory { candidates.append(custom) }
@@ -213,6 +225,20 @@ final class AppSettings: ObservableObject {
             .replacingOccurrences(of: "/", with: "")
             .replacingOccurrences(of: ":", with: "")
         return cleaned.isEmpty ? fallback : cleaned
+    }
+
+    /// Derive a BIDS `desc-<label>` value from a legacy file-name suffix: strip
+    /// leading separators and a trailing role word (mask/atlas/dseg/seg), then
+    /// keep only alphanumerics (BIDS labels must be alphanumeric). Falls back to
+    /// `fallback`. e.g. "_calcmask" → "calc", "_calcatlas" → "calc".
+    static func bidsDescLabel(fromSuffix suffix: String, fallback: String = "calc") -> String {
+        var s = suffix.trimmingCharacters(in: .whitespacesAndNewlines)
+        while let f = s.first, !f.isLetter && !f.isNumber { s.removeFirst() }
+        for role in ["mask", "atlas", "dseg", "seg"] where s.lowercased().hasSuffix(role) && s.count > role.count {
+            s = String(s.dropLast(role.count)); break
+        }
+        s = s.filter { $0.isLetter || $0.isNumber }
+        return s.isEmpty ? fallback : s
     }
 
     /// Strip a `.nii` / `.nii.gz` extension from a file name, returning a clean
