@@ -591,7 +591,9 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 model.activeTool = .roiBox
                 return true
             case "k":
-                model.activeTool = .calcBrush
+                // The touch-up brush edits a committed region; only arm it when one
+                // exists and no draft is in progress (otherwise it would no-op).
+                if model.hasSegmentation, model.draftRegion == nil { model.activeTool = .calcBrush }
                 return true
             case "]", ".":
                 model.rotateClockwiseForPanel(model.activePanel)

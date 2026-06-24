@@ -59,6 +59,34 @@ extension ViewerModel {
     var hasBrainMask: Bool { brainMaskLayer != nil }
     var hasSegmentation: Bool { !calcRegions.isEmpty }
 
+    // MARK: - Physical size readouts
+
+    /// Physical volume of a voxel count using the base volume's spacing — the unit
+    /// a radiologist actually reasons about (mm³ under 1 cm³, else cm³). "" when
+    /// there is no volume or the count is zero.
+    func physicalVolumeString(voxelCount: Int) -> String {
+        guard let vol = segmentationVolume, voxelCount > 0 else { return "" }
+        let mm3 = Double(voxelCount) * abs(vol.spacingX * vol.spacingY * vol.spacingZ)
+        if mm3 < 1000 { return String(format: "%.0f mm³", mm3) }
+        return String(format: "%.2f cm³", mm3 / 1000)
+    }
+
+    /// "N vox · V mm³" (drops the volume when spacing is unavailable). The voxel
+    /// count is grouped (e.g. "393,263") so large regions stay readable.
+    func regionSizeString(voxelCount: Int) -> String {
+        let vox = "\(voxelCount.formatted(.number.grouping(.automatic))) vox"
+        let v = physicalVolumeString(voxelCount: voxelCount)
+        return v.isEmpty ? vox : "\(vox) · \(v)"
+    }
+
+    /// Approximate physical diameter of the spherical touch-up brush (a voxel
+    /// radius → mm), using the base volume's mean spacing. "" when no volume.
+    func brushDiameterString(radius: Int) -> String {
+        guard let vol = segmentationVolume else { return "" }
+        let meanSpacing = (abs(vol.spacingX) + abs(vol.spacingY) + abs(vol.spacingZ)) / 3
+        return String(format: "≈%.1f mm", Double(2 * radius + 1) * meanSpacing)
+    }
+
     // MARK: - Per-label render color table
 
     /// Build the per-label color table for `loadMPRSlice`. Empty when there is
@@ -77,6 +105,22 @@ extension ViewerModel {
                 alpha: min(1, alpha + 0.25))
         }
         return table
+    }
+
+    /// Per-label colors to hand `loadMPRSlice`'s mask renderer — or `nil` to fall
+    /// back to the legacy single flat-color mask (the Phase-7 demo / generic
+    /// overlay, which has no `CalcificationRegion`s).
+    ///
+    /// Segmentation is "active" whenever any committed region or a live draft
+    /// exists. In that mode this is ALWAYS non-nil — *even when empty* (every
+    /// region hidden) — so the `labelMask` renders as a per-label ATLAS where a
+    /// region absent from the table (i.e. hidden) composites nothing. Returning
+    /// `nil` for the all-hidden case would route the mask through the flat
+    /// single-color path, which paints EVERY label one color and makes the
+    /// per-region visibility toggle a no-op (the bug this guards).
+    func segmentationAtlasColors() -> [Int32: LayerRGBA]? {
+        guard !calcRegions.isEmpty || draftRegion != nil else { return nil }
+        return calcMaskColorTable()
     }
 
     // MARK: - Region lifecycle
@@ -145,11 +189,17 @@ extension ViewerModel {
         guard panel.panelMode.isMPR, let vol = segmentationVolume,
               let g = panel.displayedPlaneGeometry else { return }
         if draftRegion == nil { beginRegion(method: .thresholdInROI) }
-        guard let draft = draftRegion,
-              let result = VoxelBox.fromPlanePoints(a, b, geometry: g, volume: vol,
+        guard let draft = draftRegion else { return }
+        // Redrawing over an existing box keeps its current through-plane depth (so
+        // a handle-refined depth isn't discarded); a fresh box uses the default.
+        var slabDepth = calcSlabDepth
+        if !draft.box.isEmpty, let slabAxis = VoxelBox.slabAxis(forPlane: panel.panelMode) {
+            slabDepth = max(1, [draft.box.xRange, draft.box.yRange, draft.box.zRange][slabAxis].count)
+        }
+        guard let result = VoxelBox.fromPlanePoints(a, b, geometry: g, volume: vol,
                                                     mode: panel.panelMode,
                                                     sliceIndex: panel.mprSliceIndex,
-                                                    slabDepth: calcSlabDepth) else { return }
+                                                    slabDepth: slabDepth) else { return }
         setActiveRegionBox(result.box)
         // Relocate the OTHER MPR panels onto the box so its cross-section + resize
         // handles are immediately visible there — letting the user refine the 3D
@@ -218,6 +268,8 @@ extension ViewerModel {
         guard let draft = draftRegion, let vol = segmentationVolume, !draft.box.isEmpty,
               let seg = makeSegmenter() else {
             clearPreview()
+            draftRegion?.previewVoxelCount = 0
+            draftRegion?.previewTruncated = false
             segmentationRevision &+= 1
             rerenderSegmentation()
             return
@@ -243,23 +295,63 @@ extension ViewerModel {
 
         draft.voxelCount = coords.count
         draft.anatomicalName = anatomicalName(forVoxels: coords)
-        calcRegions.insert(draft, at: 0)   // top-first
+        // Re-insert a re-edited region where it came from; new regions go top-first.
+        let insertAt = min(max(0, reEditingRegionIndex ?? 0), calcRegions.count)
+        calcRegions.insert(draft, at: insertAt)
+        clearReEditStash()
         activeRegionID = draft.id
         draftRegion = nil
+        // Drawing this region is done — leave ROI-box mode so the next click
+        // navigates (relocates the crosshair) instead of starting another box.
+        // Picking a method re-enters box mode via `beginRegion`.
+        if activeTool == .roiBox { activeTool = .select }
         recomputeRegionVoxelCounts()
         segmentationRevision &+= 1
         rerenderSegmentation()
     }
 
-    /// Discard the draft and its preview.
+    /// Discard the draft and its preview. If the draft was a re-edit of a
+    /// committed region, restore that region (repaint its label + re-insert it)
+    /// rather than destroying it — a Cancel/abandon must never lose committed work.
     func cancelActiveRegion() {
         let hadDraft = draftRegion != nil || !segPreviewBackup.isEmpty
         clearPreview()
+        restoreReEditedRegionIfNeeded()
         if hadDraft {
             draftRegion = nil
             segmentationRevision &+= 1
             rerenderSegmentation()
         }
+    }
+
+    /// If a re-edit is in flight, repaint the original committed label over the
+    /// region's stashed voxels and re-insert it at its prior index, so an
+    /// abandoned re-edit leaves the committed list exactly as it was found.
+    private func restoreReEditedRegionIfNeeded() {
+        guard let draft = draftRegion, let idx = reEditingRegionIndex, let mask = baseLabelMask else {
+            clearReEditStash(); return
+        }
+        for c in reEditingCommittedCoords { mask.setLabel(draft.label, x: c.x, y: c.y, z: c.z) }
+        draft.voxelCount = reEditingCommittedCoords.count
+        draft.previewVoxelCount = 0
+        let insertAt = min(max(0, idx), calcRegions.count)
+        calcRegions.insert(draft, at: insertAt)
+        activeRegionID = draft.id
+        clearReEditStash()
+    }
+
+    private func clearReEditStash() {
+        reEditingRegionIndex = nil
+        reEditingCommittedCoords.removeAll(keepingCapacity: true)
+    }
+
+    /// Select a committed region (drives the active highlight + touch-up brush).
+    /// While a draft is in progress the draft owns the active state, so a row tap
+    /// is ignored — this prevents the dual-active state where the brush would edit
+    /// a committed region while a draft preview is still painted.
+    func selectRegion(_ id: UUID) {
+        guard draftRegion == nil else { return }
+        activeRegionID = id
     }
 
     /// Delete a committed region, clearing its voxels from the mask.
@@ -275,17 +367,22 @@ extension ViewerModel {
     }
 
     /// Pull a committed region back into a live draft for re-editing. Its
-    /// committed voxels become the preview; re-committing repaints them.
+    /// committed voxels become the preview; re-committing repaints them, while a
+    /// Cancel/abandon restores the original (see `restoreReEditedRegionIfNeeded`).
     func reEditRegion(_ id: UUID) {
-        cancelActiveRegion()
+        cancelActiveRegion()   // settle/restore any prior draft first
         guard let idx = calcRegions.firstIndex(where: { $0.id == id }), let mask = baseLabelMask else { return }
         let region = calcRegions.remove(at: idx)
-        var coords: [(Int, Int, Int)] = []
+        var coords: [(x: Int, y: Int, z: Int)] = []
         forEachVoxel(label: region.label, in: mask) { x, y, z in
             coords.append((x, y, z)); mask.setLabel(0, x: x, y: y, z: z)
         }
+        // Remember the region's origin so Cancel can put it back unharmed.
+        reEditingRegionIndex = idx
+        reEditingCommittedCoords = coords
+        region.previewTruncated = false
         draftRegion = region
-        applyPreview(coords)
+        applyPreview(coords.map { ($0.x, $0.y, $0.z) })
         region.previewVoxelCount = coords.count
         activeRegionID = region.id
         segmentationRevision &+= 1
@@ -295,11 +392,16 @@ extension ViewerModel {
     /// Clear all segmentation state (called on a new base file).
     func resetSegmentation() {
         segPreviewBackup.removeAll()
+        clearReEditStash()
         calcRegions = []
         draftRegion = nil
         activeRegionID = nil
         brainMaskLayer = nil
         brainMaskStatus = ""
+        // Stop an in-flight SynthSeg run so its completion can't fire a brain-mask
+        // load against the newly opened (different) volume.
+        synthSegRunner?.cancel()
+        synthSegRunner = nil
         isRunningSynthSeg = false
         synthSegProgress = 0
         synthSegStatus = ""
@@ -353,6 +455,7 @@ extension ViewerModel {
     /// (reusing the overlay loader's affine-aware resampling onto the base grid).
     func loadBrainMask(url: URL, statusLabel: String? = nil) {
         guard let base = segmentationVolume else { brainMaskStatus = "Open a CT first."; return }
+        let baseUID = base.seriesUID
         brainMaskStatus = "Loading brain mask…"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let secured = url.startAccessingSecurityScopedResource()
@@ -361,6 +464,9 @@ extension ViewerModel {
                 let layer = try OverlayLayerLoader.load(url: url, matching: base)
                 DispatchQueue.main.async {
                     guard let self else { return }
+                    // The base volume may have been swapped (new file / timepoint)
+                    // while we loaded — don't attach a mask to the wrong grid.
+                    guard self.segmentationVolume?.seriesUID == baseUID else { return }
                     self.brainMaskLayer = layer
                     let kindStr = layer.kind == .atlas
                         ? "parcellation · \(layer.volume.labelsPresent.count) labels"
@@ -427,9 +533,13 @@ extension ViewerModel {
                            },
                            completion: { [weak self] result in
                                guard let self else { return }
+                               try? FileManager.default.removeItem(at: inputURL)
+                               // If this run was superseded — a new file was opened
+                               // (resetSegmentation) or the user cancelled — its
+                               // completion must not overwrite the fresh UI state.
+                               guard self.synthSegRunner === runner else { return }
                                self.isRunningSynthSeg = false
                                self.synthSegRunner = nil
-                               try? FileManager.default.removeItem(at: inputURL)
                                switch result {
                                case .success(let segURL):
                                    self.synthSegStatus = "SynthSeg complete."
@@ -516,11 +626,15 @@ extension ViewerModel {
         }
     }
 
-    /// Single-pass tally of each label's voxel count.
+    /// Single-pass tally of each label's voxel count. Voxels currently hidden
+    /// under the live preview (label 255) still belong to their committed regions,
+    /// so credit the preview backup back in — otherwise a recount taken while a
+    /// draft preview overlaps a region undercounts that region.
     func recomputeRegionVoxelCounts() {
         guard let mask = baseLabelMask else { return }
         var counts = [Int](repeating: 0, count: 256)
         for v in mask.labels { counts[Int(v)] += 1 }
+        for b in segPreviewBackup where b.prev != 0 { counts[Int(b.prev)] += 1 }
         for r in calcRegions { r.voxelCount = counts[Int(r.label)] }
     }
 

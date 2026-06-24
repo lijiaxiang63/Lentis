@@ -82,6 +82,16 @@ struct LayerInspectorView: View {
                         .help("Add Mask or Atlas Layer")
                         .accessibilityLabel("Add layer")
                     } else {
+                        Button {
+                            if let id = model.activeRegionID { model.deleteRegion(id) }
+                        } label: {
+                            Image(systemName: "minus")
+                        }
+                        .disabled(model.activeRegionID == nil || model.draftRegion != nil
+                                  || !model.calcRegions.contains { $0.id == model.activeRegionID })
+                        .help("Delete selected region")
+                        .accessibilityLabel("Delete selected region")
+
                         Menu {
                             Button("Threshold in ROI") { model.beginRegion(method: .thresholdInROI) }
                             Button("Grow from Seed") { model.beginRegion(method: .growFromSeed) }

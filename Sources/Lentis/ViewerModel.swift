@@ -277,6 +277,12 @@ class ViewerModel: ObservableObject {
     /// Voxel values under the current draft preview, so clearing the preview
     /// restores committed labels instead of zeroing them.
     var segPreviewBackup: [(x: Int, y: Int, z: Int, prev: UInt8)] = []
+    /// When a committed region is pulled into a draft for re-editing
+    /// (`reEditRegion`), remember where it lived in `calcRegions` and the exact
+    /// voxels it owned, so abandoning the edit (`cancelActiveRegion`) restores it
+    /// instead of silently destroying it. nil unless a re-edit is in flight.
+    var reEditingRegionIndex: Int? = nil
+    var reEditingCommittedCoords: [(x: Int, y: Int, z: Int)] = []
     /// In-flight SynthSeg run (for cancel) + a user-chosen binary override.
     var synthSegRunner: SynthSegRunner?
     var synthSegBinaryOverride: URL?
@@ -1382,11 +1388,18 @@ class ViewerModel: ObservableObject {
             // Mask overlay (segmentation seam): captured on the main thread.
             // `engine.maskSlice` returns nil unless the volume carries a labelMask,
             // so renderSlice stays on the grayscale path in normal runs.
-            let showMask = self.showMaskOverlay
             let maskColor = self.maskOverlayColor
             let maskAlpha = self.maskOverlayAlpha
-            // Per-label calcification colors (empty ⇒ flat/no segmentation).
-            let segColors = self.calcMaskColorTable()
+            // Per-label calcification colors, or nil to use the legacy flat mask.
+            // When segmentation is active this is non-nil (possibly empty) so the
+            // labelMask renders as a per-label ATLAS — a HIDDEN region is absent
+            // from the table and draws nothing. (Routing it through the flat path
+            // would paint EVERY label one color, defeating the visibility toggle.)
+            let segAtlasColors = self.segmentationAtlasColors()
+            // Nothing to composite when every region is hidden (empty atlas) → keep
+            // the grayscale fast path. nil (no segmentation) leaves the flat Phase-7
+            // demo mask gated only by showMaskOverlay.
+            let showMask = self.showMaskOverlay && (segAtlasColors?.isEmpty != true)
             let segRevision = self.segmentationRevision
             let layerSnapshot = self.layerStore.renderSnapshot()
 
@@ -1414,7 +1427,7 @@ class ViewerModel: ObservableObject {
                       let mprSlice = slice,
                       let image = MPREngine.renderSlice(mprSlice, ww: ww, wc: wc, invert: invert,
                                                         mask: maskSlice, maskColor: maskColor, maskAlpha: maskAlpha,
-                                                        maskAtlasColors: segColors.isEmpty ? nil : segColors,
+                                                        maskAtlasColors: segAtlasColors,
                                                         layers: layerSlices) else {
                     DispatchQueue.main.async { panel.isLoading = false }
                     return

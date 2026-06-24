@@ -872,6 +872,64 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
     documented SwiftUI tick-mark layout cost. **Not GUI-verified** (no real-CT GUI pass yet); locked by
     unit tests — engine `meanHU`, reach finite-vs-unlimited flood, box-mean seeding + re-tracking, and the
     fixed Method-A default. **swift test green (105 XCTest + 59 swift-testing = 164).**
+  - **Follow-up (2026-06-24) — segmentation UX/flow + data-loss hardening.** Driven by an
+    adversarially-verified multi-lens review of the create/select/add/delete flow. **(1) No silent data
+    loss (the must-fix):** `reEditRegion` previously `remove`d the region + zeroed its mask voxels on
+    entry, so a Cancel / click-away / "+ New Region" after re-editing destroyed it permanently (the
+    cancel path restored the post-zero backup, i.e. 0). Now `reEditRegion` stashes the region's prior
+    list index + its committed voxel coords (`reEditingRegionIndex`/`reEditingCommittedCoords` on the
+    model); `cancelActiveRegion` → `restoreReEditedRegionIfNeeded` repaints the original label + re-inserts
+    the region at its index; `commitActiveRegion` inserts at that index + clears the stash;
+    `resetSegmentation` clears the stash and **cancels an in-flight SynthSeg** (its completion now no-ops
+    via `synthSegRunner === runner` so a superseded run can't overwrite fresh state or attach a wrong-grid
+    mask — `loadBrainMask` also guards on the captured `seriesUID`). **4D:** `selectTimepoint` settles the
+    draft then **carries `labelMask` across timepoints** (identical canonical grid) instead of orphaning
+    committed regions. **(2) Discoverable, unambiguous flow:** every region row gets a visible trailing
+    ellipsis **Menu (Re-edit / Delete)** (the right-click contextMenu stays as the shortcut); the Segment
+    toolbar gains a **`minus`** button (▲ +/- symmetry with the Layers tab); a row tap routes through
+    `selectRegion`, which is a **no-op while a draft is live** (kills the dual-active draft+committed
+    state); the touch-up brush UI + the **K** shortcut are gated on `hasSegmentation && draftRegion == nil`
+    so the brush can't silently no-op. **(3) Legible science:** region rows + the live preview show
+    **physical volume (mm³/cm³)** next to the voxel count (`physicalVolumeString`/`regionSizeString` off
+    the volume spacing); the ROI **histogram** gains HU value labels above the threshold markers + min/max
+    axis ticks; an **always-visible, method-specific caption** explains each method (esp. Method B's "box
+    ENTIRELY inside the calcification" contract); a **non-CT advisory** + an `effectiveModality`-driven
+    unit string ("HU" vs "Intensity") replace the unconditional "HU"; the New-Region prompt is reworded.
+    **(4) Cheap correctness + cleanup:** `recomputeRegionVoxelCounts` credits the preview backup so a
+    recount under a live preview doesn't undercount overlapped regions; the empty-box preview branch resets
+    `previewVoxelCount`/`previewTruncated`; a **redraw preserves the box's refined through-plane depth**;
+    the brush shows an approximate **mm diameter**; stale slab-slider comments fixed. Orientation
+    (`MPREngine.planeGeometry`), the main-thread-write + `segmentationRevision` sync contract, and the
+    excluded 3D panel are all untouched. **Adversarially self-reviewed (no correctness regressions found);
+    locked by +5 `SegmentationModelTests` (re-edit→cancel restore, re-edit→new restore, re-edit→commit
+    no-dup, select-ignored-during-draft, recount-credits-preview). swift build clean; swift test green
+    (110 XCTest + 59 swift-testing = 169). Not yet GUI-verified — user to test.** Deferred (verified but
+    larger / behavioral): box translate-drag + handle-overlap tie-break + an inspector Depth stepper;
+    on-canvas brush-footprint overlay; widening Method-A's 40–100 HU band toward the 130-HU floor (needs
+    fixture + test re-validation).
+  - **Follow-up (2026-06-24) — region visibility-toggle bug + Regions-list polish + add-exits-box.**
+    **(1) Visibility toggle was a no-op when it mattered (the bug):** `loadMPRSlice` chose the mask
+    render path with `maskAtlasColors: segColors.isEmpty ? nil : segColors`. Hiding a region drops it
+    from `calcMaskColorTable()`; when that emptied the table (the common single-region case, or all
+    regions hidden), `maskAtlasColors` went `nil`, and `MPREngine.renderSlice` reads `nil` as the legacy
+    **flat single-color mask** — which paints **every** non-zero label one color, so the "hidden" region
+    stayed on screen in flat red. Fix: a guarded seam `ViewerModel.segmentationAtlasColors()` returns
+    `nil` **only** when no region/draft exists (the Phase-7 demo mask); whenever segmentation is active it
+    returns the (possibly empty) per-label table, so the `labelMask` always renders as a per-label
+    **atlas** and a hidden label composites nothing. `loadMPRSlice` also skips the mask entirely when the
+    atlas is empty (all hidden) → grayscale fast path. **(2) Add-Region exits ROI-box mode:**
+    `commitActiveRegion` now sets `activeTool = .select` (from `.roiBox`), so the next click navigates
+    instead of starting a new box; picking a method re-enters box mode via `beginRegion`. **(3) Regions
+    list polish:** section header shows the region count; each `RegionRow` gains a method badge
+    (`THRESHOLD`/`GROW`, mirroring the Layers kind badge), grouped voxel counts (`393,263`), a
+    dim-when-hidden row + clearer selection (accent fill **+** ring), a consistent eye toggle
+    (help/VoiceOver), and a **compact circular color swatch** (an opaque `Circle` over a hit-through
+    invisible `ColorPicker`) replacing the bulky native well that crowded the name. Orientation + the
+    main-thread-write/`segmentationRevision` sync contract untouched; the flat Phase-7 demo-mask path is
+    preserved (no `CalcificationRegion`s ⇒ `nil` ⇒ flat). **Locked by +3 `SegmentationModelTests`
+    (hidden-region renders nothing not everything, atlas excludes only hidden, commit-exits-box). swift
+    build clean; swift test green (113 XCTest + 59 swift-testing = 172).** Color-dot click (opens the
+    system color panel via the hit-through well) is the one item left for a by-hand GUI check.
 
 ---
 

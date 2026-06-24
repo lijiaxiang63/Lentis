@@ -94,7 +94,7 @@ enum ActiveTool: String, CaseIterable, Identifiable {
     case angle = "Angle"
     case eraser = "Eraser"
     /// Phase 9 — draw a 3D ROI box around a calcification (drag a rect on a
-    /// plane; slab depth from the Segment inspector).
+    /// plane; refine its 3D extent by dragging the box's resize handles).
     case roiBox = "ROI Box"
     /// Phase 9 — manual voxel touch-up of the selected calcification region.
     case calcBrush = "Brush"

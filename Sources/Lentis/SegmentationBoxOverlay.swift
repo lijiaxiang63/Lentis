@@ -9,8 +9,11 @@
 // the same pixel→screen transform the image uses (mirrors CrossReferenceOverlay),
 // keeping the box glued to the pixels under zoom/pan/rotate/flip.
 //
-// Box editing is redraw-to-replace (drag a new rect) + the inspector slab-depth
-// slider; the corner markers are visual only. The 3D panel is excluded.
+// Box editing is direct: drag an empty area to redraw the box (replace), or drag
+// one of the 8 grabbable handles (4 corners + 4 edge midpoints) to resize it —
+// on axial that edits the in-plane extent, on coronal/sagittal the depth. The
+// handles are drawn here and hit-tested in MultiPanelContainer through the SAME
+// forward transform, so the grab targets line up with the dots. The 3D panel is excluded.
 // Licensed under the MIT License. See LICENSE for details.
 
 import SwiftUI

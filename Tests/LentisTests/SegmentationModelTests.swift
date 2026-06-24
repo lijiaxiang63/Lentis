@@ -219,4 +219,184 @@ final class SegmentationModelTests: XCTestCase {
         model.paintBrush(atVoxel: (5, 5, 5), radius: 0, erase: true)
         XCTAssertEqual(count(vol.labelMask, label: label), base)
     }
+
+    // MARK: - Re-edit recovery (no silent data loss)
+
+    func testReEditThenCancelRestoresRegion() {
+        // The data-loss regression: re-editing a committed region then canceling
+        // (or clicking away) must restore it intact, not destroy it.
+        let (model, vol) = makeModel()
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))
+        let label = model.draftRegion!.label
+        model.draftRegion!.name = "Right BG"
+        model.commitActiveRegion()
+        let id = model.calcRegions.first!.id
+
+        model.reEditRegion(id)
+        XCTAssertNotNil(model.draftRegion, "region pulled into a draft")
+        XCTAssertTrue(model.calcRegions.isEmpty, "out of the committed list while editing")
+
+        model.cancelActiveRegion()
+        XCTAssertNil(model.draftRegion)
+        XCTAssertEqual(model.calcRegions.count, 1, "canceling a re-edit restores the region")
+        XCTAssertEqual(model.calcRegions.first?.id, id, "same region object/id")
+        XCTAssertEqual(model.calcRegions.first?.label, label)
+        XCTAssertEqual(model.calcRegions.first?.name, "Right BG", "metadata preserved")
+        XCTAssertEqual(model.calcRegions.first?.voxelCount, 125)
+        XCTAssertEqual(count(vol.labelMask, label: label), 125, "committed voxels repainted")
+        XCTAssertEqual(count(vol.labelMask, label: ViewerModel.calcPreviewLabel), 0, "no preview left")
+    }
+
+    func testReEditThenBeginNewRestoresPriorRegion() {
+        // Starting a fresh region while one is being re-edited must not lose the
+        // re-edited region (beginRegion → cancelActiveRegion → restore).
+        let (model, vol) = makeModel(blob: 18..<23)
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))
+        let label = model.draftRegion!.label
+        model.commitActiveRegion()
+        let id = model.calcRegions.first!.id
+
+        model.reEditRegion(id)
+        model.beginRegion(method: .growFromSeed)   // abandons the re-edit
+        XCTAssertTrue(model.calcRegions.contains { $0.id == id }, "prior region restored, not lost")
+        XCTAssertEqual(count(vol.labelMask, label: label), 125, "its voxels are back")
+    }
+
+    func testReEditCommitKeepsSingleRegion() {
+        // Committing a re-edit must not double-insert or leave a stale stash.
+        let (model, vol) = makeModel()
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))
+        let label = model.draftRegion!.label
+        model.commitActiveRegion()
+        let id = model.calcRegions.first!.id
+
+        model.reEditRegion(id)
+        model.commitActiveRegion()
+        XCTAssertEqual(model.calcRegions.count, 1, "no duplicate region after re-edit + commit")
+        XCTAssertEqual(count(vol.labelMask, label: label), 125)
+
+        // A subsequent cancel with no draft must be a clean no-op (stash cleared).
+        model.cancelActiveRegion()
+        XCTAssertEqual(model.calcRegions.count, 1)
+    }
+
+    // MARK: - Draft protection + selection
+
+    func testSelectRegionIgnoredDuringDraft() {
+        // Tapping a committed region while a draft is live must NOT switch the
+        // active selection (which would create a dual-active draft+committed state).
+        let (model, _) = makeModel(blob: 8..<12)
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 6..<14, yRange: 6..<14, zRange: 6..<14))
+        model.commitActiveRegion()
+        let committedID = model.calcRegions.first!.id
+
+        model.beginRegion(method: .thresholdInROI)   // a new draft is now active
+        let draftID = model.draftRegion!.id
+        model.selectRegion(committedID)
+        XCTAssertEqual(model.activeRegionID, draftID, "selection stays on the draft while drafting")
+
+        model.cancelActiveRegion()
+        model.selectRegion(committedID)
+        XCTAssertEqual(model.activeRegionID, committedID, "selection works once the draft is gone")
+    }
+
+    // MARK: - Tool mode after commit
+
+    func testCommitExitsROIBoxMode() {
+        // Adding a region must drop ROI-box mode so the next click navigates the
+        // crosshair instead of starting another box.
+        let (model, _) = makeModel()
+        model.beginRegion(method: .thresholdInROI)
+        XCTAssertEqual(model.activeTool, .roiBox, "drawing a region enters ROI-box mode")
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))
+
+        model.commitActiveRegion()
+        XCTAssertEqual(model.activeTool, .select, "Add Region returns to Select (exits box mode)")
+    }
+
+    // MARK: - Visibility → render color table
+
+    func testHidingRegionRendersNothingNotEverything() {
+        // The visibility-toggle bug: hiding the *only* region used to empty the
+        // color table, which made loadMPRSlice fall back to the flat single-color
+        // mask that paints EVERY label — so the "hidden" region stayed on screen.
+        // The atlas-colors seam must stay NON-nil (so the renderer uses the
+        // per-label atlas) while excluding the hidden label.
+        let (model, _) = makeModel(blob: 18..<23)
+
+        // No regions → nil ⇒ legacy flat mask path (Phase-7 demo only).
+        XCTAssertNil(model.segmentationAtlasColors(), "no segmentation ⇒ flat-mask path")
+
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))
+        let label = model.draftRegion!.label
+        model.commitActiveRegion()
+        let region = model.calcRegions.first!
+
+        // Visible → atlas path carries the region's label.
+        let visible = model.segmentationAtlasColors()
+        XCTAssertNotNil(visible)
+        XCTAssertNotNil(visible?[Int32(label)], "visible region is in the atlas")
+
+        // Hidden → STILL the atlas path (non-nil) but the label is absent, so the
+        // renderer composites nothing for it. nil here would re-show everything.
+        region.isVisible = false
+        let hidden = model.segmentationAtlasColors()
+        XCTAssertNotNil(hidden, "segmentation stays on the atlas path even when all hidden")
+        XCTAssertTrue(hidden!.isEmpty, "the hidden region contributes no color")
+        XCTAssertNil(hidden?[Int32(label)], "hidden region's label is not colored")
+    }
+
+    func testAtlasColorsExcludeOnlyHiddenRegions() {
+        // Two regions; hiding one keeps the other rendered (atlas path), and the
+        // hidden one's label is dropped from the table.
+        let vol = makeCTVolume(40, 40, 40) { x, y, z in
+            if inCube(x, y, z, 8..<12) { return 400 }
+            if inCube(x, y, z, 28..<32) { return 400 }
+            return nil
+        }
+        let model = ViewerModel()
+        let idx = model.registerStandaloneVolume(vol, cacheKey: "seg", description: "seg")
+        model.niftiSeriesIndex = idx
+
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 6..<14, yRange: 6..<14, zRange: 6..<14))
+        let label1 = model.draftRegion!.label
+        model.commitActiveRegion()
+
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 26..<34, yRange: 26..<34, zRange: 26..<34))
+        let label2 = model.draftRegion!.label
+        model.commitActiveRegion()
+
+        // Hide region 1.
+        model.calcRegions.first { $0.label == label1 }!.isVisible = false
+        let table = model.segmentationAtlasColors()
+        XCTAssertNotNil(table)
+        XCTAssertNil(table?[Int32(label1)], "hidden region 1 dropped")
+        XCTAssertNotNil(table?[Int32(label2)], "visible region 2 kept")
+    }
+
+    // MARK: - Voxel count integrity under a live preview
+
+    func testRecomputeCreditsPreviewBackup() {
+        // Region A committed; a second draft's preview overlaps it. A recount taken
+        // while the preview is live must still report A's full committed size.
+        let (model, _) = makeModel(blob: 18..<23)
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))
+        model.commitActiveRegion()
+        let regionA = model.calcRegions.first!
+
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))  // overlaps A
+        XCTAssertGreaterThan(model.draftRegion!.previewVoxelCount, 0)
+
+        model.recomputeRegionVoxelCounts()
+        XCTAssertEqual(regionA.voxelCount, 125, "region under the live preview keeps its full count")
+    }
 }

@@ -101,7 +101,7 @@ struct SegmentInspectorView: View {
         } else {
             InspectorSection(title: "New Region") {
                 VStack(alignment: .leading, spacing: Spacing.s) {
-                    Text("Pick a method, then drag a box on a plane (ROI Box tool, B).")
+                    Text("Choose a method, then drag a box on any plane to start. Threshold keeps high-HU voxels inside the box; Grow floods out from a box drawn inside the calcification.")
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: Spacing.s) {
@@ -121,23 +121,33 @@ struct SegmentInspectorView: View {
     // MARK: - Regions list
 
     private var regionsSection: some View {
-        InspectorSection(title: "Regions") {
-            VStack(alignment: .leading, spacing: Spacing.xs) {
+        VStack(alignment: .leading, spacing: Spacing.s) {
+            InspectorSectionHeader(title: "Regions",
+                                   trailing: model.calcRegions.isEmpty ? nil : "\(model.calcRegions.count)")
+            VStack(alignment: .leading, spacing: 2) {
                 if model.calcRegions.isEmpty {
-                    Text("No regions yet.").font(.caption).foregroundStyle(.secondary)
+                    Text("No regions yet — pick a method above, then drag a box on a slice.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, Spacing.s)
                 } else {
                     ForEach(model.calcRegions) { region in
                         RegionRow(model: model, region: region)
                     }
                     brushControls
+                        .padding(.horizontal, Spacing.s)
+                        .padding(.top, Spacing.xs)
                 }
             }
+            .padding(.horizontal, Spacing.xs)
         }
     }
 
     @ViewBuilder
     private var brushControls: some View {
-        if model.activeRegionID != nil {
+        // Only meaningful once a region is committed and selected — the brush edits
+        // a committed region's voxels, so hide it during a draft (where it no-ops).
+        if model.activeRegionID != nil, model.draftRegion == nil {
             VStack(alignment: .leading, spacing: Spacing.xs) {
                 Divider().padding(.vertical, Spacing.xs)
                 HStack {
@@ -163,6 +173,10 @@ struct SegmentInspectorView: View {
                            in: 0...8)
                     Text("\(model.calcBrushRadius)").font(.lentisReadout).foregroundStyle(.secondary)
                         .frame(width: 18, alignment: .trailing)
+                }
+                if !model.brushDiameterString(radius: model.calcBrushRadius).isEmpty {
+                    Text(verbatim: "Diameter \(model.brushDiameterString(radius: model.calcBrushRadius))")
+                        .font(.caption2).foregroundStyle(.tertiary)
                 }
             }
         }
@@ -245,6 +259,15 @@ private struct ActiveRegionEditor: View {
         return seg.histogram(in: draft.box, bins: 48, constrainToBrainMask: draft.parameters.constrainToBrainMask)
     }
 
+    /// Thresholds are calibrated values; label them "HU" only for CT.
+    private var unitLabel: String { model.effectiveModality == .ct ? "HU" : "Intensity" }
+
+    /// Warn when the series isn't CT — the HU thresholds/bands don't apply.
+    private var modalityAdvisory: String? {
+        model.effectiveModality == .ct ? nil
+            : "Thresholds assume CT Hounsfield units; this series reads as MRI/Intensity."
+    }
+
     var body: some View {
         InspectorSection(title: "Active Region") {
             VStack(alignment: .leading, spacing: Spacing.s) {
@@ -255,9 +278,24 @@ private struct ActiveRegionEditor: View {
                 }
                 .pickerStyle(.segmented)
 
+                // Always-visible explanation of what the chosen method expects of
+                // the box — Method B in particular requires a box drawn ENTIRELY
+                // inside the calcification (its mean HU seeds the grow).
+                Text(verbatim: draft.parameters.method == .growFromSeed
+                     ? "Draw the box ENTIRELY inside the calcification — its mean HU sets the seed, then the region grows out to the boundary HU (past the box)."
+                     : "Draw the box loosely around the calcification — voxels at/above the threshold inside the box are kept.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let advisory = modalityAdvisory {
+                    Label(advisory, systemImage: "exclamationmark.triangle")
+                        .font(.caption2).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 if draft.box.isEmpty {
-                    Text("Drag a box around the calcification on any plane, then drag its handles (on axial, coronal, or sagittal) to resize it in 3D.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    Text("Tip: drag on any plane to draw; drag the box's handles on another plane to set its depth.")
+                        .font(.caption2).foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     if let h = hist {
@@ -269,12 +307,12 @@ private struct ActiveRegionEditor: View {
                     }
 
                     if draft.parameters.method == .growFromSeed {
-                        thresholdSlider("Seed ≥", value: bindHigh, range: seedRange, unit: "HU")
-                        thresholdSlider("Grow ≥", value: bindLow, range: Self.growThresholdRange, unit: "HU", decimals: 1)
+                        thresholdSlider("Seed ≥", value: bindHigh, range: seedRange, unit: unitLabel)
+                        thresholdSlider("Grow ≥", value: bindLow, range: Self.growThresholdRange, unit: unitLabel, decimals: 1)
                         growReach
                     } else {
                         thresholdSlider("Threshold ≥", value: bindThreshold,
-                                        range: SegmentationParameters.thresholdHURange, unit: "HU", decimals: 1)
+                                        range: SegmentationParameters.thresholdHURange, unit: unitLabel, decimals: 1)
                     }
 
                     HStack {
@@ -287,7 +325,7 @@ private struct ActiveRegionEditor: View {
                                   ? "Re-center the seed on the box's mean HU"
                                   : "Auto-pick the threshold (Otsu) over the box")
                         Spacer()
-                        Text("\(draft.previewVoxelCount) voxels")
+                        Text(verbatim: model.regionSizeString(voxelCount: draft.previewVoxelCount))
                             .font(.lentisReadout).foregroundStyle(.secondary)
                     }
                     if draft.previewTruncated {
@@ -437,34 +475,108 @@ private struct RegionRow: View {
     @ObservedObject var model: ViewerModel
     @ObservedObject var region: CalcificationRegion
 
+    private var isSelected: Bool { model.activeRegionID == region.id }
+
+    private var regionColor: Color {
+        Color(.sRGB, red: region.color.x, green: region.color.y, blue: region.color.z, opacity: 1)
+    }
+
+    /// Size (+ anatomical name); the method now reads as a trailing badge.
+    private var subtitle: String {
+        var s = model.regionSizeString(voxelCount: region.voxelCount)
+        if let a = region.anatomicalName { s += " · \(a)" }
+        return s
+    }
+
     var body: some View {
         HStack(spacing: Spacing.s) {
-            Button { region.isVisible.toggle(); model.refreshSegmentationRender() } label: {
+            Button {
+                region.isVisible.toggle()
+                model.refreshSegmentationRender()
+            } label: {
                 Image(systemName: region.isVisible ? "eye" : "eye.slash")
-                    .foregroundStyle(region.isVisible ? .primary : .secondary)
+                    .foregroundStyle(region.isVisible ? .primary : .tertiary)
+                    .frame(width: 18)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.borderless)
+            .help(region.isVisible ? "Hide Region" : "Show Region")
+            .accessibilityLabel(region.isVisible ? "Hide \(region.name)" : "Show \(region.name)")
 
-            ColorPicker("", selection: colorBinding, supportsOpacity: false)
-                .labelsHidden()
-                .frame(width: 22)
+            // Compact circular color swatch. The native color well sits invisibly
+            // behind an opaque circle (which ignores hits), so clicking the dot
+            // still opens the system color panel — without the bulky rounded-rect
+            // well crowding the name.
+            ZStack {
+                ColorPicker("", selection: colorBinding, supportsOpacity: false)
+                    .labelsHidden()
+                    .opacity(0.02)
+                Circle()
+                    .fill(regionColor)
+                    .overlay(Circle().strokeBorder(.white.opacity(0.3), lineWidth: 0.5))
+                    .allowsHitTesting(false)
+            }
+            .frame(width: 15, height: 15)
+            .help("Change region color")
 
             VStack(alignment: .leading, spacing: 1) {
                 TextField("Name", text: $region.name)
                     .textFieldStyle(.plain)
-                    .font(.callout)
-                Text("\(region.method.shortName) · \(region.voxelCount) vox" +
-                     (region.anatomicalName.map { " · \($0)" } ?? ""))
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.callout.weight(.medium))
+                    .lineLimit(1)
+                Text(verbatim: subtitle)
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.tail)
             }
-            Spacer(minLength: 0)
+            .padding(.leading, 2)
+
+            Spacer(minLength: Spacing.xs)
+
+            // Method badge (THRESHOLD / GROW) — mirrors the Layers tab's kind
+            // badge, so a region's method is scannable without reading the subtitle.
+            Text(region.method.shortName.uppercased())
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5).padding(.vertical, 2)
+                .background(.quaternary, in: Capsule())
+                .fixedSize()
+                .accessibilityLabel("Method \(region.method.shortName)")
+
+            // Visible Edit/Delete affordance (the right-click contextMenu below is
+            // kept as a power-user shortcut). Disabled while a draft is in flight
+            // so the user finishes/cancels it before touching committed regions.
+            Menu {
+                Button { model.reEditRegion(region.id) } label: { Label("Re-edit", systemImage: "pencil") }
+                Button(role: .destructive) { model.deleteRegion(region.id) } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(model.draftRegion != nil)
+            .help("Re-edit or delete this region")
+            .accessibilityLabel("Region actions")
         }
-        .padding(.vertical, 2)
-        .padding(.horizontal, Spacing.xs)
-        .background(model.activeRegionID == region.id ? Color.lentisAccent.opacity(0.18) : .clear,
-                    in: RoundedRectangle(cornerRadius: Radius.chip))
+        // Dim a hidden region's row so its state is obvious in the list (matches
+        // the Layers tab); the eye/menu stay clickable (opacity ≠ disabled).
+        .opacity(region.isVisible ? 1 : 0.5)
+        .padding(.vertical, Spacing.xs)
+        .padding(.horizontal, Spacing.s)
+        .background {
+            RoundedRectangle(cornerRadius: Radius.chip)
+                .fill(isSelected ? Color.lentisAccent.opacity(0.18) : .clear)
+                .overlay {
+                    RoundedRectangle(cornerRadius: Radius.chip)
+                        .strokeBorder(Color.lentisAccent.opacity(isSelected ? 0.55 : 0), lineWidth: 1)
+                }
+        }
         .contentShape(Rectangle())
-        .onTapGesture { model.activeRegionID = region.id }
+        .onTapGesture { model.selectRegion(region.id) }
         .contextMenu {
             Button("Re-edit") { model.reEditRegion(region.id) }
             Button("Delete", role: .destructive) { model.deleteRegion(region.id) }
@@ -473,7 +585,7 @@ private struct RegionRow: View {
 
     private var colorBinding: Binding<Color> {
         Binding(
-            get: { Color(.sRGB, red: region.color.x, green: region.color.y, blue: region.color.z, opacity: 1) },
+            get: { regionColor },
             set: { newColor in
                 let ns = NSColor(newColor).usingColorSpace(.sRGB) ?? .red
                 region.color = SIMD3(Double(ns.redComponent), Double(ns.greenComponent), Double(ns.blueComponent))
@@ -508,6 +620,13 @@ private struct ROIHistogramView: View {
                 }
                 marker(low, color: .lentisCrosshair, width: w, height: h)
                 if twoLevel { marker(high, color: .lentisAccent, width: w, height: h) }
+                // Threshold value(s) above their markers, so the line is readable
+                // against the HU axis without guessing.
+                markerValue(low, color: .lentisCrosshair, width: w, height: h)
+                if twoLevel { markerValue(high, color: .lentisAccent, width: w, height: h) }
+                // HU axis end ticks (min / max of the in-box distribution).
+                axisTick(Int(minHU.rounded()), x: 13, width: w, height: h)
+                axisTick(Int(maxHU.rounded()), x: w - 15, width: w, height: h)
             }
             .background(Color.black.opacity(0.35), in: RoundedRectangle(cornerRadius: Radius.chip))
             .overlay(RoundedRectangle(cornerRadius: Radius.chip).strokeBorder(.white.opacity(0.12)))
@@ -521,5 +640,27 @@ private struct ROIHistogramView: View {
             Rectangle().fill(color).frame(width: 1.5, height: height)
                 .position(x: CGFloat(frac) * width, y: height / 2)
         }
+    }
+
+    @ViewBuilder
+    private func markerValue(_ value: Double, color: Color, width: CGFloat, height: CGFloat) -> some View {
+        if maxHU > minHU {
+            let frac = max(0, min(1, (value - minHU) / (maxHU - minHU)))
+            let x = max(16, min(width - 16, CGFloat(frac) * width))
+            Text(verbatim: "\(Int(value.rounded()))")
+                .font(.system(size: 8, weight: .semibold))
+                .foregroundStyle(color)
+                .padding(.horizontal, 2).padding(.vertical, 0.5)
+                .background(Color.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 2))
+                .position(x: x, y: 7)
+        }
+    }
+
+    @ViewBuilder
+    private func axisTick(_ value: Int, x: CGFloat, width: CGFloat, height: CGFloat) -> some View {
+        Text(verbatim: "\(value)")
+            .font(.system(size: 8))
+            .foregroundStyle(.tertiary)
+            .position(x: x, y: height - 6)
     }
 }
