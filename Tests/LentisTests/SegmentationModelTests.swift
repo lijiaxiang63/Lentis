@@ -399,4 +399,40 @@ final class SegmentationModelTests: XCTestCase {
         model.recomputeRegionVoxelCounts()
         XCTAssertEqual(regionA.voxelCount, 125, "region under the live preview keeps its full count")
     }
+
+    // MARK: - Export is blocked while a draft preview is live
+
+    func testExportBlockedWhileDraftActive() {
+        // P1 regression: a live draft paints its preview as label 255 over a
+        // committed region's voxels (the originals stashed in segPreviewBackup).
+        // The NIfTI writer skips 255, so exporting mid-draft would silently drop
+        // those committed voxels — exportSegmentation must refuse until the draft
+        // is committed or cancelled.
+        let (model, _) = makeModel(blob: 18..<23)
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))
+        model.commitActiveRegion()
+        XCTAssertTrue(model.hasSegmentation)
+
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))  // overlaps the committed region
+        XCTAssertNotNil(model.draftRegion)
+
+        for kind in [NiftiMaskKind.binaryMask, .atlas] {
+            XCTAssertThrowsError(try model.exportSegmentation(kind: kind)) { error in
+                guard case NiftiWriteError.draftActive = error else {
+                    return XCTFail("expected NiftiWriteError.draftActive, got \(error)")
+                }
+            }
+        }
+
+        // Resolving the draft lifts the block; the committed mask still writes.
+        model.cancelActiveRegion()
+        XCTAssertNil(model.draftRegion)
+        let tmpURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lentis-export-test-\(UUID().uuidString).nii.gz")
+        XCTAssertNoThrow(try model.exportMask(to: tmpURL))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tmpURL.path))
+        try? FileManager.default.removeItem(at: tmpURL)
+    }
 }

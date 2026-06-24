@@ -28,12 +28,14 @@ enum NiftiMaskKind {
 
 enum NiftiWriteError: LocalizedError {
     case noMask
+    case draftActive
     case compressionFailed
     case writeFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .noMask: return "No segmentation mask to export."
+        case .draftActive: return "Finish or cancel the in-progress region before exporting."
         case .compressionFailed: return "Failed to gzip-compress the NIfTI output."
         case .writeFailed(let m): return "Failed to write NIfTI file: \(m)"
         }
@@ -70,43 +72,29 @@ enum NiftiWriter {
         }
 
         // --- fill the source-ordered label buffer ---
+        // Labels are UInt8 (regions use 1…254; 255 is the reserved transient
+        // preview, never exported), so stage straight into the final UInt8 buffer.
+        // A wide Int32 intermediate would spike ~1.4 GB before the byte copy on a
+        // documented 344×1024×1024 volume; UInt8 staging avoids that entirely.
         let count = nx * ny * nz
-        var labels = [Int32](repeating: 0, count: count)
-        var maxLabel: Int32 = 0
+        var labels = [UInt8](repeating: 0, count: count)
         let sliceStride = nx * ny
         for ck in 0..<canonD {
             for cj in 0..<canonH {
                 for ci in 0..<canonW {
                     let raw = mask.labelAt(x: ci, y: cj, z: ck)
-                    // Never export the transient preview label.
+                    // Never export 0 (background) or 255 (transient preview).
                     guard raw != 0, raw != 255 else { continue }
-                    let value: Int32 = (kind == .binaryMask) ? 1 : Int32(raw)
+                    let value: UInt8 = (kind == .binaryMask) ? 1 : raw
                     let s = toSource((ci, cj, ck))
                     labels[s.2 * sliceStride + s.1 * nx + s.0] = value
-                    if value > maxLabel { maxLabel = value }
                 }
             }
         }
 
-        // --- datatype ---
-        let datatypeCode: Int16, bitpix: Int16
-        let voxelData: Data
-        if kind == .binaryMask || maxLabel <= 255 {
-            datatypeCode = 2; bitpix = 8                       // DT_UINT8
-            voxelData = Data(labels.map { UInt8(truncatingIfNeeded: $0) })
-        } else if maxLabel <= 65_535 {
-            datatypeCode = 512; bitpix = 16                    // DT_UINT16
-            var bytes = [UInt8](); bytes.reserveCapacity(count * 2)
-            for v in labels { let u = UInt16(truncatingIfNeeded: v).littleEndian
-                withUnsafeBytes(of: u) { bytes.append(contentsOf: $0) } }
-            voxelData = Data(bytes)
-        } else {
-            datatypeCode = 8; bitpix = 32                      // DT_INT32
-            var bytes = [UInt8](); bytes.reserveCapacity(count * 4)
-            for v in labels { let i = v.littleEndian
-                withUnsafeBytes(of: i) { bytes.append(contentsOf: $0) } }
-            voxelData = Data(bytes)
-        }
+        // --- datatype: always DT_UINT8 (label storage is UInt8) ---
+        let datatypeCode: Int16 = 2, bitpix: Int16 = 8         // DT_UINT8
+        let voxelData = Data(labels)
 
         // --- header + payload ---
         let spacing = spacingOf(affine)

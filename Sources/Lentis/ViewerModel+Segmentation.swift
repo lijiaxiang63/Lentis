@@ -677,6 +677,11 @@ extension ViewerModel {
     @discardableResult
     func exportSegmentation(kind: NiftiMaskKind) throws -> URL {
         guard segmentationVolume?.labelMask != nil else { throw NiftiWriteError.noMask }
+        // A live draft paints its preview as label 255 over committed voxels (the
+        // originals stashed in `segPreviewBackup`); the writer skips 255, so
+        // exporting now would silently drop any committed voxels under the preview.
+        // Require the draft be committed/cancelled first.
+        guard draftRegion == nil, segPreviewBackup.isEmpty else { throw NiftiWriteError.draftActive }
         let url = exportURL(for: kind)
         if kind == .binaryMask { try exportMask(to: url) } else { try exportAtlas(to: url) }
         return url

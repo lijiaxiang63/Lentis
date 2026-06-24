@@ -327,9 +327,13 @@ struct SegmentInspectorView: View {
                     Button { export(kind: .atlas) } label: { Label("Export Atlas", systemImage: "square.and.arrow.down.on.square") }
                         .buttonStyle(.glass)
                 }
-                .disabled(!model.hasSegmentation)
+                .disabled(!model.hasSegmentation || model.draftRegion != nil)
 
-                if model.hasSegmentation {
+                if model.draftRegion != nil {
+                    Label("Finish or cancel the active region to export.", systemImage: "exclamationmark.triangle")
+                        .font(.caption2).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if model.hasSegmentation {
                     Text("Saves to \(exportLocationHint)/ — change the folder & file suffixes in Settings.")
                         .font(.caption2).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -708,8 +712,13 @@ private struct RegionRow: View {
         .contentShape(Rectangle())
         .onTapGesture { model.selectRegion(region.id) }
         .contextMenu {
+            // Gated like the ellipsis menu: editing/deleting a committed region
+            // while a draft preview (label 255) overlaps it would orphan voxels
+            // that clearPreview later restores with no owning region.
             Button("Re-edit") { model.reEditRegion(region.id) }
+                .disabled(model.draftRegion != nil)
             Button("Delete", role: .destructive) { model.deleteRegion(region.id) }
+                .disabled(model.draftRegion != nil)
         }
     }
 
