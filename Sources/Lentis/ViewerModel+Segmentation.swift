@@ -18,6 +18,7 @@
 import Foundation
 import Combine
 import simd
+import AppKit
 
 /// Which pane the trailing inspector shows.
 enum InspectorTab: String { case layers, segment }
@@ -405,6 +406,7 @@ extension ViewerModel {
         isRunningSynthSeg = false
         synthSegProgress = 0
         synthSegStatus = ""
+        synthSegOutputFiles = []
         segmentationRevision &+= 1
     }
 
@@ -490,23 +492,36 @@ extension ViewerModel {
     }
 
     /// Derive a brain mask + parcellation by running FreeSurfer SynthSeg on the
-    /// loaded CT. Writes the CT to a temp file, runs off-main, then loads the
-    /// parcellation as the constraint.
+    /// loaded CT. The CT is written to a temp file; SynthSeg writes its label file
+    /// directly into the resolved output directory (next to the source by default,
+    /// see `AppSettings`), so the result is findable. On success the parcellation
+    /// is loaded as the brain constraint, optionally added as a visible layer, and
+    /// a binary brain mask is written alongside.
     func generateBrainMaskWithSynthSeg() {
         guard let vol = segmentationVolume, !isRunningSynthSeg else { return }
         guard synthSegAvailable else {
             synthSegStatus = SynthSegError.notFound.localizedDescription
             return
         }
+        let settings = AppSettings.shared
+        let outDir = AppSettings.resolveOutputDirectory(sourceFile: loadedFileURL,
+                                                        mode: settings.outputMode,
+                                                        customDirectory: settings.customOutputDirectoryURL)
+        let fileBase = AppSettings.niftiBaseName(loadedFileName)
+        let outputURL = outDir.appendingPathComponent("\(fileBase)_synthseg.nii.gz")
+
         isRunningSynthSeg = true
         synthSegProgress = 0
+        synthSegOutputFiles = []
         synthSegStatus = "Preparing CT…"
         let runner = SynthSegRunner()
         synthSegRunner = runner
         let tmp = FileManager.default.temporaryDirectory
         let inputURL = tmp.appendingPathComponent("lentis_ct_\(UUID().uuidString).nii.gz")
-        let outputURL = tmp.appendingPathComponent("lentis_synthseg_\(UUID().uuidString).nii.gz")
         let override = synthSegBinaryOverride
+        let robust = settings.synthSegRobust
+        let parcellation = settings.synthSegParcellation
+        let threads = settings.synthSegThreads
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
@@ -525,8 +540,8 @@ extension ViewerModel {
                 self.synthSegStatus = "Running SynthSeg on CPU… (this takes several minutes)"
                 // The segmentation volume is always a brain CT here → pass --ct
                 // (clip HU to [0,80]) for correct CT handling.
-                runner.run(inputURL: inputURL, outputURL: outputURL, parcellation: true, robust: true,
-                           ct: true,
+                runner.run(inputURL: inputURL, outputURL: outputURL,
+                           parcellation: parcellation, robust: robust, ct: true, threads: threads,
                            userOverride: override,
                            progress: { [weak self] chunk in
                                if let s = SynthSegRunner.briefStatus(chunk) { self?.synthSegStatus = s }
@@ -542,13 +557,90 @@ extension ViewerModel {
                                self.synthSegRunner = nil
                                switch result {
                                case .success(let segURL):
-                                   self.synthSegStatus = "SynthSeg complete."
-                                   self.loadBrainMask(url: segURL, statusLabel: "SynthSeg")
+                                   self.synthSegStatus = "SynthSeg complete — saved to \(outDir.lastPathComponent)/"
+                                   self.synthSegOutputFiles = [segURL]
+                                   self.loadSynthSegResult(parcellationURL: segURL)
                                case .failure(let err):
                                    self.synthSegStatus = err.localizedDescription
                                }
                            })
             }
+        }
+    }
+
+    /// Load the SynthSeg parcellation as the brain constraint, optionally add it
+    /// as a visible atlas layer (so anatomical regions show), and optionally write
+    /// a binary brain mask on the original CT grid alongside the label file.
+    func loadSynthSegResult(parcellationURL url: URL) {
+        guard let base = segmentationVolume else { brainMaskStatus = "Open a CT first."; return }
+        let baseUID = base.seriesUID
+        let settings = AppSettings.shared
+        let autoLoad = settings.autoLoadSynthSegResult
+        let writeMaskFile = settings.writeDerivedBrainMask
+        let fileBase = AppSettings.niftiBaseName(loadedFileName)
+        let outDir = url.deletingLastPathComponent()
+        brainMaskStatus = "Loading SynthSeg result…"
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let layer = try OverlayLayerLoader.load(url: url, matching: base)
+                // Derive + write a binary brain mask (CT grid) next to the label
+                // file. Non-fatal: the label file is the primary output.
+                var brainMaskURL: URL? = nil
+                if writeMaskFile {
+                    let maskURL = outDir.appendingPathComponent("\(fileBase)_brainmask.nii.gz")
+                    if (try? Self.writeBinaryBrainMask(from: layer, base: base, to: maskURL)) != nil {
+                        brainMaskURL = maskURL
+                    }
+                }
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    // The base volume may have been swapped (new file / timepoint)
+                    // while we loaded — don't attach a mask to the wrong grid.
+                    guard self.segmentationVolume?.seriesUID == baseUID else { return }
+                    self.brainMaskLayer = layer
+                    if autoLoad { self.layerStore.add(layer) }
+                    if let brainMaskURL { self.synthSegOutputFiles.append(brainMaskURL) }
+                    let kindStr = layer.kind == .atlas
+                        ? "parcellation · \(layer.volume.labelsPresent.count) labels"
+                        : "mask"
+                    self.brainMaskStatus = "SynthSeg · " + kindStr
+                    self.draftRegion?.parameters.constrainToBrainMask = true
+                    self.updateActiveRegionPreview()
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.brainMaskStatus = "SynthSeg result failed to load: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    /// Build a binary brain mask (1 where the parcellation layer is nonzero) on
+    /// the base canonical grid and write it back on the ORIGINAL CT grid via the
+    /// NIfTI writer's reorientation-aware path.
+    private static func writeBinaryBrainMask(from layer: OverlayLayer, base: VolumeData, to url: URL) throws {
+        let lv = LabelVolume(width: base.width, height: base.height, depth: base.depth)
+        let v = layer.volume
+        for z in 0..<base.depth {
+            for y in 0..<base.height {
+                for x in 0..<base.width where v.labelAt(x: x, y: y, z: z) != 0 {
+                    lv.setLabel(1, x: x, y: y, z: z)
+                }
+            }
+        }
+        let gzip = url.lastPathComponent.lowercased().hasSuffix(".gz")
+        try NiftiWriter.writeMask(lv, basedOn: base, kind: .binaryMask, to: url, gzip: gzip)
+    }
+
+    /// Reveal the generated SynthSeg output in Finder (selecting the files, or
+    /// opening the directory as a fallback).
+    func revealSynthSegOutputInFinder() {
+        let existing = synthSegOutputFiles.filter { FileManager.default.fileExists(atPath: $0.path) }
+        if !existing.isEmpty {
+            NSWorkspace.shared.activateFileViewerSelecting(existing)
+        } else if let dir = synthSegOutputDirectory {
+            NSWorkspace.shared.open(dir)
         }
     }
 

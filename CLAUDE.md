@@ -102,7 +102,9 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | `SegmentationBoxOverlay.swift` | Draws the draft box's cross-section + corner markers on each intersecting MPR plane, reusing the `CrossReferenceOverlay` pixel→screen transform. 3D excluded. |
 | `SegmentInspectorView.swift` | Segment tab of the trailing inspector: Brain Mask, Active Region (method, ROI histogram, threshold sliders, Otsu, connectivity/min-size/slab, live preview, Add/Cancel), Regions list (recolor/rename/re-edit/delete/brush), Export Mask…/Atlas…. |
 | `NiftiWriter.swift` | **NIfTI-1 writer** (the reader is decode-only). Header serialize (offsets match `parseHeader`), UInt8/UInt16/Int32 voxel encode, **write-back to the original input grid** via `reorientation`+`originalAffine`, gzip (Compression raw DEFLATE wrapped in an RFC-1952 container + CRC32) read by the pure-Swift inflater, `writeVolume` (gray CT for SynthSeg), FreeSurfer LUT sidecar. |
-| `SynthSegRunner.swift` | Runs FreeSurfer `mri_synthseg --parc --robust --ct --cpu --threads 1` via `Foundation.Process` (off-main, streamed progress, cancel). Locates the binary ($FREESURFER_HOME/bin → PATH → /Applications/freesurfer/<ver>/bin → user override) and sets a **clean** child env (writable HOME/TMPDIR, strips toxic inherited `PYTHON*`/`CONDA*`) so it works when launched from Finder. Reports **signal-vs-exit** (`status 6` = SIGABRT, a TF abort) and surfaces the captured stderr tail. |
+| `SynthSegRunner.swift` | Runs FreeSurfer `mri_synthseg --parc --robust --ct --cpu --threads N` via `Foundation.Process` (off-main, streamed progress, cancel). Locates the binary (user override → persisted binary → **`AppSettings` FreeSurfer home** → $FREESURFER_HOME/bin → PATH → /Applications/freesurfer/<ver>/bin) and sets a **clean** child env (writable HOME/TMPDIR, strips toxic inherited `PYTHON*`/`CONDA*`) so it works when launched from Finder. Reports **signal-vs-exit** (`status 6` = SIGABRT, a TF abort) and surfaces the captured stderr tail. |
+| `AppSettings.swift` | **App-wide preferences** (UserDefaults-backed `ObservableObject` singleton `AppSettings.shared`): FreeSurfer home / `mri_synthseg` path (reuses `SynthSegRunner.defaultsKey`), SynthSeg `--robust`/`--parc`/threads, output-location mode (next-to-source / custom folder) + auto-load + write-brain-mask toggles, overlay opacity. `resolveOutputDirectory` (pure, tested) picks a writable dir with fallbacks; `niftiBaseName` strips `.nii`/`.nii.gz`. The viewer reads it on demand (SynthSeg) or subscribes (`$overlayOpacity` → live re-render). |
+| `SettingsView.swift` | **The Settings window (⌘,).** A `TabView` of grouped forms in the dark Liquid-Glass idiom: **General** (overlay opacity, output location + folder picker with a live "Files go to" preview, auto-load / write-brain-mask toggles) and **FreeSurfer** (live `mri_synthseg` found/not-found status, FreeSurfer-home + binary pickers, `--robust`/`--parc`/threads). Binds `AppSettings`; reads `model.loadedFileURL` for the resolved-dir preview. |
 | `MultiPanelContainer.swift` (~1960 lines) | Multi-panel views + gestures. MPR panels keep pixel-bound orientation/crosshair/annotation/scroller overlays. Cursor tracking maps aspect-corrected display pixels back to raw slice pixels before HU lookup and then uses the panel geometry + cached volume affine to publish canonical voxel `x,y,z` for the status bar. **Phase 8:** Select-drag on `.volume3D` is a 60 Hz coalesced trackball-style yaw/pitch camera; it derives motion from absolute cursor-position differences (not unreliable `NSEvent.deltaX/Y`), and mouse-up settles at full quality. 3D deliberately hides 2D overlays, cursor sampling, and slice scroller. |
 | `ViewerToolbar.swift` | **Native macOS Liquid Glass toolbar** (UI redesign; replaced the docked `ViewerControlBar`). `ToolbarContent` attached via `.toolbar` on the `NavigationSplitView` detail — the chrome gets glass/overflow/customization for free. Leading: layout segmented `Picker` + MPR + sync/crosshair toggles. Trailing: per-active-panel cluster (plane `Picker`, `ModalityBadge`, a W/L popover with histogram + presets/Auto, a transform menu) and the 4D stepper. Per-panel sub-views observe the panel (async image arrival). 3D density lives in a popover (the no-`step:` slider is preserved). **The inspector show/hide toggle is intentionally NOT declared here** — to keep it pinned to the window's top-right corner above the inspector, `ContentView` owns the closed-state Show button and `LayerInspectorView` owns the open-state Hide button; keeping it out of this nested `ToolbarContent` also avoids stale re-evaluation and duplicate drawer buttons. |
 | `ViewerStatusBar.swift` | **Floating Liquid Glass status pill** (UI redesign; was a docked bar). Content-sized capsule anchored bottom-leading over the viewport, non-interactive (`allowsHitTesting(false)`), shown only once a file is open. Active-panel readout once (file · slice · `WL/WW` +`HU` for CT); cursor readout (RAS mm / value / canonical voxel `px`) follows the hovered panel via `ForEach(model.panels)` of `StatusBarCursorInfo` — both observe their `@ObservedObject panel`. |
@@ -930,6 +932,39 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
     (hidden-region renders nothing not everything, atlas excludes only hidden, commit-exits-box). swift
     build clean; swift test green (113 XCTest + 59 swift-testing = 172).** Color-dot click (opens the
     system color panel via the hit-through well) is the one item left for a by-hand GUI check.
+  - **Follow-up (2026-06-24) — findable SynthSeg output + auto-loaded layer + a Settings window.**
+    Driven by the user: SynthSeg "ran but took forever and the output vanished" (it wrote to a temp dir),
+    and FreeSurfer was only locatable from a one-off inspector panel. **(1) Output beside the source +
+    Show in Finder:** `generateBrainMaskWithSynthSeg` now resolves a writable directory
+    (`AppSettings.resolveOutputDirectory`: next-to-source by default, else a chosen folder, falling back
+    source → `~/Documents/Lentis` → temp) and points SynthSeg's `--o` straight at
+    `<base>_synthseg.nii.gz` there (no more temp output). `loadedFileURL` is retained on load to anchor
+    "beside source". The model tracks `synthSegOutputFiles`; the Segment inspector shows a **"Saved N
+    files · <dir>"** row with a **Show in Finder** button (`revealSynthSegOutputInFinder` →
+    `NSWorkspace.activateFileViewerSelecting`). **(2) Auto-load the label as a layer:** on success
+    `loadSynthSegResult` loads the parcellation once via `OverlayLayerLoader`, sets it as the brain
+    constraint (`brainMaskLayer`) **and** (when `autoLoadSynthSegResult`) adds the *same* `OverlayLayer`
+    instance to `layerStore` — shared, so no second full-grid allocation — so it shows in the Layers tab
+    (atlas → FreeSurfer-LUT colored regions; phantom collapses to a mask). When `writeDerivedBrainMask`
+    is on it also binarizes the parcellation (nonzero→1) on the base grid and writes
+    `<base>_brainmask.nii.gz` back on the **original CT grid** via `NiftiWriter.writeMask`. **(3) Settings
+    window (⌘,):** new `AppSettings` (UserDefaults-backed `ObservableObject` singleton; the SynthSeg
+    binary key reuses `SynthSegRunner.defaultsKey` for back-compat) is the single source of truth, read
+    by the viewer and bound by `SettingsView` (a `TabView`: **General** = overlay opacity + output
+    location/auto-load toggles; **FreeSurfer** = live `mri_synthseg` status, FreeSurfer-home/binary
+    pickers, `--robust`/`--parc`/threads). `SynthSegRunner.locate` now also consults the persisted
+    FreeSurfer home (so a Finder-launched app finds the binary). The model subscribes to
+    `$overlayOpacity` to re-render live. Entry points: the macOS Settings menu item, a toolbar **gear**
+    (`SettingsLink` in `ViewerToolbar`), and `SettingsLink`s in the Segment inspector (a gear by
+    "Generate", and "Set Up FreeSurfer…" when not found — the old NSOpenPanel "Locate" path was removed).
+    New files: `AppSettings.swift`, `SettingsView.swift`. **GUI-verified end-to-end** on `synthetic_calc`:
+    a real CPU SynthSeg run wrote `_synthseg`+`_brainmask` next to the source, the inspector showed
+    "Saved 2 files" + Show in Finder, the result auto-appeared in the Layers tab (Mask · 229 vox), and
+    both Settings tabs render in the dark Liquid-Glass idiom (the FreeSurfer tab live-detected the binary;
+    "Files go to" resolved to the source folder). **+8 `AppSettingsTests` (base-name strip, output-dir
+    resolution incl. fallbacks, persistence round-trip, defaults). swift build clean; swift test green
+    (113 XCTest + 66 swift-testing = 179).** Note: derived files use a fixed `<base>_{synthseg,brainmask}`
+    name → a re-run overwrites a prior run's output beside the source (intended).
 
 ---
 

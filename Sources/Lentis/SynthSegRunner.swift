@@ -84,6 +84,13 @@ final class SynthSegRunner {
         if let stored = UserDefaults.standard.string(forKey: defaultsKey), ok(stored) {
             return URL(fileURLWithPath: stored)
         }
+        // A FreeSurfer home set in Settings (read straight from UserDefaults so
+        // this stays thread-safe and callable off-main). A GUI-launched app does
+        // not inherit the shell's $FREESURFER_HOME, so this is the primary hook.
+        if let home = UserDefaults.standard.string(forKey: AppSettings.Key.freesurferHome),
+           !home.isEmpty, ok(home + "/bin/mri_synthseg") {
+            return URL(fileURLWithPath: home + "/bin/mri_synthseg")
+        }
         let env = ProcessInfo.processInfo.environment
         if let home = env["FREESURFER_HOME"], ok(home + "/bin/mri_synthseg") {
             return URL(fileURLWithPath: home + "/bin/mri_synthseg")

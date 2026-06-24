@@ -65,29 +65,73 @@ struct SegmentInspectorView: View {
                 }
 
                 if model.isRunningSynthSeg {
-                    HStack(spacing: Spacing.s) {
-                        ProgressView().controlSize(.small)
-                        Text(model.synthSegStatus).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        Spacer()
-                        Button("Cancel") { model.cancelSynthSeg() }.buttonStyle(.glass)
+                    VStack(alignment: .leading, spacing: Spacing.xs) {
+                        HStack(spacing: Spacing.s) {
+                            ProgressView().controlSize(.small)
+                            Text(model.synthSegStatus).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            Spacer()
+                            Button("Cancel") { model.cancelSynthSeg() }.buttonStyle(.glass)
+                        }
+                        Text("Runs on the CPU — usually several minutes. You can keep working.")
+                            .font(.caption2).foregroundStyle(.tertiary)
                     }
                 } else if model.synthSegAvailable {
-                    Button { model.generateBrainMaskWithSynthSeg() } label: {
-                        Label("Generate with SynthSeg", systemImage: "wand.and.stars")
+                    HStack(spacing: Spacing.s) {
+                        Button { model.generateBrainMaskWithSynthSeg() } label: {
+                            Label("Generate with SynthSeg", systemImage: "wand.and.stars")
+                        }
+                        .buttonStyle(.glass)
+                        .disabled(model.segmentationVolume == nil)
+                        SettingsLink {
+                            Image(systemName: "gearshape")
+                        }
+                        .buttonStyle(.glass)
+                        .help("SynthSeg options & output location")
                     }
-                    .buttonStyle(.glass)
-                    .disabled(model.segmentationVolume == nil)
                     if !model.synthSegStatus.isEmpty {
                         Text(model.synthSegStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
                     }
                 } else {
-                    Button { locateSynthSegPanel() } label: {
-                        Label("Locate mri_synthseg…", systemImage: "questionmark.folder")
+                    SettingsLink {
+                        Label("Set Up FreeSurfer…", systemImage: "gearshape")
                     }
                     .buttonStyle(.glass)
-                    Text("FreeSurfer SynthSeg not found.")
+                    Text("FreeSurfer SynthSeg not found. Point Lentis at your FreeSurfer install in Settings.")
                         .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+
+                if !model.synthSegOutputFiles.isEmpty {
+                    synthSegOutputRow
+                }
+            }
+        }
+    }
+
+    /// Where the most recent SynthSeg run wrote its files, with a reveal-in-Finder
+    /// affordance so the generated mask/label are easy to find.
+    private var synthSegOutputRow: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            Divider().padding(.vertical, 2)
+            HStack(spacing: Spacing.s) {
+                Image(systemName: "folder.fill").foregroundStyle(Color.lentisAccent)
+                VStack(alignment: .leading, spacing: 1) {
+                    let n = model.synthSegOutputFiles.count
+                    Text("Saved \(n) file\(n == 1 ? "" : "s")")
+                        .font(.caption.weight(.medium))
+                    if let dir = model.synthSegOutputDirectory {
+                        Text((dir.path as NSString).abbreviatingWithTildeInPath)
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                            .help(dir.path)
+                    }
+                }
+                Spacer(minLength: Spacing.xs)
+                Button { model.revealSynthSegOutputInFinder() } label: {
+                    Label("Show in Finder", systemImage: "magnifyingglass")
+                }
+                .buttonStyle(.glass)
+                .controlSize(.small)
             }
         }
     }
@@ -209,18 +253,6 @@ struct SegmentInspectorView: View {
         panel.message = "Choose a brain mask or parcellation NIfTI (.nii / .nii.gz)"
         let t = niftiTypes(); if !t.isEmpty { panel.allowedContentTypes = t }
         if panel.runModal() == .OK, let url = panel.url { model.loadBrainMask(url: url) }
-    }
-
-    private func locateSynthSegPanel() {
-        let panel = NSOpenPanel()
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        panel.message = "Locate the mri_synthseg executable (FreeSurfer)"
-        if panel.runModal() == .OK, let url = panel.url {
-            SynthSegRunner.setUserBinary(url)
-            model.synthSegBinaryOverride = url
-            model.objectWillChange.send()
-        }
     }
 
     private func defaultExportName(_ suffix: String) -> String {

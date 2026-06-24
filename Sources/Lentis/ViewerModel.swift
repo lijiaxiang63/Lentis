@@ -154,6 +154,10 @@ class ViewerModel: ObservableObject {
     /// vestigial "Series 1/1" label (a NIfTI is always a single series).
     @Published var loadedFileName: String = ""
 
+    /// Full URL of the currently loaded NIfTI file. Drives the default output
+    /// location ("next to the source file") for generated mask/label files.
+    @Published var loadedFileURL: URL? = nil
+
     /// Toggle fullscreen for a panel (double-click behavior)
     func toggleFullscreen(for panel: PanelState) {
         if fullscreenPanelID == panel.id {
@@ -286,6 +290,14 @@ class ViewerModel: ObservableObject {
     /// In-flight SynthSeg run (for cancel) + a user-chosen binary override.
     var synthSegRunner: SynthSegRunner?
     var synthSegBinaryOverride: URL?
+    /// Files written by the most recent SynthSeg run (label file + optional brain
+    /// mask), in the resolved output directory. Drives the "Show in Finder"
+    /// affordance so the user can find the generated output.
+    @Published var synthSegOutputFiles: [URL] = []
+    /// The directory the last SynthSeg run wrote into (first output file's parent).
+    var synthSegOutputDirectory: URL? { synthSegOutputFiles.first?.deletingLastPathComponent() }
+    /// Live settings subscriptions (overlay opacity → re-render).
+    var settingsCancellables = Set<AnyCancellable>()
 
     /// Register a pre-built NIfTI volume under `cacheKey` so panels can display
     /// it. Returns the series index.
@@ -321,6 +333,19 @@ class ViewerModel: ObservableObject {
             if Thread.isMainThread { self.refreshLayerRendering() }
             else { DispatchQueue.main.async { [weak self] in self?.refreshLayerRendering() } }
         }
+
+        // Drive the segmentation overlay translucency from the shared settings.
+        // Seed it now, then re-render whenever the user changes it in Settings.
+        maskOverlayAlpha = AppSettings.shared.overlayOpacity
+        AppSettings.shared.$overlayOpacity
+            .dropFirst()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] value in
+                guard let self else { return }
+                self.maskOverlayAlpha = value
+                self.refreshSegmentationRender()
+            }
+            .store(in: &settingsCancellables)
 
         // Monitor Shift key globally for group selection overlay
         flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
@@ -448,6 +473,7 @@ class ViewerModel: ObservableObject {
                 self.currentSeriesInfo = ""
                 self.currentImageInfo = ""
                 self.loadedFileName = url.lastPathComponent
+                self.loadedFileURL = url
                 self.layerStore.removeAll()
                 self.resetSegmentation()
                 self.resetAllPanels()
