@@ -89,6 +89,12 @@ class ViewerModel: ObservableObject {
 
     // MARK: - Multi-Panel State
     @Published var layout: ViewerLayout = .single
+    /// True only while the coordinated MPR tri-planar arrangement (Axial +
+    /// Sagittal + Coronal + 3D, from `setupMPRLayout`) is active. In that mode
+    /// the per-panel plane picker is locked so the panels keep their assigned
+    /// roles; any plain `setLayout` (layout picker, ⌘1–4, context menu) clears
+    /// it and re-enables per-panel plane switching.
+    @Published var isMPRLayout: Bool = false
     @Published var panels: [PanelState] = []
     @Published var activePanelID: UUID = UUID()
     @Published var showCrossReference: Bool = false
@@ -635,6 +641,10 @@ class ViewerModel: ObservableObject {
         let oldCount = panels.count
         let newCount = newLayout.panelCount
         layout = newLayout
+        // Picking any explicit layout exits the coordinated MPR tri-planar mode,
+        // so per-panel plane switching is allowed again. `setupMPRLayout` calls
+        // this first, then re-sets the flag.
+        isMPRLayout = false
 
         if newCount > oldCount {
             for i in oldCount..<newCount {
@@ -710,6 +720,9 @@ class ViewerModel: ObservableObject {
         // Show the 3D crosshair out of the box for the tri-planar layout —
         // click/drag any plane to localize the others.
         showCrossReference = true
+        // Lock per-panel plane switching: the four panels now have coordinated
+        // roles (axial/sagittal/coronal/3D) that the crosshair linkage relies on.
+        isMPRLayout = true
     }
 
     // MARK: - Panel Group Selection (simultaneous scrolling)

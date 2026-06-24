@@ -145,8 +145,12 @@ private struct PlaneToolbarControl: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .fixedSize()
-        .disabled(!isVolumetric)
-        .help("Viewing plane")
+        // Locked in the coordinated MPR tri-planar layout so a panel can't be
+        // pulled off its assigned plane; free to change in every other layout.
+        .disabled(!isVolumetric || model.isMPRLayout)
+        .help(model.isMPRLayout
+              ? "Plane locked in MPR layout — switch layout to change"
+              : "Viewing plane")
 
         if panel.panelMode == .volume3D {
             Button { showVolumeControls.toggle() } label: {
