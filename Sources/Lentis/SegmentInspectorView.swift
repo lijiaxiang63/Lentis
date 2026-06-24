@@ -44,61 +44,118 @@ struct SegmentInspectorView: View {
 
     // MARK: - Brain mask
 
+    /// Visual state of the brain mask area, driving the status glyph + tint so the
+    /// section reads at a glance (color + icon) before the caption is parsed.
+    private enum BrainMaskState {
+        case ready          // a mask is loaded
+        case generating     // SynthSeg running
+        case canGenerate    // SynthSeg available, no mask yet
+        case needsSetup     // SynthSeg not found
+
+        var systemImage: String {
+            switch self {
+            case .ready:       return "checkmark.circle.fill"
+            case .generating:  return "hourglass"
+            case .canGenerate: return "wand.and.stars"
+            case .needsSetup:  return "wrench.and.screwdriver.fill"
+            }
+        }
+        var tint: Color {
+            switch self {
+            case .ready:                    return .green
+            case .generating, .canGenerate: return .lentisAccent
+            case .needsSetup:               return .orange
+            }
+        }
+    }
+
+    private var brainMaskState: BrainMaskState {
+        if model.brainMaskLayer != nil { return .ready }
+        if model.isRunningSynthSeg { return .generating }
+        return model.synthSegAvailable ? .canGenerate : .needsSetup
+    }
+
+    /// One-line caption beside the glyph. During a run it announces the generation
+    /// (the detailed progress lives in `runningStrip`) rather than contradicting
+    /// the hourglass with the idle "no mask" fallback.
+    private var brainMaskStatusText: String {
+        if model.isRunningSynthSeg { return "Generating brain mask…" }
+        return model.brainMaskStatus.isEmpty
+            ? "No brain mask — skull may be included."
+            : model.brainMaskStatus
+    }
+
     private var brainMaskSection: some View {
         InspectorSection(title: "Brain Mask") {
-            VStack(alignment: .leading, spacing: Spacing.s) {
-                Text(model.brainMaskStatus.isEmpty ? "No brain mask — skull may be included." : model.brainMaskStatus)
-                    .font(.caption)
-                    .foregroundStyle(model.brainMaskLayer == nil ? .secondary : .primary)
-                    .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: Spacing.m) {
+                // Expressive status header: a tinted glass glyph + caption, so the
+                // current state reads by color + icon before the words are parsed.
+                HStack(alignment: .top, spacing: Spacing.s) {
+                    Image(systemName: brainMaskState.systemImage)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(brainMaskState.tint)
+                        .frame(width: 30, height: 30)
+                        .glassEffect(.regular.tint(brainMaskState.tint.opacity(0.22)), in: Circle())
 
-                HStack(spacing: Spacing.s) {
-                    Button { loadBrainMaskPanel() } label: { Label("Load…", systemImage: "square.dashed") }
-                        .buttonStyle(.glass)
-                        .disabled(model.segmentationVolume == nil)
-                    if model.brainMaskLayer != nil {
-                        Button(role: .destructive) { model.clearBrainMask() } label: {
-                            Label("Clear", systemImage: "xmark")
-                        }
-                        .buttonStyle(.glass)
-                    }
+                    Text(brainMaskStatusText)
+                        .font(.caption)
+                        .foregroundStyle(model.brainMaskLayer == nil ? .secondary : .primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if model.isRunningSynthSeg {
-                    VStack(alignment: .leading, spacing: Spacing.xs) {
-                        HStack(spacing: Spacing.s) {
-                            ProgressView().controlSize(.small)
-                            Text(model.synthSegStatus).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                            Spacer()
-                            Button("Cancel") { model.cancelSynthSeg() }.buttonStyle(.glass)
-                        }
-                        Text("Runs on the CPU — usually several minutes. You can keep working.")
-                            .font(.caption2).foregroundStyle(.tertiary)
-                    }
-                } else if model.synthSegAvailable {
-                    HStack(spacing: Spacing.s) {
-                        Button { model.generateBrainMaskWithSynthSeg() } label: {
-                            Label("Generate with SynthSeg", systemImage: "wand.and.stars")
-                        }
-                        .buttonStyle(.glass)
-                        .disabled(model.segmentationVolume == nil)
-                        SettingsLink {
-                            Image(systemName: "gearshape")
-                        }
-                        .buttonStyle(.glass)
-                        .help("SynthSeg options & output location")
-                    }
-                    if !model.synthSegStatus.isEmpty {
-                        Text(model.synthSegStatus).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
-                    }
+                    runningStrip
                 } else {
-                    SettingsLink {
-                        Label("Set Up FreeSurfer…", systemImage: "gearshape")
+                    // Action cluster — adjacent glass surfaces blend per the Liquid
+                    // Glass guidance. Generate is the hero (.glassProminent); Load
+                    // Existing is the quiet secondary path. The inline gear
+                    // SettingsLink is gone (Settings lives on the toolbar gear / ⌘,).
+                    GlassEffectContainer(spacing: Spacing.s) {
+                        VStack(alignment: .leading, spacing: Spacing.s) {
+                            if model.synthSegAvailable {
+                                Button { model.generateBrainMaskWithSynthSeg() } label: {
+                                    Label("Generate with SynthSeg", systemImage: "wand.and.stars")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.glassProminent)
+                                .disabled(model.segmentationVolume == nil)
+                            } else {
+                                // SynthSeg missing: the ONE remaining SettingsLink
+                                // (distinct from the removed inline gear) + why.
+                                SettingsLink {
+                                    Label("Set Up FreeSurfer…", systemImage: "gearshape")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.glass)
+                                Text("FreeSurfer SynthSeg not found. Point Lentis at your FreeSurfer install in Settings.")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            HStack(spacing: Spacing.s) {
+                                Button { loadBrainMaskPanel() } label: {
+                                    Label("Load Existing…", systemImage: "square.dashed")
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.glass)
+                                .disabled(model.segmentationVolume == nil)
+
+                                if model.brainMaskLayer != nil {
+                                    Button(role: .destructive) { model.clearBrainMask() } label: {
+                                        Image(systemName: "trash")
+                                    }
+                                    .buttonStyle(.glass)
+                                    .help("Clear the loaded brain mask")
+                                }
+                            }
+                        }
                     }
-                    .buttonStyle(.glass)
-                    Text("FreeSurfer SynthSeg not found. Point Lentis at your FreeSurfer install in Settings.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+
+                    if model.synthSegAvailable, !model.synthSegStatus.isEmpty {
+                        Text(model.synthSegStatus)
+                            .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                    }
                 }
 
                 if !model.synthSegOutputFiles.isEmpty {
@@ -108,31 +165,64 @@ struct SegmentInspectorView: View {
         }
     }
 
-    /// Where the most recent SynthSeg run wrote its files, with a reveal-in-Finder
-    /// affordance so the generated mask/label are easy to find.
+    /// Active-run strip: progress + status + Cancel on a faint accent-tinted glass
+    /// surface so the in-flight state reads as distinct from idle, with the
+    /// "minutes, keep working" reassurance below.
+    private var runningStrip: some View {
+        VStack(alignment: .leading, spacing: Spacing.xs) {
+            HStack(spacing: Spacing.s) {
+                ProgressView().controlSize(.small)
+                Text(model.synthSegStatus)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button("Cancel") { model.cancelSynthSeg() }
+                    .buttonStyle(.glass)
+                    .controlSize(.small)
+            }
+            .padding(Spacing.s)
+            .glassEffect(.regular.tint(Color.lentisAccent.opacity(0.18)),
+                         in: RoundedRectangle(cornerRadius: Radius.chip))
+
+            Text("Runs on the CPU — usually several minutes. You can keep working.")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// Where the most recent SynthSeg run wrote its files, as a tappable glass card
+    /// that reveals the generated mask/label in Finder.
     private var synthSegOutputRow: some View {
         VStack(alignment: .leading, spacing: Spacing.xs) {
             Divider().padding(.vertical, 2)
-            HStack(spacing: Spacing.s) {
-                Image(systemName: "folder.fill").foregroundStyle(Color.lentisAccent)
-                VStack(alignment: .leading, spacing: 1) {
-                    let n = model.synthSegOutputFiles.count
-                    Text("Saved \(n) file\(n == 1 ? "" : "s")")
-                        .font(.caption.weight(.medium))
-                    if let dir = model.synthSegOutputDirectory {
-                        Text((dir.path as NSString).abbreviatingWithTildeInPath)
-                            .font(.caption2).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.middle)
-                            .help(dir.path)
+            Button { model.revealSynthSegOutputInFinder() } label: {
+                HStack(spacing: Spacing.s) {
+                    Image(systemName: "folder.fill")
+                        .foregroundStyle(Color.lentisAccent)
+                    VStack(alignment: .leading, spacing: 1) {
+                        let n = model.synthSegOutputFiles.count
+                        Text("Saved \(n) file\(n == 1 ? "" : "s")")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.primary)
+                        if let dir = model.synthSegOutputDirectory {
+                            Text((dir.path as NSString).abbreviatingWithTildeInPath)
+                                .font(.caption2).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.middle)
+                                .help(dir.path)
+                        }
                     }
+                    Spacer(minLength: Spacing.xs)
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
                 }
-                Spacer(minLength: Spacing.xs)
-                Button { model.revealSynthSegOutputInFinder() } label: {
-                    Label("Show in Finder", systemImage: "magnifyingglass")
-                }
-                .buttonStyle(.glass)
-                .controlSize(.small)
+                .padding(.horizontal, Spacing.s)
+                .padding(.vertical, Spacing.s)
+                .contentShape(RoundedRectangle(cornerRadius: Radius.chip))
             }
+            .buttonStyle(.plain)
+            .glassEffect(.regular.interactive(),
+                         in: RoundedRectangle(cornerRadius: Radius.chip))
+            .help("Reveal the generated files in Finder")
+            .accessibilityLabel("Show generated files in Finder")
         }
     }
 

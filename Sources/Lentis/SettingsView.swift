@@ -103,14 +103,25 @@ private struct GeneralSettingsView: View {
             }
 
             Section {
-                suffixRow(title: "Mask suffix", text: $settings.exportMaskSuffix,
-                          placeholder: AppSettings.defaultMaskSuffix)
-                suffixRow(title: "Atlas suffix", text: $settings.exportAtlasSuffix,
-                          placeholder: AppSettings.defaultAtlasSuffix)
+                exportNameRow(role: "Mask", icon: "square.dashed",
+                              text: $settings.exportMaskSuffix,
+                              fallback: AppSettings.defaultMaskSuffix)
+                exportNameRow(role: "Atlas", icon: "square.stack.3d.up.fill",
+                              text: $settings.exportAtlasSuffix,
+                              fallback: AppSettings.defaultAtlasSuffix)
+
+                // Live, fully-assembled output names so the user watches each file
+                // name build from base + (sanitized) suffix + extension.
+                LabeledContent("Preview") {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        composedFilename(settings.exportMaskSuffix, fallback: AppSettings.defaultMaskSuffix)
+                        composedFilename(settings.exportAtlasSuffix, fallback: AppSettings.defaultAtlasSuffix)
+                    }
+                }
             } header: {
                 Text("Export File Names")
             } footer: {
-                Text("Exporting a segmentation saves directly (no dialog) as `\(exampleBase)\(suffixPreview(settings.exportMaskSuffix, AppSettings.defaultMaskSuffix)).nii.gz`. The atlas also writes a matching `…_LUT.txt`.")
+                Text("Exports save directly (no dialog) to the output folder above. The atlas also writes a matching `…_LUT.txt`.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -129,16 +140,53 @@ private struct GeneralSettingsView: View {
         AppSettings.sanitizedSuffix(value, fallback: fallback)
     }
 
-    private func suffixRow(title: String, text: Binding<String>, placeholder: String) -> some View {
-        HStack(spacing: Spacing.s) {
-            Text(title)
-            Spacer(minLength: Spacing.s)
-            TextField(placeholder, text: text, prompt: Text(placeholder))
-                .textFieldStyle(.roundedBorder)
-                .multilineTextAlignment(.trailing)
-                .frame(width: 150)
-            Text(".nii.gz").foregroundStyle(.secondary)
+    /// A grouped-Form filename-builder row: an icon + role label, with the value
+    /// the single editable suffix token (set apart in a faint accent capsule) next
+    /// to a fixed `.nii.gz` chip — so the row reads as the one editable part of an
+    /// assembling filename rather than a stray trailing text field. Stays a native
+    /// `LabeledContent` row (no glass cards that would fight the grouped form).
+    private func exportNameRow(role: String, icon: String,
+                               text: Binding<String>, fallback: String) -> some View {
+        LabeledContent {
+            HStack(spacing: Spacing.xs) {
+                TextField(fallback, text: text, prompt: Text(fallback))
+                    .textFieldStyle(.plain)
+                    .font(.lentisReadout)
+                    .multilineTextAlignment(.center)
+                    .frame(minWidth: 120)
+                    .padding(.horizontal, Spacing.s)
+                    .padding(.vertical, 3)
+                    .background(Color.lentisAccent.opacity(0.14), in: Capsule())
+                    .overlay(Capsule().strokeBorder(Color.lentisAccent.opacity(0.35), lineWidth: 0.5))
+
+                Text(".nii.gz")
+                    .font(.lentisReadout)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, Spacing.s)
+                    .padding(.vertical, 3)
+                    .background(.quaternary, in: Capsule())
+            }
+        } label: {
+            Label {
+                Text(role)
+            } icon: {
+                Image(systemName: icon).foregroundStyle(Color.lentisAccent)
+            }
         }
+    }
+
+    /// The full assembled filename for the Preview row: the dimmed base, the
+    /// (sanitized) suffix span accented so the editable part stands out, and the
+    /// dimmed extension — selectable so the user can copy the exact output name.
+    private func composedFilename(_ rawSuffix: String, fallback: String) -> some View {
+        let base = Text(exampleBase).foregroundStyle(.secondary)
+        let suffix = Text(suffixPreview(rawSuffix, fallback)).foregroundStyle(Color.lentisAccent)
+        let ext = Text(".nii.gz").foregroundStyle(.secondary)
+        return Text("\(base)\(suffix)\(ext)")
+            .font(.lentisReadout)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .textSelection(.enabled)
     }
 
     private var folderDisplay: String {
