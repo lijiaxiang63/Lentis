@@ -244,6 +244,12 @@ private struct BIDSFileRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // Gate row selection while a load/scan is in flight (mirrors every other
+        // Open path). loadNifti decodes off-main with no request token and
+        // applyNiftiDataset has no staleness check, so a second click mid-decode
+        // could race two loads and install the wrong volume under a now-stale
+        // loadedFileURL/currentDatasetFile (wrong BIDS export name).
+        .disabled(model.isLoading || model.isScanningFolder)
         .listRowBackground(isLoaded ? Color.lentisAccent.opacity(0.16) : Color.clear)
         .help(file.fileName)
     }

@@ -775,7 +775,10 @@ extension ViewerModel {
         // file gets the canonical `…_dseg.tsv`; anything else gets the FreeSurfer
         // `_LUT.txt` (a `_LUT.txt` after a `_dseg` suffix is BIDS-invalid).
         if AppSettings.shared.outputMode == .bidsDerivatives, name.hasSuffix("_dseg") {
-            try? NiftiWriter.writeDsegTSV(regions: calcRegions, to: dir.appendingPathComponent(name + ".tsv"))
+            // The `_dseg.tsv` is the only sidecar carrying label names/colors;
+            // propagate write failures (like the legacy writeLUT path) so a
+            // partial BIDS derivative isn't reported as a successful export.
+            try NiftiWriter.writeDsegTSV(regions: calcRegions, to: dir.appendingPathComponent(name + ".tsv"))
         } else {
             try NiftiWriter.writeLUT(regions: calcRegions, to: dir.appendingPathComponent(name + "_LUT.txt"))
         }
