@@ -11,6 +11,7 @@
 </p>
 
 <p align="center">
+  <a href="https://lijiaxiang63.github.io/Lentis/">Website</a> &middot;
   <a href="../../releases">Releases</a> &middot;
   <a href="../../issues">Issues</a> &middot;
   <a href="LICENSE">MIT License</a>
