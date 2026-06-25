@@ -435,4 +435,52 @@ final class SegmentationModelTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: tmpURL.path))
         try? FileManager.default.removeItem(at: tmpURL)
     }
+
+    // MARK: - Export status (the Segment-panel "Saved" indicator)
+
+    func testExportStatusSetThenInvalidatedByEdits() throws {
+        // A successful export records its URL (driving the "Export · Saved" pill);
+        // any later voxel edit must invalidate it so the pill honestly reverts to
+        // "Pending" rather than claiming a stale on-disk file is current.
+        let (model, _) = makeModel(blob: 18..<23)
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))
+        model.commitActiveRegion()
+        XCTAssertFalse(model.hasExportedSegmentation, "nothing exported yet")
+
+        // Export into a private temp dir (beside a fake source file) so the test
+        // never writes to the user's Documents.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lentis-export-status-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let prevMode = AppSettings.shared.outputMode
+        AppSettings.shared.outputMode = .besideSource
+        defer { AppSettings.shared.outputMode = prevMode }
+        model.loadedFileName = "case.nii.gz"
+        model.loadedFileURL = dir.appendingPathComponent("case.nii.gz")
+
+        let url = try model.exportSegmentation(kind: .binaryMask)
+        XCTAssertEqual(model.exportedMaskURL, url, "export records the written mask URL")
+        XCTAssertTrue(model.hasExportedSegmentation)
+
+        // A touch-up brush edit changes voxels → the recorded export is stale.
+        model.activeRegionID = model.calcRegions.first?.id
+        model.paintBrush(atVoxel: (5, 5, 5), radius: 0, erase: false)
+        XCTAssertFalse(model.hasExportedSegmentation, "editing voxels invalidates the export")
+        XCTAssertNil(model.exportedMaskURL)
+    }
+
+    func testDeleteRegionInvalidatesExport() throws {
+        let (model, _) = makeModel(blob: 18..<23)
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))
+        model.commitActiveRegion()
+        let id = model.calcRegions.first!.id
+        // Simulate a recorded export, then delete a region.
+        model.exportedAtlasURL = URL(fileURLWithPath: "/tmp/case_calcatlas.nii.gz")
+        XCTAssertTrue(model.hasExportedSegmentation)
+        model.deleteRegion(id)
+        XCTAssertFalse(model.hasExportedSegmentation, "deleting a region invalidates the export")
+    }
 }

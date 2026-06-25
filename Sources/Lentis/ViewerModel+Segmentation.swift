@@ -307,6 +307,7 @@ extension ViewerModel {
         // Picking a method re-enters box mode via `beginRegion`.
         if activeTool == .roiBox { activeTool = .select }
         recomputeRegionVoxelCounts()
+        invalidateSegmentationExports()   // regions changed → prior export is stale
         segmentationRevision &+= 1
         rerenderSegmentation()
     }
@@ -363,6 +364,7 @@ extension ViewerModel {
         calcRegions.remove(at: idx)
         if activeRegionID == id { activeRegionID = calcRegions.first?.id }
         recomputeRegionVoxelCounts()
+        invalidateSegmentationExports()   // regions changed → prior export is stale
         segmentationRevision &+= 1
         rerenderSegmentation()
     }
@@ -386,6 +388,7 @@ extension ViewerModel {
         applyPreview(coords.map { ($0.x, $0.y, $0.z) })
         region.previewVoxelCount = coords.count
         activeRegionID = region.id
+        invalidateSegmentationExports()   // editing a region → prior export is stale
         segmentationRevision &+= 1
         rerenderSegmentation()
     }
@@ -397,6 +400,8 @@ extension ViewerModel {
         calcRegions = []
         draftRegion = nil
         activeRegionID = nil
+        exportedMaskURL = nil
+        exportedAtlasURL = nil
         brainMaskLayer = nil
         brainMaskStatus = ""
         // Stop an in-flight SynthSeg run so its completion can't fire a brain-mask
@@ -443,6 +448,7 @@ extension ViewerModel {
         }
         guard delta != 0 else { return }
         region.voxelCount = max(0, region.voxelCount + delta)
+        invalidateSegmentationExports()   // voxels changed → prior export is stale
         segmentationRevision &+= 1
         // Brush edits land on the active panel's current slice; re-render all
         // MPR panels so the orthogonal views stay consistent.
@@ -748,7 +754,8 @@ extension ViewerModel {
         // Require the draft be committed/cancelled first.
         guard draftRegion == nil, segPreviewBackup.isEmpty else { throw NiftiWriteError.draftActive }
         let url = exportURL(for: kind)
-        if kind == .binaryMask { try exportMask(to: url) } else { try exportAtlas(to: url) }
+        if kind == .binaryMask { try exportMask(to: url); exportedMaskURL = url }
+        else { try exportAtlas(to: url); exportedAtlasURL = url }
         return url
     }
 
