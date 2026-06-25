@@ -307,6 +307,7 @@ extension ViewerModel {
         // Picking a method re-enters box mode via `beginRegion`.
         if activeTool == .roiBox { activeTool = .select }
         recomputeRegionVoxelCounts()
+        invalidateSegmentationExports()   // regions changed → prior export is stale
         segmentationRevision &+= 1
         rerenderSegmentation()
     }
@@ -363,6 +364,7 @@ extension ViewerModel {
         calcRegions.remove(at: idx)
         if activeRegionID == id { activeRegionID = calcRegions.first?.id }
         recomputeRegionVoxelCounts()
+        invalidateSegmentationExports()   // regions changed → prior export is stale
         segmentationRevision &+= 1
         rerenderSegmentation()
     }
@@ -386,6 +388,12 @@ extension ViewerModel {
         applyPreview(coords.map { ($0.x, $0.y, $0.z) })
         region.previewVoxelCount = coords.count
         activeRegionID = region.id
+        // Don't invalidate the recorded export here: entering a re-edit alone does
+        // not change committed content. A commit (`commitActiveRegion`) invalidates,
+        // and a Cancel restores the exact original voxels (`restoreReEditedRegionIfNeeded`)
+        // so the on-disk export still matches — invalidating on entry would wrongly
+        // leave the Export pill "Pending" after a no-op re-edit/cancel (Codex P3).
+        // The draft itself shows as "Editing"/"Finish" and blocks export meanwhile.
         segmentationRevision &+= 1
         rerenderSegmentation()
     }
@@ -397,6 +405,8 @@ extension ViewerModel {
         calcRegions = []
         draftRegion = nil
         activeRegionID = nil
+        exportedMaskURL = nil
+        exportedAtlasURL = nil
         brainMaskLayer = nil
         brainMaskStatus = ""
         // Stop an in-flight SynthSeg run so its completion can't fire a brain-mask
@@ -443,6 +453,7 @@ extension ViewerModel {
         }
         guard delta != 0 else { return }
         region.voxelCount = max(0, region.voxelCount + delta)
+        invalidateSegmentationExports()   // voxels changed → prior export is stale
         segmentationRevision &+= 1
         // Brush edits land on the active panel's current slice; re-render all
         // MPR panels so the orthogonal views stay consistent.
@@ -748,7 +759,8 @@ extension ViewerModel {
         // Require the draft be committed/cancelled first.
         guard draftRegion == nil, segPreviewBackup.isEmpty else { throw NiftiWriteError.draftActive }
         let url = exportURL(for: kind)
-        if kind == .binaryMask { try exportMask(to: url) } else { try exportAtlas(to: url) }
+        if kind == .binaryMask { try exportMask(to: url); exportedMaskURL = url }
+        else { try exportAtlas(to: url); exportedAtlasURL = url }
         return url
     }
 

@@ -344,6 +344,31 @@ class ViewerModel: ObservableObject {
     @Published var synthSegOutputFiles: [URL] = []
     /// The directory the last SynthSeg run wrote into (first output file's parent).
     var synthSegOutputDirectory: URL? { synthSegOutputFiles.first?.deletingLastPathComponent() }
+    /// URLs of the most recent successful mask / atlas exports this session, used
+    /// by the Segment panel's status indicator to show "Exported". Each is CLEARED
+    /// whenever the segmentation's voxel content changes (commit / delete / re-edit
+    /// / brush / reset), so the indicator never claims a stale on-disk file still
+    /// matches the live regions.
+    @Published var exportedMaskURL: URL? = nil
+    @Published var exportedAtlasURL: URL? = nil
+    /// True once a mask or atlas has been exported for the current segmentation.
+    var hasExportedSegmentation: Bool { exportedMaskURL != nil || exportedAtlasURL != nil }
+    /// Forget recorded exports because the segmentation's voxel content changed
+    /// (both the mask and the atlas on-disk files would now be stale). Called
+    /// from the voxel-mutation sites.
+    func invalidateSegmentationExports() {
+        if exportedMaskURL != nil { exportedMaskURL = nil }
+        if exportedAtlasURL != nil { exportedAtlasURL = nil }
+    }
+
+    /// Forget only the recorded ATLAS export because a region's metadata
+    /// (name / color) changed. The atlas's `_LUT.txt` / `_dseg.tsv` sidecar
+    /// serializes those, so it's now stale; the binary mask carries no metadata,
+    /// so `exportedMaskURL` stays valid. Called from the RegionRow rename/recolor
+    /// bindings.
+    func invalidateAtlasExport() {
+        if exportedAtlasURL != nil { exportedAtlasURL = nil }
+    }
     /// Live settings subscriptions (overlay opacity → re-render).
     var settingsCancellables = Set<AnyCancellable>()
 

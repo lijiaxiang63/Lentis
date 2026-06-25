@@ -20,8 +20,27 @@ struct SegmentInspectorView: View {
     @State private var exportError: String?
 
     var body: some View {
+        // Conditional body — the empty state REPLACES the sections when no volume
+        // is loaded, so they can't composite underneath it (the old `.overlay`
+        // drew the unavailable view on top of the still-visible sections).
+        Group {
+            if model.segmentationVolume == nil {
+                emptyState
+            } else {
+                loadedBody
+            }
+        }
+        .alert("Export Failed", isPresented: Binding(get: { exportError != nil },
+                                                     set: { if !$0 { exportError = nil } })) {
+            Button("OK", role: .cancel) { exportError = nil }
+        } message: { Text(exportError ?? "") }
+    }
+
+    private var loadedBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.m) {
+                statusStrip
+                Divider().padding(.horizontal, Spacing.m)
                 brainMaskSection
                 Divider().padding(.horizontal, Spacing.m)
                 activeRegionSection
@@ -32,17 +51,127 @@ struct SegmentInspectorView: View {
             }
             .padding(.vertical, Spacing.s)
         }
-        .overlay {
-            if model.segmentationVolume == nil {
-                ContentUnavailableView("No Volume",
-                                       systemImage: "cube.transparent",
-                                       description: Text("Open a brain CT to segment calcifications."))
+    }
+
+    // MARK: - Empty state
+
+    /// Shown when no volume is loaded. Hand-built (a bare `ContentUnavailableView`
+    /// renders flush-left and clashes with the inspector column) — a centered
+    /// glyph + title + caption that reads as a calm "open a file to begin".
+    private var emptyState: some View {
+        VStack(spacing: Spacing.m) {
+            Image(systemName: "cube.transparent")
+                .font(.system(size: 38, weight: .light))
+                .foregroundStyle(.tertiary)
+            VStack(spacing: Spacing.xs) {
+                Text("No Volume")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                Text("Open a brain CT to segment\nintracranial calcifications.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .alert("Export Failed", isPresented: Binding(get: { exportError != nil },
-                                                     set: { if !$0 { exportError = nil } })) {
-            Button("OK", role: .cancel) { exportError = nil }
-        } message: { Text(exportError ?? "") }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .padding(Spacing.xl)
+    }
+
+    // MARK: - Status strip (Brain · Regions · Export at a glance)
+
+    /// One status pill's content. All three pills are pure reads of existing
+    /// published state — no new model state, no segmenter calls.
+    private struct StatusCellModel {
+        let glyph: String
+        let tint: Color
+        let title: String
+        let value: String
+    }
+
+    /// Brain-mask pill: running → ready → needs-setup → none.
+    private var brainStatus: StatusCellModel {
+        if model.isRunningSynthSeg {
+            return .init(glyph: "hourglass", tint: .lentisAccent, title: "Brain", value: "Working")
+        }
+        if let layer = model.brainMaskLayer {
+            return .init(glyph: "checkmark.seal.fill", tint: .green, title: "Brain",
+                         value: layer.kind == .atlas ? "Parcellation" : "Mask")
+        }
+        if !model.synthSegAvailable {
+            return .init(glyph: "wrench.and.screwdriver.fill", tint: .orange, title: "Brain", value: "Set Up")
+        }
+        return .init(glyph: "brain.head.profile", tint: .secondary, title: "Brain", value: "None")
+    }
+
+    /// Regions pill: editing a draft → committed count + total volume → none.
+    private var regionsStatus: StatusCellModel {
+        if model.draftRegion != nil {
+            return .init(glyph: "square.dashed.inset.filled", tint: .lentisAccent, title: "Regions", value: "Editing")
+        }
+        if model.hasSegmentation {
+            let n = model.calcRegions.count
+            let totalVox = model.calcRegions.reduce(0) { $0 + $1.voxelCount }
+            let vol = model.physicalVolumeString(voxelCount: totalVox)
+            return .init(glyph: "square.dashed.inset.filled", tint: .lentisAccent, title: "Regions",
+                         value: vol.isEmpty ? "\(n)" : "\(n) · \(vol)")
+        }
+        return .init(glyph: "square.dashed", tint: .secondary, title: "Regions", value: "None")
+    }
+
+    /// Export pill: blocked by a draft → exported → ready (pending) → nothing.
+    private var exportStatus: StatusCellModel {
+        if model.draftRegion != nil {
+            return .init(glyph: "exclamationmark.triangle.fill", tint: .orange, title: "Export", value: "Finish")
+        }
+        if model.hasExportedSegmentation {
+            return .init(glyph: "checkmark.seal.fill", tint: .green, title: "Export", value: "Saved")
+        }
+        if model.hasSegmentation {
+            return .init(glyph: "tray.and.arrow.down.fill", tint: .orange, title: "Export", value: "Pending")
+        }
+        return .init(glyph: "tray", tint: .secondary, title: "Export", value: "—")
+    }
+
+    private var statusStrip: some View {
+        GlassEffectContainer(spacing: Spacing.xs) {
+            HStack(spacing: Spacing.xs) {
+                statusCell(brainStatus)
+                statusCell(regionsStatus)
+                statusCell(exportStatus)
+            }
+        }
+        .padding(.horizontal, Spacing.m)
+    }
+
+    private func statusCell(_ s: StatusCellModel) -> some View {
+        HStack(spacing: Spacing.xs) {
+            // Fixed glyph slot so an icon swap (e.g. into the running hourglass)
+            // can't resize the row.
+            Image(systemName: s.glyph)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(s.tint)
+                .frame(width: 14, height: 14)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(s.title)
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .tracking(0.4)
+                    .textCase(.uppercase)
+                    .foregroundStyle(.secondary)
+                Text(s.value)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Spacing.s)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassEffect(.regular.tint(s.tint.opacity(0.14)), in: RoundedRectangle(cornerRadius: Radius.chip))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(s.title): \(s.value)")
     }
 
     // MARK: - Brain mask
@@ -91,70 +220,20 @@ struct SegmentInspectorView: View {
     private var brainMaskSection: some View {
         InspectorSection(title: "Brain Mask") {
             VStack(alignment: .leading, spacing: Spacing.m) {
-                // Expressive status header: a tinted glass glyph + caption, so the
-                // current state reads by color + icon before the words are parsed.
-                HStack(alignment: .top, spacing: Spacing.s) {
-                    Image(systemName: brainMaskState.systemImage)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(brainMaskState.tint)
-                        .frame(width: 30, height: 30)
-                        .glassEffect(.regular.tint(brainMaskState.tint.opacity(0.22)), in: Circle())
-
-                    Text(brainMaskStatusText)
-                        .font(.caption)
-                        .foregroundStyle(model.brainMaskLayer == nil ? .secondary : .primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
                 if model.isRunningSynthSeg {
+                    brainMaskStatusHeader
                     runningStrip
+                } else if model.brainMaskLayer != nil {
+                    // A mask is loaded — collapse to a compact done-summary that
+                    // reclaims vertical space for the (tall) Active Region editor.
+                    brainMaskDoneSummary
                 } else {
-                    // Action cluster — adjacent glass surfaces blend per the Liquid
-                    // Glass guidance. Generate is the hero (.glassProminent); Load
-                    // Existing is the quiet secondary path. The inline gear
-                    // SettingsLink is gone (Settings lives on the toolbar gear / ⌘,).
-                    GlassEffectContainer(spacing: Spacing.s) {
-                        VStack(alignment: .leading, spacing: Spacing.s) {
-                            if model.synthSegAvailable {
-                                Button { model.generateBrainMaskWithSynthSeg() } label: {
-                                    Label("Generate with SynthSeg", systemImage: "wand.and.stars")
-                                        .frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(.glassProminent)
-                                .disabled(model.segmentationVolume == nil)
-                            } else {
-                                // SynthSeg missing: the ONE remaining SettingsLink
-                                // (distinct from the removed inline gear) + why.
-                                SettingsLink {
-                                    Label("Set Up FreeSurfer…", systemImage: "gearshape")
-                                        .frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(.glass)
-                                Text("FreeSurfer SynthSeg not found. Point Lentis at your FreeSurfer install in Settings.")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-
-                            HStack(spacing: Spacing.s) {
-                                Button { loadBrainMaskPanel() } label: {
-                                    Label("Load Existing…", systemImage: "square.dashed")
-                                        .frame(maxWidth: .infinity)
-                                }
-                                .buttonStyle(.glass)
-                                .disabled(model.segmentationVolume == nil)
-
-                                if model.brainMaskLayer != nil {
-                                    Button(role: .destructive) { model.clearBrainMask() } label: {
-                                        Image(systemName: "trash")
-                                    }
-                                    .buttonStyle(.glass)
-                                    .help("Clear the loaded brain mask")
-                                }
-                            }
-                        }
-                    }
-
+                    // No mask yet — the full action cluster, framed as optional.
+                    brainMaskStatusHeader
+                    Text("Optional — improves accuracy by excluding skull.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    brainMaskActionCluster
                     if model.synthSegAvailable, !model.synthSegStatus.isEmpty {
                         Text(model.synthSegStatus)
                             .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
@@ -164,6 +243,97 @@ struct SegmentInspectorView: View {
                 if !model.synthSegOutputFiles.isEmpty {
                     synthSegOutputRow
                 }
+            }
+        }
+    }
+
+    /// Expressive status header: a tinted glass glyph + caption, so the current
+    /// state reads by color + icon before the words are parsed.
+    private var brainMaskStatusHeader: some View {
+        HStack(alignment: .top, spacing: Spacing.s) {
+            Image(systemName: brainMaskState.systemImage)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(brainMaskState.tint)
+                .frame(width: 30, height: 30)
+                .glassEffect(.regular.tint(brainMaskState.tint.opacity(0.22)), in: Circle())
+
+            Text(brainMaskStatusText)
+                .font(.caption)
+                .foregroundStyle(model.brainMaskLayer == nil ? .secondary : .primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Compact "mask ready" row: green glyph + status + an overflow menu holding
+    /// the now-secondary Load Existing / Clear actions (the big Generate hero is
+    /// unnecessary once a mask exists).
+    private var brainMaskDoneSummary: some View {
+        HStack(spacing: Spacing.s) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.green)
+                .frame(width: 30, height: 30)
+                .glassEffect(.regular.tint(Color.green.opacity(0.22)), in: Circle())
+
+            Text(model.brainMaskStatus.isEmpty ? "Brain mask loaded" : model.brainMaskStatus)
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Menu {
+                Button { loadBrainMaskPanel() } label: { Label("Load Existing…", systemImage: "square.dashed") }
+                if model.synthSegAvailable {
+                    Button { model.generateBrainMaskWithSynthSeg() } label: {
+                        Label("Regenerate with SynthSeg", systemImage: "wand.and.stars")
+                    }
+                }
+                Divider()
+                Button(role: .destructive) { model.clearBrainMask() } label: { Label("Clear", systemImage: "trash") }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Brain mask actions")
+            .accessibilityLabel("Brain mask actions")
+        }
+    }
+
+    /// Action cluster for the no-mask state. Adjacent glass surfaces blend per the
+    /// Liquid Glass guidance: Generate is the hero (.glassProminent), Load Existing
+    /// the quiet secondary, or a Set-Up SettingsLink when SynthSeg isn't found.
+    private var brainMaskActionCluster: some View {
+        GlassEffectContainer(spacing: Spacing.s) {
+            VStack(alignment: .leading, spacing: Spacing.s) {
+                if model.synthSegAvailable {
+                    Button { model.generateBrainMaskWithSynthSeg() } label: {
+                        Label("Generate with SynthSeg", systemImage: "wand.and.stars")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.glassProminent)
+                    .disabled(model.segmentationVolume == nil)
+                } else {
+                    SettingsLink {
+                        Label("Set Up FreeSurfer…", systemImage: "gearshape")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.glass)
+                    Text("FreeSurfer SynthSeg not found. Point Lentis at your FreeSurfer install in Settings.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Button { loadBrainMaskPanel() } label: {
+                    Label("Load Existing…", systemImage: "square.dashed")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.glass)
+                .disabled(model.segmentationVolume == nil)
             }
         }
     }
@@ -336,6 +506,8 @@ struct SegmentInspectorView: View {
                     Label("Finish or cancel the active region to export.", systemImage: "exclamationmark.triangle")
                         .font(.caption2).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
+                } else if model.hasExportedSegmentation {
+                    exportedRevealCard
                 } else if model.hasSegmentation {
                     Text("Saves to \(exportLocationHint)/ — change the folder & file suffixes in Settings.")
                         .font(.caption2).foregroundStyle(.secondary)
@@ -343,6 +515,42 @@ struct SegmentInspectorView: View {
                 }
             }
         }
+    }
+
+    /// Persistent post-export confirmation: a tappable green glass card that
+    /// reveals the written file(s) in Finder (the transient success Toast still
+    /// fires on export; this is the lasting "it's saved here" affordance).
+    private var exportedRevealCard: some View {
+        let urls = [model.exportedMaskURL, model.exportedAtlasURL].compactMap { $0 }
+        let subtitle = urls.count == 1
+            ? urls[0].lastPathComponent
+            : "Mask + Atlas exported"
+        return Button {
+            if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
+        } label: {
+            HStack(spacing: Spacing.s) {
+                Image(systemName: "checkmark.seal.fill")
+                    .foregroundStyle(.green)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Exported")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                Spacer(minLength: Spacing.xs)
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, Spacing.s)
+            .padding(.vertical, Spacing.s)
+            .contentShape(RoundedRectangle(cornerRadius: Radius.chip))
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: RoundedRectangle(cornerRadius: Radius.chip))
+        .help("Reveal the exported file in Finder")
+        .accessibilityLabel("Show exported file in Finder")
     }
 
     /// Abbreviated directory exports will be written to (for the inline hint).
@@ -418,12 +626,18 @@ private struct ActiveRegionEditor: View {
     var body: some View {
         InspectorSection(title: "Active Region") {
             VStack(alignment: .leading, spacing: Spacing.s) {
+                // Full-width segmented control with no inline label — in the
+                // narrow inspector the "Method" label competed with the two long
+                // segment titles and got squeezed ("Metho/d"). The titles are
+                // self-descriptive and the caption below names the chosen method;
+                // `.labelsHidden()` keeps "Method" as the VoiceOver label.
                 Picker("Method", selection: Binding(
                     get: { draft.parameters.method },
                     set: { model.setActiveRegionMethod($0) })) {
                     ForEach(SegmentationMethod.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
 
                 // Always-visible explanation of what the chosen method expects of
                 // the box — Method B in particular requires a box drawn ENTIRELY
@@ -491,6 +705,11 @@ private struct ActiveRegionEditor: View {
                         .buttonStyle(.glass)
                 }
             }
+            // A faint accent-tinted glass surface marks the editor as the live
+            // in-progress region, echoing the status strip's "Regions · Editing".
+            .padding(Spacing.s)
+            .glassEffect(.regular.tint(Color.lentisAccent.opacity(0.10)),
+                         in: RoundedRectangle(cornerRadius: Radius.card))
         }
     }
 
@@ -542,13 +761,21 @@ private struct ActiveRegionEditor: View {
                     Text("\(draft.parameters.minVoxelCount)").font(.lentisReadout)
                 }
             }
-            Picker("Connectivity", selection: Binding(
-                get: { draft.parameters.connectivity },
-                set: { draft.parameters.connectivity = $0; model.updateActiveRegionPreview() })) {
-                Text("6").tag(Connectivity.six)
-                Text("26").tag(Connectivity.twentySix)
+            // Label-left + compact control-right (matching the Min-size row) so
+            // the "Connectivity" label isn't squeezed by an inline segmented label.
+            HStack {
+                Text("Connectivity").font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: Spacing.s)
+                Picker("Connectivity", selection: Binding(
+                    get: { draft.parameters.connectivity },
+                    set: { draft.parameters.connectivity = $0; model.updateActiveRegionPreview() })) {
+                    Text("6").tag(Connectivity.six)
+                    Text("26").tag(Connectivity.twentySix)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
             }
-            .pickerStyle(.segmented)
             Toggle("Constrain to brain mask", isOn: Binding(
                 get: { draft.parameters.constrainToBrainMask },
                 set: { draft.parameters.constrainToBrainMask = $0; model.updateActiveRegionPreview() }))
@@ -670,6 +897,10 @@ private struct RegionRow: View {
                     .textFieldStyle(.plain)
                     .font(.callout.weight(.medium))
                     .lineLimit(1)
+                    // The name is serialized into the atlas LUT/dseg sidecar, so a
+                    // rename makes a prior atlas export stale (the mask has no
+                    // metadata and stays valid).
+                    .onChange(of: region.name) { model.invalidateAtlasExport() }
                 Text(verbatim: subtitle)
                     .font(.caption2).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.tail)
@@ -742,6 +973,9 @@ private struct RegionRow: View {
                 let ns = NSColor(newColor).usingColorSpace(.sRGB) ?? .red
                 region.color = SIMD3(Double(ns.redComponent), Double(ns.greenComponent), Double(ns.blueComponent))
                 model.refreshSegmentationRender()
+                // The color is serialized into the atlas LUT/dseg sidecar, so a
+                // recolor makes a prior atlas export stale.
+                model.invalidateAtlasExport()
             })
     }
 }

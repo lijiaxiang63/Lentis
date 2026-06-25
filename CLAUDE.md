@@ -67,7 +67,9 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
   gitignored — only synthetic fixtures are tracked. Commit per phase/logical step; branch off `master`
   for changes (it's the default branch) and open a PR.
   **BIDS dataset support + Settings polish (2026-06-24) — DONE, merged to `master` @ `6a4c208` (PR #3).**
-  See the roadmap entry below; `swift build` clean, **200 tests** green (114 XCTest + 86 swift-testing).
+  See the roadmap entry below; `swift build` clean. **Latest (2026-06-25, uncommitted): Segment-panel
+  redesign** (empty-state overlap fix + Brain/Regions/Export status strip + layout polish) — `swift build`
+  clean, **204 tests** green (118 XCTest + 86 swift-testing).
 
 ---
 
@@ -107,7 +109,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | `CalcificationRegion.swift` | One region's data model (ObservableObject): label value, name/color/visibility, `parameters`, `box` + `slabAxis`, voxel/anatomical name. |
 | `ViewerModel+Segmentation.swift` | **Multi-region orchestration.** Region lifecycle (begin/setBox/preview/commit/cancel/delete/re-edit), per-label color table for `loadMPRSlice`, touch-up `paintBrush`, brain-mask load + SynthSeg drive, mask/atlas export. Editable mask = `VolumeData.labelMask` (1…254 = regions, 255 = transient preview); all mask writes on main, then bump `segmentationRevision` + re-render (sync contract). **`exportSegmentation` throws `.draftActive` while a draft preview (label 255) is live** — the writer skips 255, so exporting mid-draft would silently drop overlapped committed voxels. |
 | `SegmentationBoxOverlay.swift` | Draws the draft box's cross-section + corner markers on each intersecting MPR plane, reusing the `CrossReferenceOverlay` pixel→screen transform. 3D excluded. |
-| `SegmentInspectorView.swift` | Segment tab of the trailing inspector. **Brain Mask** — state-aware tinted-glass status glyph (`BrainMaskState`); **Generate with SynthSeg** hero (`.glassProminent`) + quiet **Load Existing…** + compact **Clear**; running strip + reveal-in-Finder card (**no inline gear** — Settings is on the toolbar gear + ⌘,). Active Region (method, ROI histogram, threshold sliders, Otsu/Mean, connectivity/min-size, live preview, Add/Cancel); Regions list (recolor/rename/re-edit/delete/brush; right-click + ellipsis both gated during a draft). **Export Mask/Atlas disabled while a draft is active** (with a hint). |
+| `SegmentInspectorView.swift` | Segment tab of the trailing inspector. **Body is a conditional `Group` (empty state REPLACES the sections — never an `.overlay` over them, the old overlap bug):** no volume → a centered hand-built `emptyState` (cube glyph + "No Volume"); else `loadedBody`. **`statusStrip`** — the canonical at-a-glance status indicator: three equal-width glass pills (Brain · Regions · Export), each a `StatusCellModel {glyph,tint,title,value}` reading existing published state (no new state). Legend: green=ready/done, `lentisAccent`=active, orange=needs-setup/pending/finish-draft, secondary=none (amber/teal stay reserved for CT/MRI). **Brain Mask** — state-aware glyph (`BrainMaskState`); when a mask is loaded it collapses to a compact green done-summary (glyph + status + overflow `Menu`: Load/Regenerate/Clear); no mask → full cluster (**Generate with SynthSeg** `.glassProminent` hero + quiet **Load Existing…**) under an "Optional…" caption; running strip + reveal-in-Finder card. Active Region (method, ROI histogram, threshold sliders, Otsu/Mean, connectivity/min-size, live preview, Add/Cancel) wrapped in a faint `lentisAccent` glass card. Regions list (recolor/rename/re-edit/delete/brush; right-click + ellipsis both gated during a draft). **Export** — Mask/Atlas `.glass` buttons (disabled while a draft is active, with a hint) → after a successful export, a green reveal-in-Finder card (`hasExportedSegmentation`). |
 | `NiftiWriter.swift` | **NIfTI-1 writer** (the reader is decode-only). Header serialize (offsets match `parseHeader`); **`writeMask` stages straight into a `UInt8` buffer** (mask/atlas labels are 1…254, 255 reserved → always DT_UINT8; no ~1.4 GB Int32 intermediate on big volumes), **write-back to the original input grid** via `reorientation`+`originalAffine`, gzip (Compression raw DEFLATE wrapped in an RFC-1952 container + CRC32) read by the pure-Swift inflater, `writeVolume` (gray CT for SynthSeg), FreeSurfer LUT sidecar. |
 | `SynthSegRunner.swift` | Runs FreeSurfer `mri_synthseg --parc --robust --ct --cpu --threads N` via `Foundation.Process` (off-main, streamed progress, cancel). Locates the binary (user override → persisted binary → **`AppSettings` FreeSurfer home** → $FREESURFER_HOME/bin → PATH → /Applications/freesurfer/<ver>/bin) and sets a **clean** child env (writable HOME/TMPDIR, strips toxic inherited `PYTHON*`/`CONDA*`) so it works when launched from Finder. Reports **signal-vs-exit** (`status 6` = SIGABRT, a TF abort) and surfaces the captured stderr tail. |
 | `AppSettings.swift` | **App-wide preferences** (UserDefaults-backed `ObservableObject` singleton `AppSettings.shared`): FreeSurfer home / `mri_synthseg` path (reuses `SynthSegRunner.defaultsKey`), SynthSeg `--robust`/`--parc`/threads, output-location mode (next-to-source / custom folder) + auto-load + write-brain-mask toggles, overlay opacity. `resolveOutputDirectory` (pure, tested) picks a writable dir with fallbacks; `niftiBaseName` strips `.nii`/`.nii.gz`. The viewer reads it on demand (SynthSeg) or subscribes (`$overlayOpacity` → live re-render). |
@@ -1049,6 +1051,44 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
     `writeLUT` path uses `try`; changed to `try` so a failed write throws instead of reporting a successful
     export of an incomplete BIDS derivative. Codex re-reviewed the fix commit clean ("no major issues").
     `swift build` clean; `swift test` green (114 XCTest + 86 swift-testing = 200).
+
+- [x] **Segment-panel redesign — empty-state fix + status strip + layout polish (2026-06-25).** Driven by
+  the user (with a screenshot of the broken empty state). Three asks, all done: **(1) empty-state overlap
+  bug** — when no volume was loaded the "No Volume" `ContentUnavailableView` was a transparent `.overlay`
+  drawn ON TOP of the still-visible Brain Mask / New Region / Regions / Export sections, so they overlapped
+  and looked broken. `SegmentInspectorView.body` is now a conditional `Group { segmentationVolume == nil ?
+  emptyState : loadedBody }` so the sections are simply NOT in the tree without a volume — the overlap is
+  structurally impossible; `emptyState` is a hand-built centered cube glyph + "No Volume" + caption (a bare
+  `ContentUnavailableView` renders flush-left and clashes with the column). **(2) status indicator** — a new
+  `statusStrip`, the first child of `loadedBody`: three equal-width glass pills **Brain · Regions · Export**,
+  each a pure read of EXISTING published state (`StatusCellModel{glyph,tint,title,value}`; no segmenter
+  calls). Brain: none→ready(green "Mask"/"Parcellation")→running→needs-setup; Regions: none→`N · V cm³`
+  (committed count + summed physical volume)→"Editing" (draft); Export: `—`→Pending(orange)→**Saved**
+  (green)→"Finish" (draft blocks export). This is requirement #2's brain-mask + export indicators in one
+  deliberate surface. Backed by **new model state** `ViewerModel.exportedMaskURL`/`exportedAtlasURL` +
+  `hasExportedSegmentation` + `invalidateSegmentationExports()` (set on a successful `exportSegmentation`,
+  cleared on every voxel-content change — commit/delete/brush/reset — so "Saved" never claims a
+  stale on-disk file). **`reEditRegion` deliberately does NOT invalidate on entry (Codex P3 fix):** a
+  re-edit alone changes no committed content — a *commit* invalidates (its voxels may have changed) and a
+  *cancel* restores the exact original voxels (`restoreReEditedRegionIfNeeded`) so the export still
+  matches; invalidating on entry would wrongly strand the Export pill at "Pending" after a no-op
+  re-edit/cancel. (The draft meanwhile reads "Editing"/"Finish" and blocks export, so the still-recorded
+  URL is never shown as "Saved" mid-draft.) **Atlas-only invalidation (`invalidateAtlasExport()`, Codex P2 fix):** a region
+  rename/recolor (`RegionRow` name `onChange` + the color binding) clears only `exportedAtlasURL` — the
+  atlas `_LUT.txt`/`_dseg.tsv` sidecar serializes names/colors, while the binary mask has no metadata so
+  `exportedMaskURL` stays valid. **(3) layout polish** — Brain Mask collapses to a compact green done-summary (glyph
+  + status + overflow Menu) once a mask is loaded, reclaiming space for the tall editor; the no-mask cluster
+  gains an "Optional…" caption; the Active Region editor is wrapped in a faint `lentisAccent` glass card;
+  Export shows a green reveal-in-Finder card after a successful export. **Design** chosen via a judge-panel
+  of three divergent proposals (workflow-stepper / native-minimal / summary-card) → native-minimal spine +
+  a single consolidated status strip. **GUI-verified** on `synthetic_calc.nii.gz`: the empty state is clean
+  (no overlap); the loaded Segment tab shows the strip + all sections with no clipping in the ~300pt column;
+  loading the brain mask flipped the Brain pill to green "Mask" + the compact done-summary live. **+3
+  `SegmentationModelTests` (export records URL + brush/delete invalidate + atlas-only metadata invalidation;
+  +1 for the P3 canceled-re-edit-preserves-export fix).
+  swift build clean; swift test green (118 XCTest + 86 swift-testing = 204).** Deferred (synthetic input can't drive a SwiftUI
+  `DragGesture`/segmented Picker): GUI screenshots of the regions-committed / exported "green" pill states —
+  they reuse the verified `statusCell` primitives and are covered by the export-status unit test.
 
 ---
 
