@@ -1,0 +1,121 @@
+name: Release
+
+# Fires when a version tag is pushed, e.g.:
+#   git tag v1.5.0 && git push origin v1.5.0
+# Builds the release DMG and publishes a GitHub Release with brief notes.
+# Manual runs (workflow_dispatch) build the DMG as an artifact without releasing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # required for the job's GITHUB_TOKEN to create the Release
+
+jobs:
+  release:
+    # macos-26 provides Xcode 26 (Swift 6.2+) and the macOS 26 SDK, both required:
+    # Package.swift pins .macOS(.v26) for the Liquid Glass UI. macos-15 fails.
+    runs-on: macos-26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # need full history + tags to build the changelog
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/}"
+          else
+            VERSION="dev-$(git rev-parse --short HEAD)"
+          fi
+          # Marketing version (CFBundleShortVersionString) must be dotted-numeric:
+          # strip a leading "v" and keep the leading X.Y.Z core, dropping any
+          # pre-release suffix (e.g. v1.5.0-beta -> 1.5.0). Falls back to 0.0.0.
+          MARKETING="$(printf '%s' "${VERSION#v}" | grep -oE '^[0-9]+(\.[0-9]+)*' || true)"
+          MARKETING="${MARKETING:-0.0.0}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "marketing=${MARKETING}" >> "$GITHUB_OUTPUT"
+          echo "Building Lentis ${VERSION} (marketing ${MARKETING}, build ${GITHUB_RUN_NUMBER})"
+
+      - name: Build app bundle + DMG
+        env:
+          # Stamp the bundle version from the tag instead of the script defaults.
+          LENTIS_MARKETING_VERSION: ${{ steps.version.outputs.marketing }}
+          LENTIS_BUILD_VERSION: ${{ github.run_number }}
+        run: ./scripts/package_app.sh
+
+      - name: Name the DMG with the version
+        id: dmg
+        run: |
+          DMG="Lentis-${{ steps.version.outputs.version }}.dmg"
+          mv Lentis.dmg "${DMG}"
+          echo "path=${DMG}" >> "$GITHUB_OUTPUT"
+          shasum -a 256 "${DMG}" | tee "${DMG}.sha256"
+
+      - name: Generate release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        id: notes
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          DMG: ${{ steps.dmg.outputs.path }}
+        run: |
+          # Previous tag (if any) bounds the changelog; first release lists recent history.
+          PREV="$(git describe --tags --abbrev=0 "${VERSION}^" 2>/dev/null || true)"
+          if [[ -n "${PREV}" ]]; then
+            RANGE="${PREV}..${VERSION}"
+            COMPARE="**Full changelog:** https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${VERSION}"
+          else
+            RANGE=""
+            COMPARE=""
+          fi
+
+          SHA256="$(cut -d' ' -f1 "${DMG}.sha256")"
+
+          {
+            echo "## Lentis ${VERSION}"
+            echo
+            echo "Native macOS NIFTI brain viewer (CT + MRI)."
+            echo
+            echo "### Changes"
+            git log --no-merges --pretty=format:'- %s' ${RANGE} | head -n 40
+            echo
+            echo
+            echo "### Install"
+            echo "1. Download \`${DMG}\` below."
+            echo "2. Open it and drag **Lentis.app** to **Applications**."
+            echo
+            echo "> The app is ad-hoc signed, not notarized. On first launch, right-click **Lentis.app → Open**, then confirm — or allow it under **System Settings → Privacy & Security**. Requires **macOS 26** or later (Apple Silicon)."
+            echo
+            echo "\`SHA-256: ${SHA256}\`"
+            echo
+            echo "${COMPARE}"
+          } > release-notes.md
+
+          echo "----- release notes -----"
+          cat release-notes.md
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DMG: ${{ steps.dmg.outputs.path }}
+        run: |
+          gh release create "${VERSION}" \
+            --title "Lentis ${VERSION}" \
+            --notes-file release-notes.md \
+            "${DMG}" "${DMG}.sha256"
+
+      - name: Upload DMG artifact (manual runs)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.dmg.outputs.path }}
+          path: ${{ steps.dmg.outputs.path }}

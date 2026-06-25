@@ -6,6 +6,12 @@
 set -e
 
 APP_NAME="Lentis"
+# Bundle version. Override from CI (e.g. the release tag) via the environment;
+# falls back to these defaults for local builds.
+#   CFBundleShortVersionString (marketing version, e.g. 2.0.0)
+APP_VERSION="${LENTIS_MARKETING_VERSION:-2.0.0}"
+#   CFBundleVersion (build number, e.g. a monotonically increasing integer)
+APP_BUILD="${LENTIS_BUILD_VERSION:-7}"
 # Set to your own "Developer ID Application: ..." identity before using --notarize.
 SIGNING_IDENTITY="Developer ID Application: CHANGE_ME"
 NOTARY_PROFILE="Lentis"
@@ -18,7 +24,7 @@ fi
 # Ensure we are in project root
 cd "$(dirname "$0")/.."
 
-echo "Building ${APP_NAME} (Release)..."
+echo "Building ${APP_NAME} ${APP_VERSION} (build ${APP_BUILD}, Release)..."
 swift build -c release --arch arm64
 
 BUILD_DIR=".build/release"
@@ -56,9 +62,9 @@ cat > "${CONTENTS_DIR}/Info.plist" <<EOF
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.5.0</string>
+    <string>${APP_VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>6</string>
+    <string>${APP_BUILD}</string>
     <key>LSMinimumSystemVersion</key>
     <string>26.0</string>
     <key>CFBundleIconFile</key>
