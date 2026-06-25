@@ -7,7 +7,7 @@
 <p align="center">
   <strong>A native macOS NIfTI brain viewer for CT and MRI.</strong><br>
   Affine-correct neurological orientation, linked multiplanar views, interactive Metal volume rendering,
-  mask/atlas overlays, and calcification segmentation in one focused desktop app.
+  mask/atlas overlays, and manual segmentation in one focused desktop app.
 </p>
 
 <p align="center">
