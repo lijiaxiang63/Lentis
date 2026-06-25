@@ -626,12 +626,18 @@ private struct ActiveRegionEditor: View {
     var body: some View {
         InspectorSection(title: "Active Region") {
             VStack(alignment: .leading, spacing: Spacing.s) {
+                // Full-width segmented control with no inline label — in the
+                // narrow inspector the "Method" label competed with the two long
+                // segment titles and got squeezed ("Metho/d"). The titles are
+                // self-descriptive and the caption below names the chosen method;
+                // `.labelsHidden()` keeps "Method" as the VoiceOver label.
                 Picker("Method", selection: Binding(
                     get: { draft.parameters.method },
                     set: { model.setActiveRegionMethod($0) })) {
                     ForEach(SegmentationMethod.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
 
                 // Always-visible explanation of what the chosen method expects of
                 // the box — Method B in particular requires a box drawn ENTIRELY
@@ -755,13 +761,21 @@ private struct ActiveRegionEditor: View {
                     Text("\(draft.parameters.minVoxelCount)").font(.lentisReadout)
                 }
             }
-            Picker("Connectivity", selection: Binding(
-                get: { draft.parameters.connectivity },
-                set: { draft.parameters.connectivity = $0; model.updateActiveRegionPreview() })) {
-                Text("6").tag(Connectivity.six)
-                Text("26").tag(Connectivity.twentySix)
+            // Label-left + compact control-right (matching the Min-size row) so
+            // the "Connectivity" label isn't squeezed by an inline segmented label.
+            HStack {
+                Text("Connectivity").font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: Spacing.s)
+                Picker("Connectivity", selection: Binding(
+                    get: { draft.parameters.connectivity },
+                    set: { draft.parameters.connectivity = $0; model.updateActiveRegionPreview() })) {
+                    Text("6").tag(Connectivity.six)
+                    Text("26").tag(Connectivity.twentySix)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
             }
-            .pickerStyle(.segmented)
             Toggle("Constrain to brain mask", isOn: Binding(
                 get: { draft.parameters.constrainToBrainMask },
                 set: { draft.parameters.constrainToBrainMask = $0; model.updateActiveRegionPreview() }))
