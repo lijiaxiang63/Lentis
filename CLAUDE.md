@@ -58,15 +58,16 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
   **Zero native/system dependencies** — pure Swift + Metal/AppKit (DCMTK/OpenJPEG gone in Phase 3).
 - `swift build` after adding a `PanelMode` case → the compiler flags every non-exhaustive
   `switch`. Fix each intentionally (usually mirror `.mprCoronal` or fold into a combined case).
-- **Git state (2026-06-24):** work is on **`master`** in the single main checkout
+- **Git state (2026-06-25):** work is on **`master`** in the single main checkout
   `/Users/jiaxiangli/neuroimaging/mriscript/Lentis`. **Phase 9 + the Segment/Settings UI polish merged
-  via PR #1, and the Codex export-safety fixes via PR #2 (`master` @ `285e872`).** The
-  `feature/calcification-segmentation` branch and its `Lentis-segmentation` worktree were deleted after
+  via PR #1, the Codex export-safety fixes via PR #2 (`master` @ `285e872`), and BIDS dataset support +
+  Settings polish via PR #3 (`master` @ `6a4c208`).** The `feature/calcification-segmentation` and
+  `feature/bids-dataset-support` branches (and the old `Lentis-segmentation` worktree) were deleted after
   merge — no separate worktree anymore; future work happens here. Real patient data (`TestData/sub-*`) is
   gitignored — only synthetic fixtures are tracked. Commit per phase/logical step; branch off `master`
   for changes (it's the default branch) and open a PR.
-  **BIDS dataset support + Settings polish (2026-06-24) — DONE in the working tree (uncommitted).** See the
-  roadmap entry below; `swift build` clean, **200 tests** green (114 XCTest + 86 swift-testing).
+  **BIDS dataset support + Settings polish (2026-06-24) — DONE, merged to `master` @ `6a4c208` (PR #3).**
+  See the roadmap entry below; `swift build` clean, **200 tests** green (114 XCTest + 86 swift-testing).
 
 ---
 
@@ -1014,7 +1015,7 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
     `SegmentationModelTests.testExportBlockedWhileDraftActive`. swift build clean; swift test green
     (114 XCTest + 67 swift-testing = 181).**
 
-- [x] **BIDS dataset support + Settings polish (2026-06-24, working tree).** Open a **BIDS dataset folder**
+- [x] **BIDS dataset support + Settings polish (2026-06-24, merged to `master` @ `6a4c208` via PR #3).** Open a **BIDS dataset folder**
   (or any folder of loose NIfTI) via a sidebar **dataset navigator** and a **BIDS-derivatives** output mode,
   plus a fix to the Settings "Export File Names" doubled-suffix chip. New pure model `BIDSDataset.swift`
   (entity parse / scan / derivative naming) + UI `BIDSNavigatorView.swift`. **Open flow:** `load(url:)` now
@@ -1037,6 +1038,17 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   screen access timed out in this environment); a synthetic fixture is at `/tmp/lentis-bids` —
   `./scripts/build_and_run.sh run --benchmark /tmp/lentis-bids` opens it. **Deferred:** a 3D-panel mask overlay
   (unchanged); BIDS validation of writes is best-effort, not a full validator.
+  - **Follow-up (2026-06-25) — Codex review fixes on PR #3 (commit `9193744`, in the PR #3 merge).**
+    Addressed both Codex findings (each verified real). **(P1)** The BIDS navigator row was the only Open
+    path not gated on `isLoading`/`isScanningFolder`; since `loadNifti` decodes off-main with no request
+    token and `applyNiftiDataset` has no staleness check, a second row-click mid-decode could race two
+    loads and install the wrong volume under a now-stale `loadedFileURL`/`currentDatasetFile` (wrong BIDS
+    export name). `BIDSFileRow` now `.disabled(model.isLoading || model.isScanningFolder)` — no second load
+    can start while one is in flight, so the race can't occur. **(P2)** Atlas export's `_dseg.tsv` write
+    (the only sidecar carrying label names/colors) used `try?`, swallowing failures while the legacy
+    `writeLUT` path uses `try`; changed to `try` so a failed write throws instead of reporting a successful
+    export of an incomplete BIDS derivative. Codex re-reviewed the fix commit clean ("no major issues").
+    `swift build` clean; `swift test` green (114 XCTest + 86 swift-testing = 200).
 
 ---
 
