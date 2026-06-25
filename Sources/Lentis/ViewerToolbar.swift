@@ -32,21 +32,37 @@ struct ViewerToolbar: ToolbarContent {
         // of complex custom views can't be rendered by the overflow menu; each
         // item on its own degrades gracefully (segmented Picker → submenu, Label
         // Button → titled menu item, Menu → submenu).
-        if let panel = model.activePanel, panel.image != nil, panel.seriesIndex >= 0 {
+        //
+        // The `panel.image != nil` gate lives INSIDE each ToolbarItem's content
+        // (via `PanelGated`), NOT on this `if let panel` at the ToolbarContent
+        // level. ViewerToolbar only observes `model`; `PanelState.image` fires
+        // the panel's objectWillChange, not the model's, so a top-level gate
+        // wouldn't re-evaluate when the async render lands — the controls would
+        // stay absent until an unrelated model change. `PanelGated` observes the
+        // panel directly, so it reveals as soon as the image arrives.
+        if let panel = model.activePanel {
             ToolbarItem(placement: .primaryAction) {
-                PlaneToolbarControl(model: model, panel: panel)
+                PanelGated(panel: panel) {
+                    PlaneToolbarControl(model: model, panel: panel)
+                }
             }
             if model.niftiDataset != nil && panel.seriesIndex == model.niftiSeriesIndex,
                let modality = model.effectiveModality {
                 ToolbarItem(placement: .primaryAction) {
-                    ModalityBadge(model: model, modality: modality)
+                    PanelGated(panel: panel) {
+                        ModalityBadge(model: model, modality: modality)
+                    }
                 }
             }
             ToolbarItem(placement: .primaryAction) {
-                WindowLevelToolbarControl(model: model, panel: panel)
+                PanelGated(panel: panel) {
+                    WindowLevelToolbarControl(model: model, panel: panel)
+                }
             }
             ToolbarItem(placement: .primaryAction) {
-                TransformToolbarControl(model: model, panel: panel)
+                PanelGated(panel: panel) {
+                    TransformToolbarControl(model: model, panel: panel)
+                }
             }
         }
 
@@ -61,6 +77,21 @@ struct ViewerToolbar: ToolbarContent {
         // the open-state Hide control so it can sit at the window's top-right
         // corner above the inspector. Keeping it out of this nested ToolbarContent
         // avoids stale re-evaluation and duplicate drawer buttons.
+    }
+}
+
+/// Reveals its content only once the panel's async render has landed an image.
+/// Observes the PANEL (not the model) so the gate re-evaluates on
+/// `panel.objectWillChange` — the documented reactivity split: a panel's image
+/// fires the panel's publisher, not the model's.
+private struct PanelGated<Content: View>: View {
+    @ObservedObject var panel: PanelState
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        if panel.image != nil, panel.seriesIndex >= 0 {
+            content()
+        }
     }
 }
 
