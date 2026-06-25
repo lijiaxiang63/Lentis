@@ -32,7 +32,7 @@ The app began as a fork of [OpenDicomViewer](https://github.com/jnheo-md/open-di
 - **Interactive 3D rendering** — Metal compute ray marching with drag rotation, density control, physical-spacing-aware geometry, lighting, and full-quality settling after interaction.
 - **CT- and MRI-aware display** — CT HU presets (Brain, Subdural, Stroke, Bone, and Soft Tissue), robust MRI auto-windowing, manual window/level, invert, zoom, pan, rotate, and flip.
 - **Mask and atlas layers** — add 3D NIfTI overlays in the native Layers Inspector; Lentis performs affine-aware nearest-neighbour alignment and supports ordering, opacity, mask colors, FreeSurfer/custom LUTs, and per-label visibility.
-- **Calcification segmentation** — draw a resizable 3D ROI box and segment by threshold or grow-from-seed; manage multiple labeled regions, optionally constrain to a brain mask, and export the result as a mask or multi-label atlas NIfTI with a FreeSurfer LUT.
+- **Manual segmentation** — draw a resizable 3D ROI box and segment by threshold or grow-from-seed; manage multiple labeled regions, optionally constrain to a brain mask, and export the result as a mask or multi-label atlas NIfTI with a FreeSurfer LUT.
 - **FreeSurfer SynthSeg integration** — generate a brain mask and anatomical parcellation in-app (`mri_synthseg`), automatically naming segmented regions by anatomy.
 - **BIDS datasets** — open a BIDS or loose-folder dataset, browse subjects and sessions in the sidebar navigator, and write outputs into a `derivatives/lentis/` tree.
 - **4D timepoints** — switch volumes without changing the shared spatial view or quantization scale.
