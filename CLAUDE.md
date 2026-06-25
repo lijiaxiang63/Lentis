@@ -1052,7 +1052,8 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
     export of an incomplete BIDS derivative. Codex re-reviewed the fix commit clean ("no major issues").
     `swift build` clean; `swift test` green (114 XCTest + 86 swift-testing = 200).
 
-- [x] **Segment-panel redesign — empty-state fix + status strip + layout polish (2026-06-25).** Driven by
+- [x] **Segment-panel redesign — empty-state fix + status strip + layout polish (2026-06-25, merged to
+  `master` @ `f99e216` via PR #4).** Driven by
   the user (with a screenshot of the broken empty state). Three asks, all done: **(1) empty-state overlap
   bug** — when no volume was loaded the "No Volume" `ContentUnavailableView` was a transparent `.overlay`
   drawn ON TOP of the still-visible Brain Mask / New Region / Regions / Export sections, so they overlapped
@@ -1089,6 +1090,11 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   swift build clean; swift test green (118 XCTest + 86 swift-testing = 204).** Deferred (synthetic input can't drive a SwiftUI
   `DragGesture`/segmented Picker): GUI screenshots of the regions-committed / exported "green" pill states —
   they reuse the verified `statusCell` primitives and are covered by the export-status unit test.
+  **Follow-up fixes in PR #4:** (a) the Active Region editor's segmented **Method** `Picker` label wrapped
+  to "Metho/d" in the narrow column → `.labelsHidden()` (full-width, no squeeze; commit `9b7bad5`);
+  (b) Codex P2 — atlas export staleness on region rename/recolor (`invalidateAtlasExport()`, commit
+  `18fa811`); (c) Codex P3 — a canceled re-edit restores exact voxels so the export stays valid → don't
+  invalidate on `reEditRegion` entry (commit `933c99f`).
 
 ---
 
