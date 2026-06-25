@@ -159,6 +159,26 @@ enum NiftiWriter {
         }
     }
 
+    /// Write a BIDS discrete-segmentation label table (`…_dseg.tsv`): the
+    /// tab-separated `index`/`name`/`color` columns BIDS-aware tools read to map
+    /// integer labels to names + colors. Hex color follows the BIDS convention.
+    static func writeDsegTSV(regions: [CalcificationRegion], to url: URL) throws {
+        var lines = ["index\tname\tcolor"]
+        for r in regions.sorted(by: { $0.label < $1.label }) {
+            let red = Int((max(0, min(1, r.color.x)) * 255).rounded())
+            let green = Int((max(0, min(1, r.color.y)) * 255).rounded())
+            let blue = Int((max(0, min(1, r.color.z)) * 255).rounded())
+            let name = (r.anatomicalName ?? r.name).replacingOccurrences(of: "\t", with: " ")
+            lines.append(String(format: "%d\t%@\t#%02X%02X%02X",
+                                Int(r.label), name as NSString, red, green, blue))
+        }
+        do {
+            try (lines.joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            throw NiftiWriteError.writeFailed(error.localizedDescription)
+        }
+    }
+
     // MARK: - Header
 
     /// Serialize a NIfTI-1 single-file header (348 bytes + 4 pad to vox_offset

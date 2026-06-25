@@ -504,11 +504,11 @@ extension ViewerModel {
             return
         }
         let settings = AppSettings.shared
-        let outDir = AppSettings.resolveOutputDirectory(sourceFile: loadedFileURL,
-                                                        mode: settings.outputMode,
-                                                        customDirectory: settings.customOutputDirectoryURL)
         let fileBase = AppSettings.niftiBaseName(loadedFileName)
-        let outputURL = outDir.appendingPathComponent("\(fileBase)_synthseg.nii.gz")
+        // Honors BIDS-derivatives mode → derivatives/lentis/.../…_desc-synthseg_dseg.nii.gz
+        let outputURL = resolveOutputURL(legacyName: "\(fileBase)_synthseg.nii.gz",
+                                         bidsDesc: "synthseg", bidsSuffix: "dseg")
+        let outDir = outputURL.deletingLastPathComponent()
 
         isRunningSynthSeg = true
         synthSegProgress = 0
@@ -578,7 +578,12 @@ extension ViewerModel {
         let autoLoad = settings.autoLoadSynthSegResult
         let writeMaskFile = settings.writeDerivedBrainMask
         let fileBase = AppSettings.niftiBaseName(loadedFileName)
-        let outDir = url.deletingLastPathComponent()
+        // Resolve the brain-mask destination on the main thread (BIDS-aware), so
+        // it lands beside the label file (…_desc-brain_mask.nii.gz under BIDS).
+        let maskTargetURL = writeMaskFile
+            ? resolveOutputURL(legacyName: "\(fileBase)_brainmask.nii.gz",
+                               bidsDesc: "brain", bidsSuffix: "mask")
+            : nil
         brainMaskStatus = "Loading SynthSeg result…"
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -587,11 +592,9 @@ extension ViewerModel {
                 // Derive + write a binary brain mask (CT grid) next to the label
                 // file. Non-fatal: the label file is the primary output.
                 var brainMaskURL: URL? = nil
-                if writeMaskFile {
-                    let maskURL = outDir.appendingPathComponent("\(fileBase)_brainmask.nii.gz")
-                    if (try? Self.writeBinaryBrainMask(from: layer, base: base, to: maskURL)) != nil {
-                        brainMaskURL = maskURL
-                    }
+                if let maskTargetURL,
+                   (try? Self.writeBinaryBrainMask(from: layer, base: base, to: maskTargetURL)) != nil {
+                    brainMaskURL = maskTargetURL
                 }
                 DispatchQueue.main.async {
                     guard let self else { return }
@@ -657,18 +660,80 @@ extension ViewerModel {
         url.pathExtension.lowercased() == "gz" || url.lastPathComponent.lowercased().hasSuffix(".nii.gz")
     }
 
+    // MARK: - Output location (BIDS-aware)
+
+    /// The BIDS-derivative destination URL for the current dataset file, or nil
+    /// when BIDS-derivatives mode isn't active / the file isn't a BIDS subject
+    /// file. Pure — builds the URL only (no directory creation), so it's safe for
+    /// Settings previews as well as the writer. Main-thread only.
+    func bidsDerivativeURL(desc: String, suffix: String) -> URL? {
+        guard AppSettings.shared.outputMode == .bidsDerivatives,
+              let dataset, let file = currentDatasetFile, file.isBIDS,
+              let dir = dataset.derivativesDirectory(pipeline: AppSettings.bidsPipelineName, for: file)
+        else { return nil }
+        // Fold the source modality into the desc so a mask/dseg derived from this
+        // subject's T1w can't collide with one from the same subject's ct/FLAIR.
+        let fullDesc = file.descIncludingModality(desc)
+        return dir.appendingPathComponent(file.entities.derivativeName(desc: fullDesc, suffix: suffix))
+    }
+
+    /// Resolve the destination URL for a generated output, honoring the chosen
+    /// output mode. In `.bidsDerivatives` (with an open BIDS dataset + a BIDS
+    /// source file) the file lands in `derivatives/lentis/sub-XX/[ses-YY/]<dt>/`
+    /// with a BIDS-valid derivative name (`…_desc-<desc>_<bidsSuffix>.nii.gz`),
+    /// creating the directory tree + pipeline `dataset_description.json`;
+    /// otherwise it falls back to the beside-source / custom-folder location with
+    /// `legacyName`. Main-thread only (reads the published dataset state).
+    func resolveOutputURL(legacyName: String, bidsDesc: String, bidsSuffix: String) -> URL {
+        let settings = AppSettings.shared
+        if let dataset, let bids = bidsDerivativeURL(desc: bidsDesc, suffix: bidsSuffix) {
+            let dir = bids.deletingLastPathComponent()
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            if FileManager.default.isWritableFile(atPath: dir.path) {
+                Self.ensureDerivativesDescription(datasetRoot: dataset.rootURL)
+                return bids
+            }
+        }
+        // Fallback: degrade BIDS mode to beside-source so we never recurse.
+        let mode: OutputLocationMode = settings.outputMode == .bidsDerivatives ? .besideSource : settings.outputMode
+        let dir = AppSettings.resolveOutputDirectory(sourceFile: loadedFileURL, mode: mode,
+                                                     customDirectory: settings.customOutputDirectoryURL)
+        return dir.appendingPathComponent(legacyName)
+    }
+
+    /// Write the BIDS derivatives `dataset_description.json` for the lentis
+    /// pipeline if it doesn't exist (required by BIDS for a derivative dataset).
+    static func ensureDerivativesDescription(datasetRoot: URL) {
+        let pipelineDir = datasetRoot
+            .appendingPathComponent("derivatives", isDirectory: true)
+            .appendingPathComponent(AppSettings.bidsPipelineName, isDirectory: true)
+        let descURL = pipelineDir.appendingPathComponent("dataset_description.json")
+        guard !FileManager.default.fileExists(atPath: descURL.path) else { return }
+        let dict: [String: Any] = [
+            "Name": "Lentis calcification segmentation",
+            "BIDSVersion": "1.9.0",
+            "DatasetType": "derivative",
+            "GeneratedBy": [["Name": "Lentis"]],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: dict,
+                                                     options: [.prettyPrinted, .sortedKeys]) else { return }
+        try? FileManager.default.createDirectory(at: pipelineDir, withIntermediateDirectories: true)
+        try? data.write(to: descURL)
+    }
+
     /// The destination URL a direct export would write to, given the configured
-    /// output location + per-kind suffix (`<base><suffix>.nii.gz`).
+    /// output location + per-kind suffix (or BIDS derivative naming).
     func exportURL(for kind: NiftiMaskKind) -> URL {
         let settings = AppSettings.shared
-        let dir = AppSettings.resolveOutputDirectory(sourceFile: loadedFileURL,
-                                                     mode: settings.outputMode,
-                                                     customDirectory: settings.customOutputDirectoryURL)
         let base = AppSettings.niftiBaseName(loadedFileName)
-        let suffix = AppSettings.sanitizedSuffix(
-            kind == .binaryMask ? settings.exportMaskSuffix : settings.exportAtlasSuffix,
+        let rawSuffix = (kind == .binaryMask) ? settings.exportMaskSuffix : settings.exportAtlasSuffix
+        let legacySuffix = AppSettings.sanitizedSuffix(
+            rawSuffix,
             fallback: kind == .binaryMask ? AppSettings.defaultMaskSuffix : AppSettings.defaultAtlasSuffix)
-        return dir.appendingPathComponent("\(base)\(suffix).nii.gz")
+        let legacyName = "\(base)\(legacySuffix).nii.gz"
+        return resolveOutputURL(legacyName: legacyName,
+                                bidsDesc: AppSettings.bidsDescLabel(fromSuffix: rawSuffix),
+                                bidsSuffix: kind == .binaryMask ? "mask" : "dseg")
     }
 
     /// Export the segmentation directly (no save dialog) to the configured output
@@ -699,12 +764,24 @@ extension ViewerModel {
         guard let vol = segmentationVolume, let mask = vol.labelMask else { throw NiftiWriteError.noMask }
         try NiftiWriter.writeMask(mask, basedOn: vol, kind: .atlas, to: url, gzip: isGzipURL(url))
 
-        // Sidecar LUT next to the atlas: <base>_LUT.txt
         var name = url.lastPathComponent
         if name.lowercased().hasSuffix(".nii.gz") { name = String(name.dropLast(7)) }
         else if name.lowercased().hasSuffix(".nii") { name = String(name.dropLast(4)) }
-        let lutURL = url.deletingLastPathComponent().appendingPathComponent(name + "_LUT.txt")
-        try NiftiWriter.writeLUT(regions: calcRegions, to: lutURL)
+        let dir = url.deletingLastPathComponent()
+
+        // The label/color sidecar follows WHERE the atlas actually landed (gate on
+        // the resolved name, not just the mode — a non-writable derivatives dir
+        // degrades to a legacy `_calcatlas` name beside the source). A BIDS `_dseg`
+        // file gets the canonical `…_dseg.tsv`; anything else gets the FreeSurfer
+        // `_LUT.txt` (a `_LUT.txt` after a `_dseg` suffix is BIDS-invalid).
+        if AppSettings.shared.outputMode == .bidsDerivatives, name.hasSuffix("_dseg") {
+            // The `_dseg.tsv` is the only sidecar carrying label names/colors;
+            // propagate write failures (like the legacy writeLUT path) so a
+            // partial BIDS derivative isn't reported as a successful export.
+            try NiftiWriter.writeDsegTSV(regions: calcRegions, to: dir.appendingPathComponent(name + ".tsv"))
+        } else {
+            try NiftiWriter.writeLUT(regions: calcRegions, to: dir.appendingPathComponent(name + "_LUT.txt"))
+        }
     }
 
     // MARK: - Re-render

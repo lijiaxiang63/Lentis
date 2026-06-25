@@ -35,6 +35,44 @@ struct AppSettingsTests {
         #expect(AppSettings.sanitizedSuffix("   ", fallback: "_calcatlas") == "_calcatlas")
     }
 
+    // MARK: - BIDS desc label
+
+    @Test func bidsDescLabelDerivesFromSuffix() {
+        #expect(AppSettings.bidsDescLabel(fromSuffix: "_calcmask") == "calc")
+        #expect(AppSettings.bidsDescLabel(fromSuffix: "_calcatlas") == "calc")
+        #expect(AppSettings.bidsDescLabel(fromSuffix: "calc-mask") == "calc")
+        // A bare "_seg" keeps "seg" (the role word isn't stripped when it's all
+        // that's left).
+        #expect(AppSettings.bidsDescLabel(fromSuffix: "_seg") == "seg")
+        #expect(AppSettings.bidsDescLabel(fromSuffix: "tumor") == "tumor")
+        // Empty / separators-only → fallback.
+        #expect(AppSettings.bidsDescLabel(fromSuffix: "___") == "calc")
+        #expect(AppSettings.bidsDescLabel(fromSuffix: "", fallback: "x") == "x")
+    }
+
+    // MARK: - BIDS output mode
+
+    @Test func bidsDerivativesModePersistsAndDegradesToSource() throws {
+        let suiteName = "lentis.test.\(UUID().uuidString)"
+        let suite = try #require(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+
+        let a = AppSettings(defaults: suite)
+        a.outputMode = .bidsDerivatives
+        #expect(AppSettings(defaults: suite).outputMode == .bidsDerivatives)
+
+        // The pure directory resolver has no dataset context, so BIDS mode
+        // degrades to the source folder (the viewer resolves the real BIDS path).
+        let srcDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lentis-bids-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: srcDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: srcDir) }
+        let resolved = AppSettings.resolveOutputDirectory(
+            sourceFile: srcDir.appendingPathComponent("ct.nii.gz"),
+            mode: .besideSource, customDirectory: nil)
+        #expect(resolved.standardizedFileURL == srcDir.standardizedFileURL)
+    }
+
     // MARK: - Output directory resolution
 
     @Test func besideSourceUsesTheSourceFolder() throws {

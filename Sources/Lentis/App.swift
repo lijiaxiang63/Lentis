@@ -62,10 +62,19 @@ struct LentisApp: App {
         }
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("Open...") {
-                    model.openFile()
+                Button("Open…") {
+                    model.openFileOrFolder()
                 }
                 .keyboardShortcut("o", modifiers: .command)
+                .disabled(model.isLoading || model.isScanningFolder)
+
+                Button("Open Folder…") {
+                    model.openFolder()
+                }
+                .keyboardShortcut("o", modifiers: [.command, .option])
+                .disabled(model.isLoading || model.isScanningFolder)
+
+                Divider()
 
                 Button("Add Layer...") {
                     model.openLayerFiles()

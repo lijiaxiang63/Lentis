@@ -193,6 +193,19 @@ class ViewerModel: ObservableObject {
     /// location ("next to the source file") for generated mask/label files.
     @Published var loadedFileURL: URL? = nil
 
+    /// The open BIDS dataset / loose folder, when a folder (not a single file)
+    /// was opened. Drives the sidebar dataset navigator and the BIDS-derivatives
+    /// output location. nil for a single-file session.
+    @Published var dataset: BIDSDataset? = nil
+
+    /// The dataset record for the currently-loaded file (entities + datatype),
+    /// used for BIDS-derivative output naming. nil when the loaded file isn't
+    /// part of an open dataset.
+    @Published var currentDatasetFile: BIDSImageFile? = nil
+
+    /// True while a freshly-opened folder is being scanned into a dataset.
+    @Published var isScanningFolder: Bool = false
+
     /// Toggle fullscreen for a panel (double-click behavior)
     func toggleFullscreen(for panel: PanelState) {
         if fullscreenPanelID == panel.id {
@@ -407,20 +420,101 @@ class ViewerModel: ObservableObject {
     
     // MARK: - Load Methods
 
-    /// Show an Open panel and load the selected NIfTI file.
+    private func niftiContentTypes() -> [UTType] {
+        ["nii", "gz"].compactMap { UTType(filenameExtension: $0) }
+    }
+
+    /// Show an Open panel and load the selected NIfTI file (clears any open
+    /// dataset — a single-file session).
     func openFile() {
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
         panel.message = "Choose a NIfTI file (.nii or .nii.gz)"
-        var types: [UTType] = []
-        for ext in ["nii", "gz"] {
-            if let t = UTType(filenameExtension: ext) { types.append(t) }
-        }
+        let types = niftiContentTypes()
         if !types.isEmpty { panel.allowedContentTypes = types }
         if panel.runModal() == .OK, let url = panel.url {
             load(url: url)
+        }
+    }
+
+    /// Show an Open panel and load a folder as a BIDS dataset (or a loose folder
+    /// of NIfTI files), scanning it into the sidebar navigator.
+    func openFolder() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.message = "Choose a BIDS dataset folder (or any folder of NIfTI files)"
+        panel.prompt = "Open"
+        if panel.runModal() == .OK, let url = panel.url {
+            load(url: url)
+        }
+    }
+
+    /// Unified Open (File menu / sidebar primary action): one panel that accepts
+    /// either a NIfTI file or a folder, routing to the right loader.
+    func openFileOrFolder() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = true
+        panel.message = "Choose a NIfTI file (.nii / .nii.gz) or a folder / BIDS dataset"
+        panel.prompt = "Open"
+        let types = niftiContentTypes()
+        if !types.isEmpty { panel.allowedContentTypes = types }
+        if panel.runModal() == .OK, let url = panel.url {
+            load(url: url)
+        }
+    }
+
+    /// Load a file from the open dataset navigator, keeping the dataset visible.
+    /// Re-selecting the already-loaded image is a no-op: load() would otherwise
+    /// re-decode it AND wipe in-progress segmentation regions + external layers.
+    func selectDatasetFile(_ file: BIDSImageFile) {
+        guard file.url != loadedFileURL else { return }
+        load(url: file.url, preserveDataset: true)
+    }
+
+    /// Scan a folder (off-main) into a BIDS dataset or a loose NIfTI list, then
+    /// auto-load the first image. Replaces any previously open dataset.
+    func loadFolder(url: URL) {
+        isScanningFolder = true
+        errorMessage = nil
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let secured = url.startAccessingSecurityScopedResource()
+            defer { if secured { url.stopAccessingSecurityScopedResource() } }
+            let scanned = BIDSDataset.scan(at: url)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                guard let scanned else {
+                    self.isScanningFolder = false
+                    self.errorMessage = "No NIfTI (.nii / .nii.gz) files found in “\(url.lastPathComponent)”."
+                    return
+                }
+                self.dataset = scanned
+                if let first = scanned.firstImage, first.url != self.loadedFileURL {
+                    // A new image will load. Keep the loading overlay continuous
+                    // across the scan→load hand-off: set isLoading before clearing
+                    // isScanningFolder so `isLoading || isScanningFolder` never
+                    // flickers false for a runloop turn (loadNifti sets isLoading
+                    // on a later turn). Guard on the URL differing so re-opening
+                    // the same folder (first image already shown) doesn't strand
+                    // the overlay — selectDatasetFile would no-op and never clear it.
+                    self.isLoading = true
+                    self.isScanningFolder = false
+                    self.selectDatasetFile(first)
+                } else {
+                    // The first image is already loaded (re-opening the same
+                    // folder) — just refresh the navigator and re-tag the loaded
+                    // file with the rebuilt dataset's entities.
+                    self.isScanningFolder = false
+                    if let loaded = self.loadedFileURL {
+                        self.currentDatasetFile = scanned.file(for: loaded)
+                    }
+                }
+            }
         }
     }
 
@@ -489,7 +583,18 @@ class ViewerModel: ObservableObject {
         }
     }
 
-    func load(url: URL) {
+    /// Load a URL. A directory opens as a dataset/loose folder; a NIfTI file is
+    /// displayed. `preserveDataset` keeps the open dataset navigator (set when the
+    /// file was picked from it); the default clears it (a standalone single-file
+    /// session).
+    func load(url: URL, preserveDataset: Bool = false) {
+        // A folder → scan it into the dataset navigator instead.
+        var isDir: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+            DispatchQueue.main.async { self.loadFolder(url: url) }
+            return
+        }
+
         let secured = url.startAccessingSecurityScopedResource()
         defer { if secured { url.stopAccessingSecurityScopedResource() } }
 
@@ -509,6 +614,14 @@ class ViewerModel: ObservableObject {
                 self.currentImageInfo = ""
                 self.loadedFileName = url.lastPathComponent
                 self.loadedFileURL = url
+                if preserveDataset {
+                    // Keep the navigator; tag the loaded file with its dataset
+                    // entities (for BIDS-derivative output naming + highlight).
+                    self.currentDatasetFile = self.dataset?.file(for: url)
+                } else {
+                    self.dataset = nil
+                    self.currentDatasetFile = nil
+                }
                 self.layerStore.removeAll()
                 self.resetSegmentation()
                 self.resetAllPanels()

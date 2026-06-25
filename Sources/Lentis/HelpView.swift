@@ -38,8 +38,9 @@ struct HelpView: View {
 
                     // Opening Files
                     helpSection("Opening Files") {
-                        Text("Use **File > Open** (Cmd+O) or click the **Open** button in the sidebar to select a NIfTI file (`.nii` / `.nii.gz`). You can also **drag and drop** a file onto the viewer.")
-                        Text("The sidebar lists the open file. Click it to show it in the active panel.")
+                        Text("Use **File > Open** (Cmd+O) or click the **Open** button in the sidebar to select a NIfTI file (`.nii` / `.nii.gz`). You can also **drag and drop** a file or a folder onto the viewer.")
+                        Text("**Open Folder…** (Opt+Cmd+O) scans a **BIDS dataset** — or any folder of NIfTI files — into the sidebar navigator: browse by subject → session → image and click an image to load it. The first image loads automatically.")
+                        Text("With a dataset open, generated masks and SynthSeg results can be written into the dataset's `derivatives/lentis/` tree with BIDS-valid names — choose **BIDS derivatives folder** in Settings ▸ General.")
                     }
 
                     // Panel Layouts

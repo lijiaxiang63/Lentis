@@ -14,6 +14,9 @@ import UniformTypeIdentifiers
 
 struct SegmentInspectorView: View {
     @ObservedObject var model: ViewerModel
+    // Observed so the "Saves to <dir>/" hint refreshes live when the output mode
+    // / custom folder changes in the Settings window.
+    @ObservedObject private var settings = AppSettings.shared
     @State private var exportError: String?
 
     var body: some View {
@@ -343,8 +346,18 @@ struct SegmentInspectorView: View {
     }
 
     /// Abbreviated directory exports will be written to (for the inline hint).
+    /// Uses the non-mutating BIDS URL builder so merely showing the hint doesn't
+    /// scaffold the `derivatives/lentis/` tree before an export actually happens.
     private var exportLocationHint: String {
-        let dir = model.exportURL(for: .binaryMask).deletingLastPathComponent()
+        let dir: URL
+        if let bids = model.bidsDerivativeURL(desc: "calc", suffix: "mask") {
+            dir = bids.deletingLastPathComponent()
+        } else {
+            dir = AppSettings.resolveOutputDirectory(
+                sourceFile: model.loadedFileURL,
+                mode: settings.outputMode == .bidsDerivatives ? .besideSource : settings.outputMode,
+                customDirectory: settings.customOutputDirectoryURL)
+        }
         return (dir.lastPathComponent.isEmpty ? dir.path : dir.lastPathComponent)
     }
 

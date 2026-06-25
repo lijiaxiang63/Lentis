@@ -65,6 +65,8 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
   merge — no separate worktree anymore; future work happens here. Real patient data (`TestData/sub-*`) is
   gitignored — only synthetic fixtures are tracked. Commit per phase/logical step; branch off `master`
   for changes (it's the default branch) and open a PR.
+  **BIDS dataset support + Settings polish (2026-06-24) — DONE in the working tree (uncommitted).** See the
+  roadmap entry below; `swift build` clean, **200 tests** green (114 XCTest + 86 swift-testing).
 
 ---
 
@@ -84,6 +86,8 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 | `App.swift` | `@main struct LentisApp`. Menus. `--benchmark <path>` auto-open. **UI redesign (Liquid Glass, macOS 26):** plain `WindowGroup` — the window title comes from the detail's `.navigationTitle` (open file name) + `.navigationSubtitle` (modality · dims), replacing the old centered-title hack. |
 | `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model**. Panels, volume cache, MPR/3D, W/L, sync-scroll. **Crosshair (Phase 6):** `setCrosshair(_:from:)` relocates the orthogonal panels through a world point; `.volume3D` is deliberately excluded. The world point lives in a **decoupled `CrosshairState`**. **3D (Phase 8):** `loadVolumeRendering` is async/coalesced on `panel.loadingQueue`; `rotateVolumeRendering` drives preview/final camera renders. **W/L drag:** re-drives `loadMPRSlice`/`loadVolumeRendering` off-main. |
 | `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. **Modality-aware W/L (Phase 5):** `modalityDefaultWindow`/`seededWindow` (seed), `applyWindowPreset`/`applyModalityAutoWindow`/`autoWindow(for:)` (UI). **Phase 7 seam:** `installDemoSphereMask` (`--benchmark`-only mask demo). |
+| `BIDSDataset.swift` | **Pure BIDS model (no UI/AppKit).** `BIDSEntities.parse`/`derivativeName` (filename ↔ entities/suffix/ext; BIDS-valid derivative names, alphanumeric-sanitized), `BIDSImageFile` (+ `descIncludingModality` folds the source suffix into `desc` so sibling-modality derivatives can't collide), `BIDSSubject`/`BIDSSession`, `BIDSDataset.scan` (subject→session→**known-datatype** file tree; sidecars/`derivatives/` excluded; subject-root files kept as an implicit session; loose-folder fallback) + `derivativesDirectory`. Unit-tested via on-disk temp trees. |
+| `BIDSNavigatorView.swift` | **Sidebar dataset navigator** (folder open). Outline of subjects → (named sessions) → image rows with datatype-aware icons, a filter field (flat search results), and an accent highlight + `eye.fill` on the loaded image. Tapping loads via `selectDatasetFile` (re-tapping the loaded row is a no-op — it must not wipe segmentation/layers). Loose folders list flat. |
 | `WindowLevel.swift` | **`WindowPreset` + CT HU preset table** (Phase 5). Brain default `(0,80)`, Subdural/Stroke/Bone/Soft-tissue (HU). `storedWindow(slope:intercept:)` maps HU→stored (identity for direct-HU CT). Pure; no deps. |
 | `Theme.swift` | **Design system (Liquid Glass UI redesign).** Signature indigo `lentisAccent` + semantic color tokens (CT amber, MRI teal, crosshair, link, group, viewport, annotations), `Spacing`/`Radius`/`Font` tokens, glass helpers (`glassChrome`, `lentisChip`), and the reusable `GlassIconButton`. All chrome sources its visuals here; the image viewport stays pure black. |
 | `NIfTI.swift` | **NIFTI-1/2 reader**. Header/endianness/4D/9 dtypes, sform/qform affine, **table-driven pure-Swift DEFLATE** (`DeflateInflater`): direct mapped-input reads + zero-copy output `Data`. Zero deps. |
@@ -1009,6 +1013,30 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
     UInt16/Int32 datatype branches removed; output byte-identical for real inputs. **+1
     `SegmentationModelTests.testExportBlockedWhileDraftActive`. swift build clean; swift test green
     (114 XCTest + 67 swift-testing = 181).**
+
+- [x] **BIDS dataset support + Settings polish (2026-06-24, working tree).** Open a **BIDS dataset folder**
+  (or any folder of loose NIfTI) via a sidebar **dataset navigator** and a **BIDS-derivatives** output mode,
+  plus a fix to the Settings "Export File Names" doubled-suffix chip. New pure model `BIDSDataset.swift`
+  (entity parse / scan / derivative naming) + UI `BIDSNavigatorView.swift`. **Open flow:** `load(url:)` now
+  routes directories to `loadFolder` (off-main scan → auto-load first image); `openFolder`/`openFileOrFolder`
+  + a sidebar split-`Menu`("Open File…" / "Open Folder…") + File-menu **Open Folder…** (⌥⌘O); the unified
+  **Open…** (⌘O) accepts a file or a folder; drag-drop accepts folders. `dataset`/`currentDatasetFile` state
+  drives the navigator + naming; selecting a navigator file uses `selectDatasetFile` (`preserveDataset`).
+  **Output coordination:** `OutputLocationMode.bidsDerivatives` (auto-default-able) writes
+  `derivatives/lentis/sub-XX/[ses-YY/]<datatype>/…_desc-<label>_{mask|dseg}.nii.gz` (+ `dataset_description.json`,
+  `_dseg.tsv`) via `ViewerModel.resolveOutputURL`/`bidsDerivativeURL`; SynthSeg parcellation/brain-mask +
+  segmentation export all flow through it (falls back to beside-source when no BIDS file). The source modality
+  is folded into the `desc` (`descIncludingModality`) so sibling-modality derivatives can't collide; carried
+  entity values are alphanumeric-sanitized. **Settings:** `exportNameRow` `.labelsHidden()` fixes the
+  duplicated `_calcmask` chip; the Preview + "Files go to" are mode-aware (BIDS name with the `desc-` accented).
+  **Adversarially reviewed** (5-dimension workflow → 10 confirmed findings, all fixed): the HIGH one — re-tapping
+  the loaded navigator row reloaded + wiped segmentation/layers — is now a guarded no-op; plus collision-free
+  naming, datatype whitelisting, subject-root images kept as an implicit session, in-flight-open gating, no
+  `_LUT.txt` inside the BIDS tree, and overlay-flicker/stuck-overlay fixes. **+8 BIDS/AppSettings tests; swift
+  build clean; swift test green (114 XCTest + 86 swift-testing = 200).** **Not yet GUI-verified** (computer-use
+  screen access timed out in this environment); a synthetic fixture is at `/tmp/lentis-bids` —
+  `./scripts/build_and_run.sh run --benchmark /tmp/lentis-bids` opens it. **Deferred:** a 3D-panel mask overlay
+  (unchanged); BIDS validation of writes is best-effort, not a full validator.
 
 ---
 

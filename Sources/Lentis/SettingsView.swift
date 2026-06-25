@@ -81,7 +81,7 @@ private struct GeneralSettingsView: View {
 
                 LabeledContent("Files go to") {
                     HStack(spacing: Spacing.xs) {
-                        Image(systemName: "folder")
+                        Image(systemName: settings.outputMode == .bidsDerivatives ? "shippingbox" : "folder")
                             .foregroundStyle(.secondary)
                         Text(resolvedDirectoryDisplay)
                             .font(.callout)
@@ -92,12 +92,19 @@ private struct GeneralSettingsView: View {
                     }
                 }
 
+                if bidsFallbackActive {
+                    Label("No BIDS dataset open — outputs fall back next to the source file.",
+                          systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Toggle("Load the parcellation as a layer when SynthSeg finishes", isOn: $settings.autoLoadSynthSegResult)
                 Toggle("Also write a binary brain mask (CT grid)", isOn: $settings.writeDerivedBrainMask)
             } header: {
                 Text("Output Files")
             } footer: {
-                Text("SynthSeg writes a label file (`…_synthseg.nii.gz`) and, optionally, a brain mask (`…_brainmask.nii.gz`); exports land here too. “Next to the source file” keeps them beside your CT; if that folder is read-only Lentis falls back to ~/Documents/Lentis.")
+                Text("SynthSeg writes a label file (`…_synthseg`) and, optionally, a brain mask (`…_brainmask`); exports land here too. “BIDS derivatives folder” writes BIDS-valid names into `derivatives/lentis/sub-XX/…` of the open dataset (and falls back to next-to-source for a single file). “Next to the source file” keeps them beside your CT; if that folder is read-only Lentis falls back to ~/Documents/Lentis.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -111,17 +118,20 @@ private struct GeneralSettingsView: View {
                               fallback: AppSettings.defaultAtlasSuffix)
 
                 // Live, fully-assembled output names so the user watches each file
-                // name build from base + (sanitized) suffix + extension.
+                // name build from base + (sanitized) suffix + extension. In BIDS
+                // derivatives mode this shows the BIDS-valid derivative name.
                 LabeledContent("Preview") {
                     VStack(alignment: .trailing, spacing: 2) {
-                        composedFilename(settings.exportMaskSuffix, fallback: AppSettings.defaultMaskSuffix)
-                        composedFilename(settings.exportAtlasSuffix, fallback: AppSettings.defaultAtlasSuffix)
+                        composedFilename(settings.exportMaskSuffix,
+                                         fallback: AppSettings.defaultMaskSuffix, bidsSuffix: "mask")
+                        composedFilename(settings.exportAtlasSuffix,
+                                         fallback: AppSettings.defaultAtlasSuffix, bidsSuffix: "dseg")
                     }
                 }
             } header: {
                 Text("Export File Names")
             } footer: {
-                Text("Exports save directly (no dialog) to the output folder above. The atlas also writes a matching `…_LUT.txt`.")
+                Text(exportNamesFooter)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -149,7 +159,13 @@ private struct GeneralSettingsView: View {
                                text: Binding<String>, fallback: String) -> some View {
         LabeledContent {
             HStack(spacing: Spacing.xs) {
-                TextField(fallback, text: text, prompt: Text(fallback))
+                // `.labelsHidden()` is essential here: a `TextField(title, …)`
+                // renders BOTH its title label and its value, and since the row's
+                // value defaults to the suffix, the title duplicated the chip
+                // (the "`_calcmask` shown twice" the user reported). The role label
+                // is already provided by LabeledContent, so hide the field's own.
+                TextField("\(role) file-name suffix", text: text, prompt: Text(fallback))
+                    .labelsHidden()
                     .textFieldStyle(.plain)
                     .font(.lentisReadout)
                     .multilineTextAlignment(.center)
@@ -175,18 +191,52 @@ private struct GeneralSettingsView: View {
         }
     }
 
-    /// The full assembled filename for the Preview row: the dimmed base, the
-    /// (sanitized) suffix span accented so the editable part stands out, and the
-    /// dimmed extension — selectable so the user can copy the exact output name.
-    private func composedFilename(_ rawSuffix: String, fallback: String) -> some View {
-        let base = Text(exampleBase).foregroundStyle(.secondary)
-        let suffix = Text(suffixPreview(rawSuffix, fallback)).foregroundStyle(Color.lentisAccent)
-        let ext = Text(".nii.gz").foregroundStyle(.secondary)
-        return Text("\(base)\(suffix)\(ext)")
-            .font(.lentisReadout)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .textSelection(.enabled)
+    /// The full assembled filename for the Preview row. In BIDS-derivatives mode
+    /// (with a BIDS dataset file open) it shows the BIDS derivative name with the
+    /// `desc-` label accented; otherwise the dimmed base + accented suffix + ext.
+    /// Selectable so the user can copy the exact output name.
+    @ViewBuilder
+    private func composedFilename(_ rawSuffix: String, fallback: String, bidsSuffix: String) -> some View {
+        if settings.outputMode == .bidsDerivatives,
+           let url = model.bidsDerivativeURL(desc: AppSettings.bidsDescLabel(fromSuffix: rawSuffix),
+                                             suffix: bidsSuffix) {
+            bidsPreviewText(url.lastPathComponent)
+                .font(.lentisReadout)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        } else {
+            let base = Text(exampleBase).foregroundStyle(.secondary)
+            let suffix = Text(suffixPreview(rawSuffix, fallback)).foregroundStyle(Color.lentisAccent)
+            let ext = Text(".nii.gz").foregroundStyle(.secondary)
+            Text("\(base)\(suffix)\(ext)")
+                .font(.lentisReadout)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
+    }
+
+    /// Render a BIDS derivative file name with the `desc-<value>` label accented
+    /// (the value is highlighted whole, however it was composed).
+    private func bidsPreviewText(_ name: String) -> Text {
+        if let r = name.range(of: "desc-") {
+            let rest = name[r.upperBound...]
+            let end = rest.firstIndex(of: "_") ?? rest.endIndex
+            let before = Text(String(name[..<r.upperBound])).foregroundStyle(.secondary)
+            let value = Text(String(rest[..<end])).foregroundStyle(Color.lentisAccent)
+            let after = Text(String(rest[end...])).foregroundStyle(.secondary)
+            return Text("\(before)\(value)\(after)")
+        }
+        return Text(name).foregroundStyle(.secondary)
+    }
+
+    /// Footer for the Export File Names section — explains BIDS mode when active.
+    private var exportNamesFooter: String {
+        if settings.outputMode == .bidsDerivatives {
+            return "BIDS derivatives mode: files are named per the BIDS spec (`…_desc-<label>_mask` / `…_dseg`) and saved under `derivatives/lentis/`. The suffix you type becomes the `desc-` label (the source modality is appended, e.g. `desc-calcT1w`). The atlas also writes the BIDS `…_dseg.tsv` label table."
+        }
+        return "Exports save directly (no dialog) to the output folder above. The atlas also writes a matching `…_LUT.txt`."
     }
 
     private var folderDisplay: String {
@@ -196,9 +246,22 @@ private struct GeneralSettingsView: View {
     }
 
     private var resolvedDirectory: URL {
-        AppSettings.resolveOutputDirectory(sourceFile: model.loadedFileURL,
-                                           mode: settings.outputMode,
-                                           customDirectory: settings.customOutputDirectoryURL)
+        // BIDS mode resolves against the open dataset; fall back to beside-source
+        // when no BIDS dataset/file is open (matches the writer's behavior).
+        if settings.outputMode == .bidsDerivatives,
+           let url = model.bidsDerivativeURL(desc: "calc", suffix: "mask") {
+            return url.deletingLastPathComponent()
+        }
+        return AppSettings.resolveOutputDirectory(
+            sourceFile: model.loadedFileURL,
+            mode: settings.outputMode == .bidsDerivatives ? .besideSource : settings.outputMode,
+            customDirectory: settings.customOutputDirectoryURL)
+    }
+
+    /// True when BIDS mode is selected but no BIDS dataset file is open, so
+    /// outputs will fall back to the beside-source location.
+    private var bidsFallbackActive: Bool {
+        settings.outputMode == .bidsDerivatives && model.bidsDerivativeURL(desc: "calc", suffix: "mask") == nil
     }
 
     private var resolvedDirectoryDisplay: String { abbreviate(resolvedDirectory) }
