@@ -353,10 +353,20 @@ class ViewerModel: ObservableObject {
     @Published var exportedAtlasURL: URL? = nil
     /// True once a mask or atlas has been exported for the current segmentation.
     var hasExportedSegmentation: Bool { exportedMaskURL != nil || exportedAtlasURL != nil }
-    /// Forget recorded exports because the segmentation content changed (the
-    /// on-disk file would now be stale). Called from the voxel-mutation sites.
+    /// Forget recorded exports because the segmentation's voxel content changed
+    /// (both the mask and the atlas on-disk files would now be stale). Called
+    /// from the voxel-mutation sites.
     func invalidateSegmentationExports() {
         if exportedMaskURL != nil { exportedMaskURL = nil }
+        if exportedAtlasURL != nil { exportedAtlasURL = nil }
+    }
+
+    /// Forget only the recorded ATLAS export because a region's metadata
+    /// (name / color) changed. The atlas's `_LUT.txt` / `_dseg.tsv` sidecar
+    /// serializes those, so it's now stale; the binary mask carries no metadata,
+    /// so `exportedMaskURL` stays valid. Called from the RegionRow rename/recolor
+    /// bindings.
+    func invalidateAtlasExport() {
         if exportedAtlasURL != nil { exportedAtlasURL = nil }
     }
     /// Live settings subscriptions (overlay opacity → re-render).

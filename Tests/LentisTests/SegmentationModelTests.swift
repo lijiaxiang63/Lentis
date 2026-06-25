@@ -483,4 +483,23 @@ final class SegmentationModelTests: XCTestCase {
         model.deleteRegion(id)
         XCTAssertFalse(model.hasExportedSegmentation, "deleting a region invalidates the export")
     }
+
+    func testRegionMetadataChangeInvalidatesAtlasExportOnly() throws {
+        // Codex P2: region name/color are serialized into the atlas LUT/dseg
+        // sidecar, so a rename/recolor makes a prior ATLAS export stale — but the
+        // binary mask carries no metadata, so its export stays valid.
+        let (model, _) = makeModel(blob: 18..<23)
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))
+        model.commitActiveRegion()
+
+        model.exportedMaskURL = URL(fileURLWithPath: "/tmp/case_calcmask.nii.gz")
+        model.exportedAtlasURL = URL(fileURLWithPath: "/tmp/case_calcatlas.nii.gz")
+        XCTAssertTrue(model.hasExportedSegmentation)
+
+        model.invalidateAtlasExport()
+        XCTAssertNil(model.exportedAtlasURL, "metadata change invalidates the atlas export")
+        XCTAssertNotNil(model.exportedMaskURL, "binary mask export is unaffected by metadata")
+        XCTAssertTrue(model.hasExportedSegmentation, "mask still counts as exported")
+    }
 }

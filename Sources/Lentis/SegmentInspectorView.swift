@@ -897,6 +897,10 @@ private struct RegionRow: View {
                     .textFieldStyle(.plain)
                     .font(.callout.weight(.medium))
                     .lineLimit(1)
+                    // The name is serialized into the atlas LUT/dseg sidecar, so a
+                    // rename makes a prior atlas export stale (the mask has no
+                    // metadata and stays valid).
+                    .onChange(of: region.name) { model.invalidateAtlasExport() }
                 Text(verbatim: subtitle)
                     .font(.caption2).foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.tail)
@@ -969,6 +973,9 @@ private struct RegionRow: View {
                 let ns = NSColor(newColor).usingColorSpace(.sRGB) ?? .red
                 region.color = SIMD3(Double(ns.redComponent), Double(ns.greenComponent), Double(ns.blueComponent))
                 model.refreshSegmentationRender()
+                // The color is serialized into the atlas LUT/dseg sidecar, so a
+                // recolor makes a prior atlas export stale.
+                model.invalidateAtlasExport()
             })
     }
 }

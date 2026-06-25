@@ -69,7 +69,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
   **BIDS dataset support + Settings polish (2026-06-24) — DONE, merged to `master` @ `6a4c208` (PR #3).**
   See the roadmap entry below; `swift build` clean. **Latest (2026-06-25, uncommitted): Segment-panel
   redesign** (empty-state overlap fix + Brain/Regions/Export status strip + layout polish) — `swift build`
-  clean, **202 tests** green (116 XCTest + 86 swift-testing).
+  clean, **203 tests** green (117 XCTest + 86 swift-testing).
 
 ---
 
@@ -1068,16 +1068,19 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   deliberate surface. Backed by **new model state** `ViewerModel.exportedMaskURL`/`exportedAtlasURL` +
   `hasExportedSegmentation` + `invalidateSegmentationExports()` (set on a successful `exportSegmentation`,
   cleared on every voxel-content change — commit/delete/re-edit/brush/reset — so "Saved" never claims a
-  stale on-disk file). **(3) layout polish** — Brain Mask collapses to a compact green done-summary (glyph
+  stale on-disk file). **Atlas-only invalidation (`invalidateAtlasExport()`, Codex P2 fix):** a region
+  rename/recolor (`RegionRow` name `onChange` + the color binding) clears only `exportedAtlasURL` — the
+  atlas `_LUT.txt`/`_dseg.tsv` sidecar serializes names/colors, while the binary mask has no metadata so
+  `exportedMaskURL` stays valid. **(3) layout polish** — Brain Mask collapses to a compact green done-summary (glyph
   + status + overflow Menu) once a mask is loaded, reclaiming space for the tall editor; the no-mask cluster
   gains an "Optional…" caption; the Active Region editor is wrapped in a faint `lentisAccent` glass card;
   Export shows a green reveal-in-Finder card after a successful export. **Design** chosen via a judge-panel
   of three divergent proposals (workflow-stepper / native-minimal / summary-card) → native-minimal spine +
   a single consolidated status strip. **GUI-verified** on `synthetic_calc.nii.gz`: the empty state is clean
   (no overlap); the loaded Segment tab shows the strip + all sections with no clipping in the ~300pt column;
-  loading the brain mask flipped the Brain pill to green "Mask" + the compact done-summary live. **+2
-  `SegmentationModelTests` (export records URL + brush/delete invalidate). swift build clean; swift test
-  green (116 XCTest + 86 swift-testing = 202).** Deferred (synthetic input can't drive a SwiftUI
+  loading the brain mask flipped the Brain pill to green "Mask" + the compact done-summary live. **+3
+  `SegmentationModelTests` (export records URL + brush/delete invalidate + atlas-only metadata invalidation).
+  swift build clean; swift test green (117 XCTest + 86 swift-testing = 203).** Deferred (synthetic input can't drive a SwiftUI
   `DragGesture`/segmented Picker): GUI screenshots of the regions-committed / exported "green" pill states —
   they reuse the verified `statusCell` primitives and are covered by the export-status unit test.
 
