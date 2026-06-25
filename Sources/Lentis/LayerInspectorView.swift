@@ -50,6 +50,10 @@ struct LayerInspectorView: View {
         .onDeleteCommand(perform: removeSelectedLayer)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Inspector")
+        // The window is `isMovableByWindowBackground`, so without this the empty
+        // padding around the inspector's sliders/steppers would drag the window
+        // when the user tries to grab a control.
+        .nonDraggableBackground()
         // Declaring toolbar items INSIDE the inspector's view builder renders them
         // in a dedicated toolbar section above the inspector. That inserts the
         // tracking separator which confines the main content's toolbar to the

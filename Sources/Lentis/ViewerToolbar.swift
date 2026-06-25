@@ -26,11 +26,32 @@ struct ViewerToolbar: ToolbarContent {
             ViewToggleControls(model: model)
         }
 
-        ToolbarItemGroup(placement: .primaryAction) {
-            if let panel = model.activePanel {
-                ActivePanelToolbarControls(model: model, panel: panel)
+        // Per-active-panel controls as SEPARATE ToolbarItems (not one grouped
+        // HStack) so macOS can overflow each independently into the >> menu when
+        // the inspector column shrinks the toolbar. A single fixed-size HStack
+        // of complex custom views can't be rendered by the overflow menu; each
+        // item on its own degrades gracefully (segmented Picker → submenu, Label
+        // Button → titled menu item, Menu → submenu).
+        if let panel = model.activePanel, panel.image != nil, panel.seriesIndex >= 0 {
+            ToolbarItem(placement: .primaryAction) {
+                PlaneToolbarControl(model: model, panel: panel)
             }
-            if let ds = model.niftiDataset, ds.isMultiVolume {
+            if model.niftiDataset != nil && panel.seriesIndex == model.niftiSeriesIndex,
+               let modality = model.effectiveModality {
+                ToolbarItem(placement: .primaryAction) {
+                    ModalityBadge(model: model, modality: modality)
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                WindowLevelToolbarControl(model: model, panel: panel)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                TransformToolbarControl(model: model, panel: panel)
+            }
+        }
+
+        if let ds = model.niftiDataset, ds.isMultiVolume {
+            ToolbarItem(placement: .primaryAction) {
                 TimepointToolbarControls(model: model, dataset: ds)
             }
         }
@@ -59,12 +80,14 @@ private struct LayoutToolbarControls: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
+        .fixedSize()
         .help("Panel layout (1–4)")
 
         Button {
             withAnimation(.easeInOut(duration: 0.25)) { model.setupMPRLayout() }
         } label: {
             Image(systemName: "cube.transparent")
+                .foregroundStyle(model.isMPRLayout ? Color.lentisAccent : .secondary)
         }
         .help("MPR Tri-Planar Layout (⌘⇧M)")
     }
@@ -80,9 +103,12 @@ private struct ViewToggleControls: View {
             Image(systemName: model.synchronizedScrolling ? "link" : "link.badge.plus")
                 .foregroundStyle(model.synchronizedScrolling ? Color.lentisLink : .secondary)
         }
-        .help(model.synchronizedScrolling
-              ? "Disable Synchronized Scrolling (L)"
-              : "Enable Synchronized Scrolling (L)")
+        .disabled(model.isMPRLayout)
+        .help(model.isMPRLayout
+              ? "Synchronized scrolling is not used in MPR layout (crosshair tracks scrolls)"
+              : (model.synchronizedScrolling
+                  ? "Disable Synchronized Scrolling (L)"
+                  : "Enable Synchronized Scrolling (L)"))
 
         Button {
             model.showCrossReference.toggle()
@@ -96,34 +122,6 @@ private struct ViewToggleControls: View {
             Image(systemName: "gearshape")
         }
         .help("Settings (⌘,)")
-    }
-}
-
-// MARK: - Active-panel cluster (plane · modality · window/level · transform)
-
-/// One cohesive trailing cluster for the active panel. Observes the panel so it
-/// appears as soon as that panel's async render lands its image.
-private struct ActivePanelToolbarControls: View {
-    @ObservedObject var model: ViewerModel
-    @ObservedObject var panel: PanelState
-
-    private var isNiftiPanel: Bool {
-        model.niftiDataset != nil && panel.seriesIndex == model.niftiSeriesIndex
-    }
-
-    var body: some View {
-        if panel.image != nil, panel.seriesIndex >= 0 {
-            HStack(spacing: Spacing.s) {
-                PlaneToolbarControl(model: model, panel: panel)
-
-                if isNiftiPanel, let modality = model.effectiveModality {
-                    ModalityBadge(model: model, modality: modality)
-                }
-
-                WindowLevelToolbarControl(model: model, panel: panel)
-                TransformToolbarControl(model: model, panel: panel)
-            }
-        }
     }
 }
 
@@ -224,12 +222,13 @@ private struct WindowLevelToolbarControl: View {
         Button { showPopover.toggle() } label: {
             Label {
                 Text(panel.windowWidth != 0
-                     ? "WL \(Int(panel.windowCenter))  WW \(Int(panel.windowWidth))"
+                     ? "\(Int(panel.windowCenter))/\(Int(panel.windowWidth))"
                      : "Window")
                     .font(.lentisReadout)
             } icon: {
                 Image(systemName: "dial.medium")
             }
+            .fixedSize()
         }
         .help("Window / Level")
         .popover(isPresented: $showPopover, arrowEdge: .bottom) {
@@ -334,6 +333,7 @@ private struct TransformToolbarControl: View {
                         ? "arrow.down.right.and.arrow.up.left"
                         : "arrow.up.left.and.arrow.down.right")
             }
+            .disabled(model.isMPRLayout && model.fullscreenPanelID != panel.id)
         } label: {
             Image(systemName: "crop.rotate")
         }
@@ -358,6 +358,7 @@ private struct TimepointToolbarControls: View {
             ), in: 0...(dataset.timepointCount - 1))
             .labelsHidden()
         }
+        .fixedSize()
         .help("4D timepoint")
     }
 }

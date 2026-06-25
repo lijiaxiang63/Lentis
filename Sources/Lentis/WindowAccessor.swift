@@ -40,7 +40,9 @@ final class KeyInterceptorView: NSView {
         case "3": withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.twoVertical) }
         case "4": withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.quad) }
         case "r": model.resetViewForPanel(model.activePanel)
-        case "l": model.synchronizedScrolling.toggle()
+        case "l":
+            // Sync scrolling is not used in MPR layout (crosshair tracks scrolls).
+            if !model.isMPRLayout { model.synchronizedScrolling.toggle() }
         case "x": model.showCrossReference.toggle()
         case "i": model.invertForPanel(model.activePanel)
         case "f": model.fitToWindowForPanel(model.activePanel)
@@ -108,5 +110,36 @@ struct WindowAccessor: NSViewRepresentable {
         interceptor.identifier = keyInterceptorIdentifier
         interceptor.model = model
         return interceptor
+    }
+}
+
+// MARK: - Non-draggable surface
+
+/// An invisible NSView whose `mouseDownCanMoveWindow` returns `false`. Used as a
+/// SwiftUI `.background` on panes (e.g. the trailing inspector) that sit over a
+/// window with `isMovableByWindowBackground = true`. Without it, clicking empty
+/// padding around sliders/controls in the inspector drags the whole window
+/// instead of letting the user grab the control. The inspector's interactive
+/// controls (sliders, buttons) already consume their own mouse events; this
+/// only claims the dead space around them.
+private final class NonDraggableBackingView: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
+}
+
+private struct NonDraggableBackingRepresentable: NSViewRepresentable {
+    func makeNSView(context: Context) -> NonDraggableBackingView {
+        NonDraggableBackingView()
+    }
+
+    func updateNSView(_ nsView: NonDraggableBackingView, context: Context) {}
+}
+
+extension View {
+    /// Prevent `isMovableByWindowBackground` from claiming clicks on this view's
+    /// empty areas. Apply to inspector/sidebar panes that host interactive
+    /// controls (sliders, steppers) so dragging near a control doesn't move the
+    /// window instead.
+    func nonDraggableBackground() -> some View {
+        background(NonDraggableBackingRepresentable())
     }
 }

@@ -159,8 +159,14 @@ struct ContentView: View {
             // Letter/number shortcuts are handled by NSEvent keyDown monitor in ViewerModel
             // (works regardless of input method). This handler covers special keys only.
 
-            // Escape = Clear group selection
+            // Escape = exit ROI-box mode / discard unsaved draft region, or clear
+            // group selection.
             if press.key == .escape {
+                if model.draftRegion != nil || model.activeTool == .roiBox {
+                    model.cancelActiveRegion()
+                    model.activeTool = .select
+                    return .handled
+                }
                 if model.groupSelectedPanels.count > 0 {
                     model.clearGroupSelection()
                     return .handled

@@ -82,6 +82,10 @@ struct MultiPanelContainer: View {
                                     .frame(width: cellWidth, height: cellHeight)
                                     .id(panel.id)
                                     .onTapGesture(count: 2) {
+                                        // Fullscreen is disallowed in the MPR tri-planar
+                                        // layout — it would break the coordinated crosshair
+                                        // linkage the layout depends on.
+                                        guard !model.isMPRLayout else { return }
                                         withAnimation(.easeInOut(duration: 0.2)) {
                                             model.toggleFullscreen(for: panel)
                                         }
@@ -555,7 +559,8 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 model.resetViewForPanel(model.activePanel)
                 return true
             case "l":
-                model.synchronizedScrolling.toggle()
+                // Sync scrolling is not used in MPR layout (crosshair tracks scrolls).
+                if !model.isMPRLayout { model.synchronizedScrolling.toggle() }
                 return true
             case "x":
                 model.showCrossReference.toggle()
@@ -990,6 +995,11 @@ struct PanelInteractiveImageView: NSViewRepresentable {
             case 126: model.navigatePanelWithGroup(panel, direction: .prevImage); return
             case 125: model.navigatePanelWithGroup(panel, direction: .nextImage); return
             case 53: // Escape
+                if model.draftRegion != nil || model.activeTool == .roiBox {
+                    model.cancelActiveRegion()
+                    model.activeTool = .select
+                    return
+                }
                 if !model.groupSelectedPanels.isEmpty {
                     model.clearGroupSelection(); return
                 }
@@ -1614,8 +1624,10 @@ struct ModalityBadge: View {
             .background(badgeColor.opacity(0.9), in: Capsule())
             .overlay(Capsule().strokeBorder(.white.opacity(0.3), lineWidth: 0.5))
             .foregroundStyle(.white)
+            .fixedSize()
         }
         .buttonStyle(.plain)
+        .fixedSize()
         .help("Modality: \(modality.rawValue) (auto-detected) — click to switch CT/MRI")
     }
 
