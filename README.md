@@ -7,7 +7,7 @@
 <p align="center">
   <strong>A native macOS NIfTI brain viewer for CT and MRI.</strong><br>
   Affine-correct neurological orientation, linked multiplanar views, interactive Metal volume rendering,
-  and mask/atlas overlays in one focused desktop app.
+  mask/atlas overlays, and calcification segmentation in one focused desktop app.
 </p>
 
 <p align="center">
@@ -32,6 +32,9 @@ The app began as a fork of [OpenDicomViewer](https://github.com/jnheo-md/open-di
 - **Interactive 3D rendering** — Metal compute ray marching with drag rotation, density control, physical-spacing-aware geometry, lighting, and full-quality settling after interaction.
 - **CT- and MRI-aware display** — CT HU presets (Brain, Subdural, Stroke, Bone, and Soft Tissue), robust MRI auto-windowing, manual window/level, invert, zoom, pan, rotate, and flip.
 - **Mask and atlas layers** — add 3D NIfTI overlays in the native Layers Inspector; Lentis performs affine-aware nearest-neighbour alignment and supports ordering, opacity, mask colors, FreeSurfer/custom LUTs, and per-label visibility.
+- **Calcification segmentation** — draw a resizable 3D ROI box and segment by threshold or grow-from-seed; manage multiple labeled regions, optionally constrain to a brain mask, and export the result as a mask or multi-label atlas NIfTI with a FreeSurfer LUT.
+- **FreeSurfer SynthSeg integration** — generate a brain mask and anatomical parcellation in-app (`mri_synthseg`), automatically naming segmented regions by anatomy.
+- **BIDS datasets** — open a BIDS or loose-folder dataset, browse subjects and sessions in the sidebar navigator, and write outputs into a `derivatives/lentis/` tree.
 - **4D timepoints** — switch volumes without changing the shared spatial view or quantization scale.
 - **Measurement tools** — ruler, angle, ROI statistics, and ROI-based window/level.
 - **Spatial readout** — live voxel coordinates, RAS millimetres, and calibrated HU/intensity values in the status bar.
@@ -40,9 +43,13 @@ The app began as a fork of [OpenDicomViewer](https://github.com/jnheo-md/open-di
 
 ## Requirements
 
-- macOS 14 Sonoma or later
+- macOS 26 Tahoe or later (required for the native Liquid Glass UI)
 - Apple Silicon Mac (`arm64`)
-- Xcode 15+ or a Swift 5.9+ toolchain for source builds
+- Xcode 26 / a Swift 6.2+ toolchain for source builds
+
+## Download
+
+Prebuilt, ad-hoc-signed DMGs are published on the [Releases](../../releases) page. Because the app is not notarized, the first launch needs **right-click → Open** (or an approval under **System Settings → Privacy & Security**).
 
 ## Build and Run
 
@@ -63,11 +70,12 @@ To create a release app and DMG:
 ./scripts/package_app.sh
 ```
 
-This produces `Lentis.app` and `Lentis.dmg` with ad-hoc signing by default. Developer ID signing and notarization require your own Apple credentials and packaging configuration.
+This produces `Lentis.app` and `Lentis.dmg` with ad-hoc signing by default. Developer ID signing and notarization require your own Apple credentials and packaging configuration. Pushing a `v*` tag builds and publishes the DMG to Releases automatically via GitHub Actions.
 
 ## Open Images and Layers
 
 - Press `Cmd+O`, use **File → Open**, click **Open** in the sidebar, or drop a `.nii` / `.nii.gz` file onto the viewer.
+- Press `Opt+Cmd+O` or use **File → Open Folder** to open a folder or BIDS dataset, then pick images from the sidebar navigator.
 - Press `Cmd+Shift+O`, use **File → Add Layer**, or drop a 3D NIfTI mask/atlas into the Layers Inspector.
 - Click the brain-quad button or press `Cmd+Shift+M` to create linked axial, sagittal, coronal, and 3D panels.
 - Click or drag in an MPR panel with the Select tool to reposition the shared crosshair.
@@ -108,6 +116,8 @@ External layers are session-scoped. Label `0` is transparent, categorical labels
 | `D` | Ruler |
 | `N` | Angle |
 | `E` | Eraser |
+| `B` | Calcification ROI box |
+| `K` | Calcification brush |
 
 Right-drag adjusts window/level from any tool. Hold `Option` or `Control` while left-dragging to pan, or while scrolling to zoom.
 
@@ -124,7 +134,9 @@ Sources/Lentis/
 ├── MPREngine.swift             # Oriented CPU slice extraction and layer compositing
 ├── MetalVolumeRenderer.swift   # Metal 3D ray marcher and projection rendering
 ├── OverlayLayerLoader.swift    # Mask/atlas classification and affine-aware alignment
-├── LayerInspectorView.swift    # Native layer and LUT management UI
+├── CalcificationSegmenter.swift # Threshold/grow segmentation engine and ROI-box geometry
+├── NiftiWriter.swift           # NIfTI-1 writer for mask/atlas export and brain-mask write-back
+├── LayerInspectorView.swift    # Native layer, segmentation, and LUT management UI
 └── MultiPanelContainer.swift   # Panel grid, gestures, annotations, and overlays
 ```
 
