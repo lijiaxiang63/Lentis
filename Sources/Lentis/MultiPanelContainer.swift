@@ -1024,7 +1024,10 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                     DispatchQueue.main.async { withAnimation(.easeInOut(duration: 0.25)) { model.setLayout(.quad) } }
                     return
                 case "r": model.resetViewForPanel(model.activePanel); return
-                case "l": model.synchronizedScrolling.toggle(); return
+                case "l":
+                    // Sync scrolling is not used in MPR layout (crosshair tracks scrolls).
+                    if !model.isMPRLayout { model.synchronizedScrolling.toggle() }
+                    return
                 case "x": model.showCrossReference.toggle(); return
                 case "i": model.invertForPanel(model.activePanel); return
                 case "f": model.fitToWindowForPanel(model.activePanel); return
