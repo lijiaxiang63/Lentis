@@ -388,7 +388,12 @@ extension ViewerModel {
         applyPreview(coords.map { ($0.x, $0.y, $0.z) })
         region.previewVoxelCount = coords.count
         activeRegionID = region.id
-        invalidateSegmentationExports()   // editing a region → prior export is stale
+        // Don't invalidate the recorded export here: entering a re-edit alone does
+        // not change committed content. A commit (`commitActiveRegion`) invalidates,
+        // and a Cancel restores the exact original voxels (`restoreReEditedRegionIfNeeded`)
+        // so the on-disk export still matches — invalidating on entry would wrongly
+        // leave the Export pill "Pending" after a no-op re-edit/cancel (Codex P3).
+        // The draft itself shows as "Editing"/"Finish" and blocks export meanwhile.
         segmentationRevision &+= 1
         rerenderSegmentation()
     }

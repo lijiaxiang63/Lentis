@@ -502,4 +502,37 @@ final class SegmentationModelTests: XCTestCase {
         XCTAssertNotNil(model.exportedMaskURL, "binary mask export is unaffected by metadata")
         XCTAssertTrue(model.hasExportedSegmentation, "mask still counts as exported")
     }
+
+    func testCanceledReEditPreservesExportButCommitInvalidates() throws {
+        // Codex P3: re-editing an exported region and then CANCELING restores the
+        // exact original voxels, so the on-disk export still matches — the recorded
+        // export URL must survive a no-op re-edit/cancel. A re-edit that is COMMITTED
+        // may have changed voxels, so that path still invalidates.
+        let (model, _) = makeModel(blob: 18..<23)
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))
+        model.commitActiveRegion()
+        let id = model.calcRegions.first!.id
+
+        // Simulate a recorded export of the committed segmentation.
+        model.exportedMaskURL = URL(fileURLWithPath: "/tmp/case_calcmask.nii.gz")
+        XCTAssertTrue(model.hasExportedSegmentation)
+
+        // Re-edit then cancel: voxels are restored unchanged → export stays valid.
+        model.reEditRegion(id)
+        XCTAssertNotNil(model.draftRegion, "re-edit pulls the region into a draft")
+        XCTAssertEqual(model.exportedMaskURL?.path, "/tmp/case_calcmask.nii.gz",
+                       "entering a re-edit must not clear the recorded export")
+        model.cancelActiveRegion()
+        XCTAssertNil(model.draftRegion)
+        XCTAssertEqual(model.exportedMaskURL?.path, "/tmp/case_calcmask.nii.gz",
+                       "a canceled re-edit restores the voxels → export still matches disk")
+
+        // Re-edit then COMMIT: this finalizes (possibly changed) content → invalidate.
+        let id2 = model.calcRegions.first!.id
+        model.reEditRegion(id2)
+        model.commitActiveRegion()
+        XCTAssertFalse(model.hasExportedSegmentation,
+                       "committing a re-edit invalidates the prior export")
+    }
 }
