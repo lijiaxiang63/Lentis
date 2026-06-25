@@ -60,16 +60,16 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
   `switch`. Fix each intentionally (usually mirror `.mprCoronal` or fold into a combined case).
 - **Git state (2026-06-25):** work is on **`master`** in the single main checkout
   `/Users/jiaxiangli/neuroimaging/mriscript/Lentis`. **Phase 9 + the Segment/Settings UI polish merged
-  via PR #1, the Codex export-safety fixes via PR #2 (`master` @ `285e872`), and BIDS dataset support +
-  Settings polish via PR #3 (`master` @ `6a4c208`).** The `feature/calcification-segmentation` and
-  `feature/bids-dataset-support` branches (and the old `Lentis-segmentation` worktree) were deleted after
-  merge — no separate worktree anymore; future work happens here. Real patient data (`TestData/sub-*`) is
-  gitignored — only synthetic fixtures are tracked. Commit per phase/logical step; branch off `master`
-  for changes (it's the default branch) and open a PR.
-  **BIDS dataset support + Settings polish (2026-06-24) — DONE, merged to `master` @ `6a4c208` (PR #3).**
-  See the roadmap entry below; `swift build` clean. **Latest (2026-06-25, uncommitted): Segment-panel
-  redesign** (empty-state overlap fix + Brain/Regions/Export status strip + layout polish) — `swift build`
-  clean, **204 tests** green (118 XCTest + 86 swift-testing).
+  via PR #1, the Codex export-safety fixes via PR #2 (`master` @ `285e872`), BIDS dataset support +
+  Settings polish via PR #3 (`master` @ `6a4c208`), and the Segment-panel redesign via PR #4
+  (`master` @ `f99e216`).** The `feature/calcification-segmentation`, `feature/bids-dataset-support`,
+  and `feature/segment-panel-redesign` branches (and the old `Lentis-segmentation` worktree) were
+  deleted after merge — no separate worktree anymore; future work happens here. Real patient data
+  (`TestData/sub-*`) is gitignored — only synthetic fixtures are tracked. Commit per phase/logical step;
+  branch off `master` for changes (it's the default branch) and open a PR.
+  **Segment-panel redesign — DONE, merged to `master` @ `f99e216` (PR #4); incl. Codex P2/P3
+  export-staleness fixes.** See the roadmap entry below; `swift build` clean, **204 tests** green
+  (118 XCTest + 86 swift-testing).
 
 ---
 
