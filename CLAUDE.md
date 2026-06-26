@@ -1131,8 +1131,11 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   `package_app.sh` embeds `Sparkle.framework` into `Contents/Frameworks/` (preserving the versioned
   symlinks), adds the `@executable_path/../Frameworks` rpath (idempotent), bakes `SUFeedURL`
   (`releases/latest/download/appcast.xml` — hosted as a Release asset, no GitHub Pages dep) + the
-  conditional `SUPublicEDKey` into `Info.plist`, and signs the framework inside-out on the `--notarize`
-  path. **CI (`.github/workflows/release.yml`):** signs the DMG with Ed25519 and emits `appcast.xml`
+  conditional `SUPublicEDKey` + `SUEnableAutomaticChecks`/`SUAutomaticallyUpdate` into `Info.plist`,
+  **removes Sparkle's XPC services** (Lentis is non-sandboxed — Sparkle's own recommendation; saves
+  space + avoids the per-component entitlement signing `--deep` would clobber), and signs the remaining
+  helpers (Autoupdate, Updater.app) + the framework **component-by-component** (NOT `--deep`, which is
+  deprecated by Apple and can clobber entitlements) on both the `--notarize` and ad-hoc paths. **CI (`.github/workflows/release.yml`):** signs the DMG with Ed25519 and emits `appcast.xml`
   (one `<item>`: `sparkle:version` = build #, `sparkle:shortVersionString` = marketing, enclosure =
   the Release DMG URL + `sparkle:edSignature` + length), uploaded alongside the DMG. Signing uses
   `scripts/sparkle_tools.swift` (Apple **CryptoKit** `Curve25519.Signing`, no pip/external deps —

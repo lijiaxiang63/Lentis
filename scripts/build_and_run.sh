@@ -48,14 +48,17 @@ fi
 
 # Embed Sparkle.framework so the debug bundle can load it (the executable links
 # @rpath/Sparkle.framework/...). Mirrors package_app.sh: cp -R preserves the
-# versioned symlinks, and the @executable_path/../Frameworks rpath is added
-# (idempotent) so dyld finds it without falling back to the build directory.
+# versioned symlinks, the @executable_path/../Frameworks rpath is added
+# (idempotent) so dyld finds it without falling back to the build directory,
+# and the XPC services are removed (non-sandboxed app — Sparkle's recommendation).
 if [[ -d "$SPARKLE_FRAMEWORK" ]]; then
   mkdir -p "$APP_FRAMEWORKS"
   cp -R "$SPARKLE_FRAMEWORK" "$APP_FRAMEWORKS/"
   if ! otool -l "$APP_BINARY" | grep -q "path @executable_path/../Frameworks"; then
     install_name_tool -add_rpath @executable_path/../Frameworks "$APP_BINARY"
   fi
+  rm -rf "$APP_FRAMEWORKS/Sparkle.framework/Versions/B/XPCServices" \
+         "$APP_FRAMEWORKS/Sparkle.framework/XPCServices"
 fi
 
 plutil -create xml1 "$INFO_PLIST"
@@ -71,9 +74,16 @@ plutil -insert NSPrincipalClass -string NSApplication "$INFO_PLIST"
 plutil -insert SUFeedURL -string "$SPARKLE_FEED_URL" "$INFO_PLIST"
 plutil -insert SUEnableAutomaticChecks -bool true "$INFO_PLIST"
 
-# Ad-hoc sign the bundle (re-signs the embedded framework too) so Gatekeeper /
-# library validation don't block loading Sparkle in the debug bundle.
-codesign --force --deep -s - "$APP_BUNDLE" >/dev/null 2>&1 || true
+# Ad-hoc sign the bundle component-by-component (NOT --deep, which is
+# deprecated) so Gatekeeper / library validation don't block loading Sparkle.
+# Mirrors package_app.sh's ad-hoc path.
+if [[ -d "$APP_FRAMEWORKS/Sparkle.framework" ]]; then
+  SPARKLE_VER="$APP_FRAMEWORKS/Sparkle.framework/Versions/B"
+  codesign --force -s - "$SPARKLE_VER/Autoupdate" >/dev/null 2>&1 || true
+  codesign --force -s - "$SPARKLE_VER/Updater.app" >/dev/null 2>&1 || true
+  codesign --force -s - "$APP_FRAMEWORKS/Sparkle.framework" >/dev/null 2>&1 || true
+fi
+codesign --force -s - "$APP_BUNDLE" >/dev/null 2>&1 || true
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE" --args "$@"

@@ -56,7 +56,7 @@ cp "${BUILD_DIR}/${APP_NAME}" "${MACOS_DIR}/"
 # Embed Sparkle.framework (the only native dependency). cp -R preserves the
 # versioned-framework symlinks (Versions/Current -> B, top-level symlinks) —
 # do NOT use -L. Sparkle ships Downloader/Installer XPC services + an Updater
-# helper app inside the framework; --deep codesign below re-signs them all.
+# helper app inside the framework.
 if [[ -d "${SPARKLE_FRAMEWORK}" ]]; then
     mkdir -p "${FRAMEWORKS_DIR}"
     echo "Embedding Sparkle.framework..."
@@ -67,6 +67,14 @@ if [[ -d "${SPARKLE_FRAMEWORK}" ]]; then
     if ! otool -l "${MACOS_DIR}/${APP_NAME}" | grep -q "path @executable_path/../Frameworks"; then
         install_name_tool -add_rpath @executable_path/../Frameworks "${MACOS_DIR}/${APP_NAME}"
     fi
+    # Lentis is NOT sandboxed (uses Foundation.Process, NSWorkspace, full
+    # filesystem access), so Sparkle's XPC services (Downloader.xpc /
+    # Installer.xpc) are never invoked — they're only for sandboxed apps.
+    # Remove them per Sparkle's own recommendation: saves ~space and avoids
+    # the per-component entitlement signing --deep would clobber.
+    # https://sparkle-project.org/documentation/sandboxing/#removing-xpc-services
+    rm -rf "${FRAMEWORKS_DIR}/Sparkle.framework/Versions/B/XPCServices" \
+           "${FRAMEWORKS_DIR}/Sparkle.framework/XPCServices"
 else
     echo "WARNING: Sparkle.framework not found at ${SPARKLE_FRAMEWORK} — the app will not auto-update." >&2
 fi
@@ -126,20 +134,33 @@ EOF
 
 if $NOTARIZE; then
     echo "Code signing with Developer ID..."
-    # Sign inside-out so the embedded Sparkle.framework (incl. its XPC services)
-    # is signed before the enclosing bundle. --options runtime enables the
-    # hardened runtime (required for notarization); Sparkle is signed with the
-    # same Developer ID, so library validation passes.
+    # Sign Sparkle component-by-component (inside-out), NOT with --deep.
+    # --deep is deprecated by Apple and can clobber per-component entitlements
+    # (e.g. Downloader.xpc's). The XPC services were removed above (non-sandboxed
+    # app), so only the Autoupdate helper + Updater.app + the framework remain.
+    # See Sparkle's code-signing guide:
+    # https://sparkle-project.org/documentation/sandboxing/#code-signing
     if [[ -d "${FRAMEWORKS_DIR}/Sparkle.framework" ]]; then
-        codesign --force --options runtime --deep --sign "${SIGNING_IDENTITY}" "${FRAMEWORKS_DIR}/Sparkle.framework"
+        SPARKLE_VER="${FRAMEWORKS_DIR}/Sparkle.framework/Versions/B"
+        codesign --force --options runtime --sign "${SIGNING_IDENTITY}" "${SPARKLE_VER}/Autoupdate"
+        codesign --force --options runtime --sign "${SIGNING_IDENTITY}" "${SPARKLE_VER}/Updater.app"
+        codesign --force --options runtime --sign "${SIGNING_IDENTITY}" "${FRAMEWORKS_DIR}/Sparkle.framework"
     fi
     codesign --force --options runtime --sign "${SIGNING_IDENTITY}" "${MACOS_DIR}/${APP_NAME}"
-    codesign --force --options runtime --deep --sign "${SIGNING_IDENTITY}" "${APP_BUNDLE}"
+    codesign --force --options runtime --sign "${SIGNING_IDENTITY}" "${APP_BUNDLE}"
     codesign --verify --deep --strict "${APP_BUNDLE}"
     echo "Signature OK"
 else
     echo "Ad-hoc code signing (use --notarize for Developer ID signing)..."
-    codesign --force --deep -s - "${APP_BUNDLE}"
+    # Same inside-out sequence without --deep (consistency with the notarize
+    # path; --deep is deprecated and unnecessary for ad-hoc signing too).
+    if [[ -d "${FRAMEWORKS_DIR}/Sparkle.framework" ]]; then
+        SPARKLE_VER="${FRAMEWORKS_DIR}/Sparkle.framework/Versions/B"
+        codesign --force -s - "${SPARKLE_VER}/Autoupdate"
+        codesign --force -s - "${SPARKLE_VER}/Updater.app"
+        codesign --force -s - "${FRAMEWORKS_DIR}/Sparkle.framework"
+    fi
+    codesign --force -s - "${APP_BUNDLE}"
 fi
 
 echo "Successfully created ${APP_BUNDLE}"
