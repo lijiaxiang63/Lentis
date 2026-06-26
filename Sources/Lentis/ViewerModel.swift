@@ -153,7 +153,11 @@ class ViewerModel: ObservableObject {
     var didHandleCommandLineLaunch = false
     @Published var synchronizedScrolling: Bool = false {
         didSet {
-            guard synchronizedScrolling, let source = activePanel else { return }
+            // Synchronized scrolling (proportional slice relocation) is only
+            // meaningful in the legacy multi-series layouts. In the MPR
+            // tri-planar layout the 3D crosshair tracks scrolls instead, so the
+            // proportional relocation must never run there.
+            guard synchronizedScrolling, !isMPRLayout, let source = activePanel else { return }
 
             // If single-panel, auto-expand to 2-panel and assign a same-axis series
             if layout == .single && allSeries.count > 1 {
@@ -206,8 +210,11 @@ class ViewerModel: ObservableObject {
     /// True while a freshly-opened folder is being scanned into a dataset.
     @Published var isScanningFolder: Bool = false
 
-    /// Toggle fullscreen for a panel (double-click behavior)
+    /// Toggle fullscreen for a panel (double-click behavior). Disabled in the
+    /// MPR tri-planar layout, where fullscreen would break the coordinated
+    /// crosshair linkage the layout depends on.
     func toggleFullscreen(for panel: PanelState) {
+        guard !isMPRLayout || fullscreenPanelID == panel.id else { return }
         if fullscreenPanelID == panel.id {
             fullscreenPanelID = nil  // Exit fullscreen
         } else {
@@ -757,12 +764,12 @@ class ViewerModel: ObservableObject {
                 for p in groupPanels {
                     navigatePanelByOffsetDirect(p, offset: offset)
                 }
-                if synchronizedScrolling { syncScrollFromPanel(panel) }
+                handleCrossPanelScroll(for: panel)
                 return
             }
         }
         navigatePanelByOffsetDirect(panel, offset: offset)
-        if synchronizedScrolling { syncScrollFromPanel(panel) }
+        handleCrossPanelScroll(for: panel)
     }
 
     private func navigatePanelByOffsetDirect(_ panel: PanelState, offset: Int) {
@@ -952,7 +959,11 @@ class ViewerModel: ObservableObject {
 
         // Set active panel to axial
         activePanelID = panels[0].id
-        synchronizedScrolling = true
+        // Synchronized scrolling (proportional slice relocation) makes no sense
+        // in the MPR tri-planar layout — scrolling one plane must NOT move the
+        // orthogonal planes' slices. Instead, the 3D crosshair tracks the scroll
+        // so the crosshair lines on the other planes follow the spatial position.
+        synchronizedScrolling = false
         // Show the 3D crosshair out of the box for the tri-planar layout —
         // click/drag any plane to localize the others.
         showCrossReference = true
@@ -1004,9 +1015,7 @@ class ViewerModel: ObservableObject {
                     navigatePanelDirect(p, direction: direction)
                 }
                 // Still do spatial sync for linked mode on the source panel
-                if synchronizedScrolling {
-                    syncScrollFromPanel(panel)
-                }
+                handleCrossPanelScroll(for: panel)
                 return
             }
         }
@@ -1044,7 +1053,7 @@ class ViewerModel: ObservableObject {
             }
             if direction == .nextSeries || direction == .prevSeries {
             } else {
-                if synchronizedScrolling { syncScrollFromPanel(panel) }
+                handleCrossPanelScroll(for: panel)
                 return
             }
         }
@@ -1158,6 +1167,44 @@ class ViewerModel: ObservableObject {
             panel.scale = targetScale
             panel.translation = targetTranslation
         }
+    }
+
+    /// Cross-panel scroll dispatch. In the MPR tri-planar layout, scrolling one
+    /// plane updates the 3D crosshair's perpendicular-axis world component so
+    /// the crosshair lines on the *other* planes follow the new spatial position
+    /// — but the other planes' slices are left untouched (the old proportional
+    /// `syncScrollFromPanel` relocation is wrong for orthogonal MPR). In every
+    /// other layout, falls back to the legacy proportional synchronized scroll.
+    private func handleCrossPanelScroll(for source: PanelState) {
+        if isMPRLayout {
+            updateCrosshairOnScroll(of: source)
+        } else if synchronizedScrolling {
+            syncScrollFromPanel(source)
+        }
+    }
+
+    /// Move the shared 3D crosshair to track a scroll on `panel`. The crosshair's
+    /// in-plane voxel coordinates are preserved; only the scrolled panel's
+    /// perpendicular voxel axis is updated to the new slice index, then mapped
+    /// back to world. The other MPR panels are NOT relocated (their slices stay
+    /// put) — only their crosshair lines move. Robust to any affine because it
+    /// round-trips through `worldToVoxel` / `voxelToWorld`.
+    private func updateCrosshairOnScroll(of panel: PanelState) {
+        guard showCrossReference,
+              let vol = cachedVolume(forSeriesIndex: panel.seriesIndex),
+              panel.panelMode.isMPR else { return }
+        let center = SIMD3<Double>(
+            Double(vol.width - 1) / 2,
+            Double(vol.height - 1) / 2,
+            Double(vol.depth - 1) / 2)
+        var v = crosshairWorld.map { vol.worldToVoxel($0) } ?? center
+        switch panel.panelMode {
+        case .mprAxial:    v.z = Double(panel.mprSliceIndex)
+        case .mprSagittal: v.x = Double(panel.mprSliceIndex)
+        case .mprCoronal:  v.y = Double(panel.mprSliceIndex)
+        case .volume3D:    return
+        }
+        crosshairWorld = vol.voxelToWorld(v)
     }
 
     /// Find the closest volume slice index for MPR targets using proportional matching.
@@ -1495,7 +1542,7 @@ class ViewerModel: ObservableObject {
         case .volume3D:
             return
         }
-        if synchronizedScrolling { syncScrollFromPanel(panel) }
+        handleCrossPanelScroll(for: panel)
     }
 
     /// Whether a series supports MPR/3D rendering, i.e. a volume with depth is

@@ -165,6 +165,7 @@ struct LentisApp: App {
 
                 Toggle("Synchronized Scrolling", isOn: $model.synchronizedScrolling)
                     .keyboardShortcut("l", modifiers: [.command, .shift])
+                    .disabled(model.isMPRLayout)
             }
 
             CommandMenu("Tools") {
