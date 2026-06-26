@@ -33,13 +33,13 @@ Status legend: ☐ todo · ◐ in progress · ☑ done · ⤬ deferred (with rea
 
 ## Phase C — Segment tab (`SegmentInspectorView.swift`)
 
-- ☐ **C1 — De-emphasize the (optional, slow) Brain Mask.** It is the top section and its
+- ☑ **C1 — De-emphasize the (optional, slow) Brain Mask.** It is the top section and its
   Generate button is the only `.glassProminent` hero, competing with the real primary action
   (Add Region). Collapse the no-mask cluster into an opt-in disclosure so drawing a region is
   the first-glance path.
-- ☐ **C2 — Move advanced params into a disclosure.** Min size / Connectivity / Constrain are
+- ☑ **C2 — Move advanced params into a disclosure.** Min size / Connectivity / Constrain are
   always visible in the active-region editor; fold them into a collapsed "Advanced".
-- ☐ **C4 — Clarify Mask vs Atlas export.** Add `.help`/captions so the user knows which to pick
+- ☑ **C4 — Clarify Mask vs Atlas export.** Add `.help`/captions so the user knows which to pick
   (single-value mask vs multi-value atlas + LUT).
 
 ## Deferred (evaluated — documented, not changed)
@@ -72,3 +72,16 @@ Status legend: ☐ todo · ◐ in progress · ☑ done · ⤬ deferred (with rea
   at least one layer exists — removing the old double placeholder (list overlay + details pane).
   Dropped the now-dead `layerList` empty overlay. z-order hint "Top renders last" → "Top draws on top".
 - Pure view restructure (no logic) — no new tests. Build clean.
+- Commit `8cac0f2`.
+
+### Phase C — Segment tab (done)
+- `SegmentInspectorView.swift`:
+  - C1: the no-mask Brain Mask state is now a **collapsed `DisclosureGroup`** (`showBrainMaskSetup`,
+    default false) with a compact `brainMaskDisclosureLabel` (tinted glyph + "Optional…" caption);
+    the `.glassProminent` Generate hero only appears once the user opts in, so it no longer competes
+    with Add Region. Running / mask-loaded states unchanged.
+  - C2: Min size / Connectivity / Constrain wrapped in a collapsed **"Advanced" `DisclosureGroup`**
+    (`showAdvanced`) inside `ActiveRegionEditor`.
+  - C4: Export section gains a one-line Mask-vs-Atlas legend + a detailed `.help` tooltip on each
+    Export button.
+- Pure view changes (no model logic) — full suite green (XCTest 123 + swift-testing 86, 0 failures).

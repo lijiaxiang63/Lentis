@@ -18,6 +18,10 @@ struct SegmentInspectorView: View {
     // / custom folder changes in the Settings window.
     @ObservedObject private var settings = AppSettings.shared
     @State private var exportError: String?
+    // The brain mask is optional (and SynthSeg is slow), so its setup actions sit
+    // in a collapsed disclosure by default — keeping the real primary action
+    // (draw a region) the first-glance path rather than the Generate hero.
+    @State private var showBrainMaskSetup = false
 
     var body: some View {
         // Conditional body — the empty state REPLACES the sections when no volume
@@ -228,15 +232,20 @@ struct SegmentInspectorView: View {
                     // reclaims vertical space for the (tall) Active Region editor.
                     brainMaskDoneSummary
                 } else {
-                    // No mask yet — the full action cluster, framed as optional.
-                    brainMaskStatusHeader
-                    Text("Optional — improves accuracy by excluding skull.")
-                        .font(.caption2).foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    brainMaskActionCluster
-                    if model.synthSegAvailable, !model.synthSegStatus.isEmpty {
-                        Text(model.synthSegStatus)
-                            .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                    // No mask yet — tuck the action cluster into a collapsed,
+                    // opt-in disclosure so this optional (and slow) step does not
+                    // out-shout the Active Region editor below it.
+                    DisclosureGroup(isExpanded: $showBrainMaskSetup) {
+                        VStack(alignment: .leading, spacing: Spacing.s) {
+                            brainMaskActionCluster
+                            if model.synthSegAvailable, !model.synthSegStatus.isEmpty {
+                                Text(model.synthSegStatus)
+                                    .font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                        }
+                        .padding(.top, Spacing.xs)
+                    } label: {
+                        brainMaskDisclosureLabel
                     }
                 }
 
@@ -301,6 +310,27 @@ struct SegmentInspectorView: View {
             .fixedSize()
             .help("Brain mask actions")
             .accessibilityLabel("Brain mask actions")
+        }
+    }
+
+    /// Collapsed-disclosure label for the no-mask state: a compact tinted glyph +
+    /// a short "optional" caption. The InspectorSection already titles this "Brain
+    /// Mask", so the label sells the opt-in rather than repeating the title.
+    private var brainMaskDisclosureLabel: some View {
+        HStack(spacing: Spacing.s) {
+            Image(systemName: brainMaskState.systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(brainMaskState.tint)
+                .frame(width: 24, height: 24)
+                .glassEffect(.regular.tint(brainMaskState.tint.opacity(0.22)), in: Circle())
+            VStack(alignment: .leading, spacing: 1) {
+                Text(model.synthSegAvailable ? "Add a brain mask" : "Set up brain masking")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.primary)
+                Text("Optional — improves accuracy by excluding skull")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -494,11 +524,18 @@ struct SegmentInspectorView: View {
     private var exportSection: some View {
         InspectorSection(title: "Export") {
             VStack(alignment: .leading, spacing: Spacing.s) {
+                // Legend so the two buttons aren't a coin-flip for a first-timer
+                // (full detail is on each button's tooltip).
+                Text("Mask = all regions merged into one value · Atlas = each region keeps its own label + color.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: Spacing.s) {
                     Button { export(kind: .binaryMask) } label: { Label("Export Mask", systemImage: "square.and.arrow.down") }
                         .buttonStyle(.glass)
+                        .help("Single-label binary mask NIfTI — every region becomes one value. Best for a yes/no calcification mask.")
                     Button { export(kind: .atlas) } label: { Label("Export Atlas", systemImage: "square.and.arrow.down.on.square") }
                         .buttonStyle(.glass)
+                        .help("Multi-label atlas NIfTI + FreeSurfer LUT — each region keeps its own label value & color. Best for telling regions apart.")
                 }
                 .disabled(!model.hasSegmentation || model.draftRegion != nil)
 
@@ -604,6 +641,10 @@ struct SegmentInspectorView: View {
 private struct ActiveRegionEditor: View {
     @ObservedObject var model: ViewerModel
     @ObservedObject var draft: CalcificationRegion
+    // Min size / connectivity / brain-mask constraint are power-user knobs; keep
+    // them in a collapsed "Advanced" disclosure so the common path (threshold +
+    // Add) isn't buried under them.
+    @State private var showAdvanced = false
 
     /// Fixed HU range for the Method-B grow boundary ("Grow ≥") slider, tuned at
     /// 0.1-HU precision regardless of the image histogram.
@@ -694,7 +735,13 @@ private struct ActiveRegionEditor: View {
                             .font(.caption2).foregroundStyle(.orange)
                     }
 
-                    options
+                    DisclosureGroup(isExpanded: $showAdvanced) {
+                        options.padding(.top, Spacing.xs)
+                    } label: {
+                        Text("Advanced")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 HStack(spacing: Spacing.s) {
