@@ -136,6 +136,25 @@ final class ROICursorTests: XCTestCase {
         XCTAssertEqual(View.resizeCursor(for: handle(.upper, .lower), dirA: dirA, dirB: dirB), .diagUpRightDownLeft)
     }
 
+    func testRotatedPanelCornerDoesNotCollapseToZero() {
+        // Locks the second P3 regression: after a 90°/270° panel rotation,
+        // screenAxisDelta can return axis A as (nearly) vertical and axis B as
+        // (nearly) horizontal. The OLD per-component corner formula
+        // (dx=±dirA.x, dy=±dirB.y) collapsed to (0,0) here → a wrong horizontal
+        // cursor. The fix sums the two FULL signed vectors, so the corner stays
+        // a diagonal. Concretely: dirA=(0,10) [A→down], dirB=(-10,0) [B→left].
+        //   (.lower,.lower): -A - B = -(0,10) - (-10,0) = (10,-10) → ↗↙
+        //   (.upper,.upper): +A + B = (0,10) + (-10,0) = (-10,10) → ↗↙
+        //   (.lower,.upper): -A + B = (0,-10) + (-10,0) = (-10,-10) → ↖↘
+        //   (.upper,.lower): +A - B = (0,10) - (-10,0) = (10,10) → ↖↘
+        let dirA = CGPoint(x: 0, y: 10)
+        let dirB = CGPoint(x: -10, y: 0)
+        XCTAssertEqual(View.resizeCursor(for: handle(.lower, .lower), dirA: dirA, dirB: dirB), .diagUpRightDownLeft)
+        XCTAssertEqual(View.resizeCursor(for: handle(.upper, .upper), dirA: dirA, dirB: dirB), .diagUpRightDownLeft)
+        XCTAssertEqual(View.resizeCursor(for: handle(.lower, .upper), dirA: dirA, dirB: dirB), .diagUpLeftDownRight)
+        XCTAssertEqual(View.resizeCursor(for: handle(.upper, .lower), dirA: dirA, dirB: dirB), .diagUpLeftDownRight)
+    }
+
     func testFullyFixedHandleFallsBack() {
         // A handle that moves no axis (shouldn't occur in practice) is harmless.
         let h = handle(.fixed, .fixed)

@@ -962,39 +962,36 @@ struct PanelInteractiveImageView: NSViewRepresentable {
 
         /// Pick a directional resize cursor for a handle given the screen
         /// directions of the plane's two in-plane voxel axes (each as returned
-        /// by `screenAxisDelta`, i.e. the +axis screen direction). Corners move
-        /// both axes → diagonal cursor; edge midpoints move one axis → that
-        /// axis's cursor.
+        /// by `screenAxisDelta`, i.e. the +axis screen direction as a FULL 2D
+        /// vector — after a 90°/270° panel rotation an axis may point mostly
+        /// vertical or horizontal, so never assume "A contributes x, B
+        /// contributes y"). Corners move both axes → diagonal cursor; edge
+        /// midpoints move one axis → that axis's cursor.
         ///
         /// A handle's `BoxGrip` signs the drag direction: dragging a `.lower`
         /// grip pulls that bound toward the box's lower edge (the −axis
         /// direction), while `.upper` pulls toward +axis. So `.lower` negates
-        /// that axis's screen delta, `.upper` keeps it, and `.fixed` drops it.
-        /// Without this signing, all four corners classify to the same diagonal
-        /// (since `+dirA + +dirB` is identical for every corner), so adjacent
-        /// corners would show the wrong diagonal — e.g. the top-left and
-        /// bottom-right corners of an axial box both pull along ↖↘, while the
-        /// top-right and bottom-left pull along ↗↙. The two opposing corners of
-        /// one diagonal still map to the same cursor (a resize cursor is
-        /// direction-agnostic about which end is grabbed), but the two
-        /// diagonals are now correctly distinguished.
+        /// that axis's full screen vector, `.upper` keeps it, and `.fixed`
+        /// drops it (contributes nothing). The corner drag direction is the
+        /// SUM of the two signed full vectors (`signedDirA + signedDirB`),
+        /// not a per-component pick — this keeps it correct under rotation
+        /// (where axis A may carry the y component and axis B the x). Without
+        /// signing, all four corners collapse to one diagonal; without summing
+        /// full vectors, a rotated panel can collapse the direction to (0,0).
+        /// The two opposing corners of one diagonal still map to the same
+        /// cursor (a resize cursor is direction-agnostic about which end is
+        /// grabbed), but the two diagonals are correctly distinguished.
         static func resizeCursor(for handle: BoxHandle, dirA: CGPoint, dirB: CGPoint) -> ResizeCursorKind {
-            let dx: CGFloat
-            let dy: CGFloat
-            switch (handle.gripA, handle.gripB) {
-            // Corner — both axes move; sign each by its grip.
-            case (.lower, .lower): dx = -dirA.x; dy = -dirB.y
-            case (.upper, .lower): dx =  dirA.x; dy = -dirB.y
-            case (.lower, .upper): dx = -dirA.x; dy =  dirB.y
-            case (.upper, .upper): dx =  dirA.x; dy =  dirB.y
-            // Edge midpoint — only one axis moves; the other is dropped.
-            case (.lower, .fixed): dx = -dirA.x; dy = -dirA.y
-            case (.upper, .fixed): dx =  dirA.x; dy =  dirA.y
-            case (.fixed, .lower): dx = -dirB.x; dy = -dirB.y
-            case (.fixed, .upper): dx =  dirB.x; dy =  dirB.y
-            case (.fixed, .fixed): return .leftRight
+            func signed(_ grip: BoxGrip, _ v: CGPoint) -> CGPoint {
+                switch grip {
+                case .upper: return v
+                case .lower: return CGPoint(x: -v.x, y: -v.y)
+                case .fixed: return .zero
+                }
             }
-            return directionalResizeCursor(dx: dx, dy: dy)
+            let sa = signed(handle.gripA, dirA)
+            let sb = signed(handle.gripB, dirB)
+            return directionalResizeCursor(dx: sa.x + sb.x, dy: sa.y + sb.y)
         }
 
         /// Map an unnormalized screen-space drag direction (y-down) to one of
