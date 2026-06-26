@@ -17,6 +17,15 @@ SIGNING_IDENTITY="Developer ID Application: CHANGE_ME"
 NOTARY_PROFILE="Lentis"
 NOTARIZE=false
 
+# --- Sparkle auto-update (see AGENTS.md "Auto-update (Sparkle)") ---
+# The appcast feed hosted as a GitHub Release asset (releases/latest/download
+# redirects to the newest release's appcast.xml). Stable + no Pages dep.
+SPARKLE_FEED_URL="${LENTIS_SPARKLE_FEED_URL:-https://github.com/lijiaxiang63/Lentis/releases/latest/download/appcast.xml}"
+# EdDSA PUBLIC key (base64). Injected from the LENTIS_SPARKLE_PUBLIC_KEY env var
+# by CI; empty for local builds → the key is omitted and Sparkle falls back to
+# Apple code-signing verification only (fine for dev; releases must set it).
+SPARKLE_PUBLIC_KEY="${LENTIS_SPARKLE_PUBLIC_KEY:-}"
+
 if [[ "$1" == "--notarize" ]]; then
     NOTARIZE=true
 fi
@@ -28,10 +37,13 @@ echo "Building ${APP_NAME} ${APP_VERSION} (build ${APP_BUILD}, Release)..."
 swift build -c release --arch arm64
 
 BUILD_DIR=".build/release"
+# SPM places the binary-target framework under the arch-specific build dir.
+SPARKLE_FRAMEWORK=".build/arm64-apple-macosx/release/Sparkle.framework"
 APP_BUNDLE="${APP_NAME}.app"
 CONTENTS_DIR="${APP_BUNDLE}/Contents"
 MACOS_DIR="${CONTENTS_DIR}/MacOS"
 RESOURCES_DIR="${CONTENTS_DIR}/Resources"
+FRAMEWORKS_DIR="${CONTENTS_DIR}/Frameworks"
 
 echo "Creating App Bundle at ${APP_BUNDLE}..."
 rm -rf "${APP_BUNDLE}"
@@ -40,6 +52,24 @@ mkdir -p "${RESOURCES_DIR}"
 
 echo "Copying Executable..."
 cp "${BUILD_DIR}/${APP_NAME}" "${MACOS_DIR}/"
+
+# Embed Sparkle.framework (the only native dependency). cp -R preserves the
+# versioned-framework symlinks (Versions/Current -> B, top-level symlinks) —
+# do NOT use -L. Sparkle ships Downloader/Installer XPC services + an Updater
+# helper app inside the framework; --deep codesign below re-signs them all.
+if [[ -d "${SPARKLE_FRAMEWORK}" ]]; then
+    mkdir -p "${FRAMEWORKS_DIR}"
+    echo "Embedding Sparkle.framework..."
+    cp -R "${SPARKLE_FRAMEWORK}" "${FRAMEWORKS_DIR}/"
+    # The executable links @rpath/Sparkle.framework/...; SPM only sets
+    # @loader_path (= Contents/MacOS). Add the Frameworks rpath so the dylib
+    # resolves at runtime. Idempotent: skip if already present.
+    if ! otool -l "${MACOS_DIR}/${APP_NAME}" | grep -q "path @executable_path/../Frameworks"; then
+        install_name_tool -add_rpath @executable_path/../Frameworks "${MACOS_DIR}/${APP_NAME}"
+    fi
+else
+    echo "WARNING: Sparkle.framework not found at ${SPARKLE_FRAMEWORK} — the app will not auto-update." >&2
+fi
 
 echo "Copying SwiftPM Resources..."
 cp -R "${BUILD_DIR}/Lentis_Lentis.bundle" "${RESOURCES_DIR}/"
@@ -77,14 +107,30 @@ cat > "${CONTENTS_DIR}/Info.plist" <<EOF
     <string>Lentis needs access to open image files.</string>
     <key>NSDownloadsFolderUsageDescription</key>
     <string>Lentis needs access to open image files.</string>
+    <key>SUFeedURL</key>
+    <string>${SPARKLE_FEED_URL}</string>
+EOF
+# EdDSA public key — only when provided (releases). Omitting it disables EdDSA
+# verification; Sparkle then relies on Apple code signing (OK for dev builds).
+if [[ -n "${SPARKLE_PUBLIC_KEY}" ]]; then
+    printf '    <key>SUPublicEDKey</key>\n    <string>%s</string>\n' "${SPARKLE_PUBLIC_KEY}" >> "${CONTENTS_DIR}/Info.plist"
+fi
+cat >> "${CONTENTS_DIR}/Info.plist" <<EOF
 </dict>
 </plist>
 EOF
 
 if $NOTARIZE; then
     echo "Code signing with Developer ID..."
+    # Sign inside-out so the embedded Sparkle.framework (incl. its XPC services)
+    # is signed before the enclosing bundle. --options runtime enables the
+    # hardened runtime (required for notarization); Sparkle is signed with the
+    # same Developer ID, so library validation passes.
+    if [[ -d "${FRAMEWORKS_DIR}/Sparkle.framework" ]]; then
+        codesign --force --options runtime --deep --sign "${SIGNING_IDENTITY}" "${FRAMEWORKS_DIR}/Sparkle.framework"
+    fi
     codesign --force --options runtime --sign "${SIGNING_IDENTITY}" "${MACOS_DIR}/${APP_NAME}"
-    codesign --force --options runtime --sign "${SIGNING_IDENTITY}" "${APP_BUNDLE}"
+    codesign --force --options runtime --deep --sign "${SIGNING_IDENTITY}" "${APP_BUNDLE}"
     codesign --verify --deep --strict "${APP_BUNDLE}"
     echo "Signature OK"
 else

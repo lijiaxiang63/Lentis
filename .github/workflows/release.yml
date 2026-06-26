@@ -49,6 +49,11 @@ jobs:
           # Stamp the bundle version from the tag instead of the script defaults.
           LENTIS_MARKETING_VERSION: ${{ steps.version.outputs.marketing }}
           LENTIS_BUILD_VERSION: ${{ github.run_number }}
+          # Sparkle EdDSA public key (base64) — baked into Info.plist as
+          # SUPublicEDKey so the app can verify update signatures. Non-secret;
+          # stored as a repository variable. Empty/unset → EdDSA verification
+          # disabled (fine until keys are generated). See scripts/sparkle_tools.swift.
+          LENTIS_SPARKLE_PUBLIC_KEY: ${{ vars.LENTIS_SPARKLE_PUBLIC_KEY }}
         run: ./scripts/package_app.sh
 
       - name: Name the DMG with the version
@@ -101,17 +106,69 @@ jobs:
           echo "----- release notes -----"
           cat release-notes.md
 
+      - name: Sign DMG + generate Sparkle appcast
+        id: appcast
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          # EdDSA private key (base64 32-byte seed). When absent, the step
+          # no-ops (no appcast) so releases still publish the DMG; set the
+          # secret to enable in-app auto-update. See scripts/sparkle_tools.swift.
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+          MARKETING: ${{ steps.version.outputs.marketing }}
+          BUILD: ${{ github.run_number }}
+          DMG: ${{ steps.dmg.outputs.path }}
+        run: |
+          if [[ -z "${SPARKLE_PRIVATE_KEY}" ]]; then
+            echo "SPARKLE_PRIVATE_KEY not set — skipping appcast (set the repo secret to enable auto-update)."
+            exit 0
+          fi
+          # Ed25519 signature over the DMG bytes (interoperable with Sparkle's
+          # libsodium verification). Apple CryptoKit, no external deps.
+          SIG="$(SPARKLE_PRIVATE_KEY="${SPARKLE_PRIVATE_KEY}" swift scripts/sparkle_tools.swift sign "${DMG}")"
+          LENGTH="$(stat -f%z "${DMG}")"
+          PUBDATE="$(date -Ru)"
+          ENCLOSURE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}/${DMG}"
+          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${VERSION}"
+          {
+            echo '<?xml version="1.0" standalone="yes"?>'
+            echo '<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            echo '  <channel>'
+            echo '    <title>Lentis</title>'
+            echo "    <link>${RELEASE_URL}</link>"
+            echo '    <description>Most recent changes to Lentis</description>'
+            echo '    <language>en</language>'
+            echo '    <item>'
+            echo "      <title>Lentis ${MARKETING}</title>"
+            echo "      <pubDate>${PUBDATE}</pubDate>"
+            echo "      <sparkle:version>${BUILD}</sparkle:version>"
+            echo "      <sparkle:shortVersionString>${MARKETING}</sparkle:shortVersionString>"
+            echo "      <sparkle:releaseNotesLink>${RELEASE_URL}</sparkle:releaseNotesLink>"
+            echo "      <enclosure url=\"${ENCLOSURE_URL}\" sparkle:edSignature=\"${SIG}\" length=\"${LENGTH}\" type=\"application/octet-stream\" />"
+            echo '    </item>'
+            echo '  </channel>'
+            echo '</rss>'
+          } > appcast.xml
+          echo "----- appcast.xml -----"
+          cat appcast.xml
+          echo "has_appcast=true" >> "$GITHUB_OUTPUT"
+
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
           DMG: ${{ steps.dmg.outputs.path }}
+          HAS_APPCAST: ${{ steps.appcast.outputs.has_appcast }}
         run: |
+          ASSETS=("${DMG}" "${DMG}.sha256")
+          if [[ "${HAS_APPCAST}" == "true" ]]; then
+            ASSETS+=("appcast.xml")
+          fi
           gh release create "${VERSION}" \
             --title "Lentis ${VERSION}" \
             --notes-file release-notes.md \
-            "${DMG}" "${DMG}.sha256"
+            "${ASSETS[@]}"
 
       - name: Upload DMG artifact (manual runs)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}

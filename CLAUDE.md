@@ -40,6 +40,19 @@ xcrun swiftc -O Sources/Lentis/{NIfTI,Orientation,LabelVolume,VolumeData,NiftiVo
 open Lentis.app --args --benchmark /abs/path/to/file.nii.gz
 # Deterministic, GUI-free interactive-perf benchmark (W/L + crosshair + scroll):
 open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
+
+# --- Auto-update (Sparkle) one-time key setup (DO THIS BEFORE the first tagged
+#     release that should auto-update; until then releases publish a DMG-only
+#     Release and in-app auto-check silently no-ops). ---
+# 1. Generate an Ed25519 keypair (Apple CryptoKit, no deps):
+swift scripts/sparkle_tools.swift generate
+#    -> prints PUBLIC (base64) and PRIVATE (base64 32-byte seed).
+# 2. Add the PRIVATE key as a GitHub repo secret named SPARKLE_PRIVATE_KEY.
+# 3. Add the PUBLIC key as a GitHub repo variable named LENTIS_SPARKLE_PUBLIC_KEY
+#    (used by .github/workflows/release.yml to bake SUPublicEDKey into Info.plist).
+# Local release builds can also set LENTIS_SPARKLE_PUBLIC_KEY=<pub> env before
+# ./scripts/package_app.sh. Releases then sign the DMG + emit appcast.xml
+# (hosted as a Release asset; SUFeedURL = releases/latest/download/appcast.xml).
 ```
 
 - **Perf probe:** `--benchmark` writes `~/Desktop/lentis_benchmark.csv` (and `[BENCH]` to stderr).
@@ -55,7 +68,9 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
   the real gesture (`persist:false` per flush, one `seriesStates` commit at drag end; `f952678`).
 
 - Toolchain: Swift 6.3, Xcode 26.4, macOS arm64. Bundle id `com.kalicooper.lentis`.
-  **Zero native/system dependencies** — pure Swift + Metal/AppKit (DCMTK/OpenJPEG gone in Phase 3).
+  **One native dependency: Sparkle 2.x** (the macOS auto-update framework, bundled
+  into the `.app` by `package_app.sh`) — see *Auto-update (Sparkle)* below. Imaging
+  remains pure Swift + Metal/AppKit (DCMTK/OpenJPEG gone in Phase 3).
 - `swift build` after adding a `PanelMode` case → the compiler flags every non-exhaustive
   `switch`. Fix each intentionally (usually mirror `.mprCoronal` or fold into a combined case).
 - **Git state (2026-06-25):** work is on **`master`** in the single main checkout
@@ -86,7 +101,9 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 ### Key source files
 | File | Role |
 |---|---|
-| `App.swift` | `@main struct LentisApp`. Menus. `--benchmark <path>` auto-open. **UI redesign (Liquid Glass, macOS 26):** plain `WindowGroup` — the window title comes from the detail's `.navigationTitle` (open file name) + `.navigationSubtitle` (modality · dims), replacing the old centered-title hack. |
+| `App.swift` | `@main struct LentisApp`. Menus. `--benchmark <path>` auto-open. **UI redesign (Liquid Glass, macOS 26):** plain `WindowGroup` — the window title comes from the detail's `.navigationTitle` (open file name) + `.navigationSubtitle` (modality · dims), replacing the old centered-title hack. **Auto-update (Sparkle):** holds an `UpdaterController` (`@StateObject`); the app menu's **Check for Updates…** calls `updater.checkForUpdates()`. |
+| `UpdaterController.swift` | **Sparkle 2.x wrapper (auto-update).** Thin `@MainActor ObservableObject` owning `SPUStandardUpdaterController(startingUpdater:true,…)` — created lazily via `@StateObject` once `NSApplication` is ready (the safe point to start the updater). Auto-checks on launch (24 h interval; Sparkle's native update window handles download / EdDSA-verify / install / relaunch). `checkForUpdates()` is the manual entry point. `SUFeedURL` + `SUPublicEDKey` in `Info.plist` (set by `package_app.sh`) drive the feed + signature verification. |
+| `sparkle_tools.swift` (`scripts/`) | **EdDSA keygen + DMG signing** for Sparkle, using Apple CryptoKit (`Curve25519.Signing` = RFC 8032 Ed25519, interoperable with Sparkle's libsodium). `generate` prints the public (→ `LENTIS_SPARKLE_PUBLIC_KEY` repo var / `SUPublicEDKey`) + private (→ `SPARKLE_PRIVATE_KEY` secret) base64 keys. `sign <file>` reads `SPARKLE_PRIVATE_KEY` env + prints the base64 signature for the appcast `sparkle:edSignature`. No pip / no external deps — runs on the macOS runner. |
 | `ViewerModel.swift` (~1700 lines) | **Central `@ObservableObject` model**. Panels, volume cache, MPR/3D, W/L, sync-scroll. **Crosshair (Phase 6):** `setCrosshair(_:from:)` relocates the orthogonal panels through a world point; `.volume3D` is deliberately excluded. The world point lives in a **decoupled `CrosshairState`**. **3D (Phase 8):** `loadVolumeRendering` is async/coalesced on `panel.loadingQueue`; `rotateVolumeRendering` drives preview/final camera renders. **W/L drag:** re-drives `loadMPRSlice`/`loadVolumeRendering` off-main. |
 | `ViewerModel+Nifti.swift` | **NIFTI orchestration**: `loadNifti`, `applyNiftiDataset`, `selectTimepoint`, `setModalityOverride`. **Modality-aware W/L (Phase 5):** `modalityDefaultWindow`/`seededWindow` (seed), `applyWindowPreset`/`applyModalityAutoWindow`/`autoWindow(for:)` (UI). **Phase 7 seam:** `installDemoSphereMask` (`--benchmark`-only mask demo). |
 | `BIDSDataset.swift` | **Pure BIDS model (no UI/AppKit).** `BIDSEntities.parse`/`derivativeName` (filename ↔ entities/suffix/ext; BIDS-valid derivative names, alphanumeric-sanitized), `BIDSImageFile` (+ `descIncludingModality` folds the source suffix into `desc` so sibling-modality derivatives can't collide), `BIDSSubject`/`BIDSSession`, `BIDSDataset.scan` (subject→session→**known-datatype** file tree; sidecars/`derivatives/` excluded; subject-root files kept as an implicit session; loose-folder fallback) + `derivativesDirectory`. Unit-tested via on-disk temp trees. |
@@ -1095,6 +1112,36 @@ Ordered roughly by priority. None block the build or tests; these are quality/pe
   (b) Codex P2 — atlas export staleness on region rename/recolor (`invalidateAtlasExport()`, commit
   `18fa811`); (c) Codex P3 — a canceled re-edit restores exact voxels so the export stays valid → don't
   invalidate on `reEditRegion` entry (commit `933c99f`).
+
+- [x] **Auto-update via Sparkle (2026-06-26, branch `feature/sparkle-auto-update` / worktree).**
+  In-app automatic update checking + download + install, using the **Sparkle 2.x** framework (the
+  macOS auto-update standard — "don't reinvent the wheel"). Replaces the Phase-1 `UpdateChecker` that
+  only opened a browser to the DMG; Sparkle does the actual download / EdDSA-verify / extract / replace
+  / relaunch with its native update window. **Implementation:** `Package.swift` adds the Sparkle SPM
+  binary target; `UpdaterController.swift` wraps `SPUStandardUpdaterController(startingUpdater:true,…)`
+  as a `@StateObject` (created lazily so `NSApplication` is ready) — auto-checks on launch (24 h
+  interval, hidden until 2nd launch) and the app-menu **Check for Updates…** is the manual entry.
+  `package_app.sh` embeds `Sparkle.framework` into `Contents/Frameworks/` (preserving the versioned
+  symlinks), adds the `@executable_path/../Frameworks` rpath (idempotent), bakes `SUFeedURL`
+  (`releases/latest/download/appcast.xml` — hosted as a Release asset, no GitHub Pages dep) + the
+  conditional `SUPublicEDKey` into `Info.plist`, and signs the framework inside-out on the `--notarize`
+  path. **CI (`.github/workflows/release.yml`):** signs the DMG with Ed25519 and emits `appcast.xml`
+  (one `<item>`: `sparkle:version` = build #, `sparkle:shortVersionString` = marketing, enclosure =
+  the Release DMG URL + `sparkle:edSignature` + length), uploaded alongside the DMG. Signing uses
+  `scripts/sparkle_tools.swift` (Apple **CryptoKit** `Curve25519.Signing`, no pip/external deps —
+  interoperable with Sparkle's libsodium Ed25519). **Keys (one-time, manual):** `swift scripts/sparkle_tools.swift generate`
+  → PUBLIC key → GitHub repo var `LENTIS_SPARKLE_PUBLIC_KEY`; PRIVATE key → GitHub secret `SPARKLE_PRIVATE_KEY`.
+  Until both are set, releases publish a DMG-only Release (the sign/appcast step no-ops) and in-app
+  auto-check silently no-ops — the first release after key setup enables it. **Verified end-to-end
+  locally:** a low-version (0.9.0/build 1) app pointed at a local HTTP-served appcast + DMG (both
+  baked with the test public key) → Sparkle auto-checked on launch, found the update, showed its
+  update window, downloaded the DMG, and **`OK: EdDSA signature is correct for update`** (CryptoKit
+  signature verified by Sparkle's libsodium). `swift build` clean, **204 tests green** (118 XCTest +
+  86 swift-testing, unchanged). The only unverified step is the final click-Install→replace→relaunch
+  (a GUI action that can't be synthetic-event-driven); all validation up to that point passed.
+  **Cost:** the app's "zero native deps" property is relaxed to **one** native dep (Sparkle.framework,
+  ~3 MB, bundled — imaging stays pure Swift). **Deferred:** delta updates (single-item appcast);
+  embedding rich release notes (currently `sparkle:releaseNotesLink` → the GitHub release page).
 
 ---
 

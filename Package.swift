@@ -15,11 +15,19 @@ let package = Package(
         .executable(name: "Lentis", targets: ["Lentis"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/swift-testing.git", from: "0.12.0")
+        .package(url: "https://github.com/apple/swift-testing.git", from: "0.12.0"),
+        // Sparkle 2.x — macOS software-update framework (auto download/install of
+        // GitHub Release DMGs, EdDSA-signed). Distributed as a prebuilt binary
+        // target (XCFramework); the only "native" dependency, bundled into the
+        // .app by package_app.sh. See AGENTS.md "Auto-update (Sparkle)".
+        .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.9.3")
     ],
     targets: [
         .executableTarget(
             name: "Lentis",
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             resources: [
                 .copy("Resources")
             ]

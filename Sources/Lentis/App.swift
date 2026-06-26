@@ -5,12 +5,17 @@
 // (window/level, transforms, overlays), MPR mode, and synchronized scrolling.
 // Licensed under the MIT License. See LICENSE for details.
 
+import Sparkle
 import SwiftUI
 
 @main
 struct LentisApp: App {
     @StateObject private var model = ViewerModel()
     @StateObject private var settings = AppSettings.shared
+    // Sparkle updater — auto-checks on launch (24 h interval; native update
+    // window handles download/verify/install/relaunch). Created lazily via
+    // @StateObject once NSApplication is ready. See UpdaterController.swift.
+    @StateObject private var updater = UpdaterController()
 
     var body: some Scene {
         // The window title is owned by the detail view's `.navigationTitle`
@@ -61,6 +66,15 @@ struct LentisApp: App {
                 }
         }
         .commands {
+            // "Check for Updates…" lives in the application menu (after About).
+            // Sparkle's standard updater also auto-checks on launch; this is the
+            // manual entry point.
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    updater.checkForUpdates()
+                }
+            }
+
             CommandGroup(replacing: .newItem) {
                 Button("Open…") {
                     model.openFileOrFolder()
