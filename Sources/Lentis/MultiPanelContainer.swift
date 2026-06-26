@@ -962,25 +962,37 @@ struct PanelInteractiveImageView: NSViewRepresentable {
 
         /// Pick a directional resize cursor for a handle given the screen
         /// directions of the plane's two in-plane voxel axes (each as returned
-        /// by `screenAxisDelta`). Corners move both axes → diagonal cursor;
-        /// edge midpoints move one axis → that axis's cursor. The cursor is
-        /// direction-agnostic about which end of the handle is grabbed, so the
-        /// two opposing diagonal cursors collapse to the same choice by sign.
+        /// by `screenAxisDelta`, i.e. the +axis screen direction). Corners move
+        /// both axes → diagonal cursor; edge midpoints move one axis → that
+        /// axis's cursor.
+        ///
+        /// A handle's `BoxGrip` signs the drag direction: dragging a `.lower`
+        /// grip pulls that bound toward the box's lower edge (the −axis
+        /// direction), while `.upper` pulls toward +axis. So `.lower` negates
+        /// that axis's screen delta, `.upper` keeps it, and `.fixed` drops it.
+        /// Without this signing, all four corners classify to the same diagonal
+        /// (since `+dirA + +dirB` is identical for every corner), so adjacent
+        /// corners would show the wrong diagonal — e.g. the top-left and
+        /// bottom-right corners of an axial box both pull along ↖↘, while the
+        /// top-right and bottom-left pull along ↗↙. The two opposing corners of
+        /// one diagonal still map to the same cursor (a resize cursor is
+        /// direction-agnostic about which end is grabbed), but the two
+        /// diagonals are now correctly distinguished.
         static func resizeCursor(for handle: BoxHandle, dirA: CGPoint, dirB: CGPoint) -> ResizeCursorKind {
-            let movesA = handle.gripA != .fixed
-            let movesB = handle.gripB != .fixed
             let dx: CGFloat
             let dy: CGFloat
-            if movesA && movesB {
-                // Corner — both axes move; the drag direction is the sum.
-                dx = dirA.x + dirB.x
-                dy = dirA.y + dirB.y
-            } else if movesA {
-                dx = dirA.x; dy = dirA.y
-            } else if movesB {
-                dx = dirB.x; dy = dirB.y
-            } else {
-                return .leftRight
+            switch (handle.gripA, handle.gripB) {
+            // Corner — both axes move; sign each by its grip.
+            case (.lower, .lower): dx = -dirA.x; dy = -dirB.y
+            case (.upper, .lower): dx =  dirA.x; dy = -dirB.y
+            case (.lower, .upper): dx = -dirA.x; dy =  dirB.y
+            case (.upper, .upper): dx =  dirA.x; dy =  dirB.y
+            // Edge midpoint — only one axis moves; the other is dropped.
+            case (.lower, .fixed): dx = -dirA.x; dy = -dirA.y
+            case (.upper, .fixed): dx =  dirA.x; dy =  dirA.y
+            case (.fixed, .lower): dx = -dirB.x; dy = -dirB.y
+            case (.fixed, .upper): dx =  dirB.x; dy =  dirB.y
+            case (.fixed, .fixed): return .leftRight
             }
             return directionalResizeCursor(dx: dx, dy: dy)
         }

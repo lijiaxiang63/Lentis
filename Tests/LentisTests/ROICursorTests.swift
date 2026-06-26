@@ -75,34 +75,65 @@ final class ROICursorTests: XCTestCase {
     }
 
     func testCornerHandleCombinesBothAxes() {
-        // Corner moves both axes → sum direction.
+        // (.lower,.lower) corner: drag pulls toward the box's lower edges →
+        // both axes negated → (-dirA) + (-dirB). With dirA=+x, dirB=+y(down)
+        // that's (-10,-10) → same-sign → ↖↘ diagonal.
         let h = handle(.lower, .lower)
         let r = View.resizeCursor(for: h, dirA: CGPoint(x: 10, y: 0), dirB: CGPoint(x: 0, y: 10))
         XCTAssertEqual(r, .diagUpLeftDownRight)
     }
 
+    func testCornerGripsSignEachAxis() {
+        // The P3 fix: a corner's two BoxGrips sign the drag direction per axis,
+        // so the two diagonals of a box are distinguished (not all four corners
+        // collapsing to one diagonal). With dirA=+x (axis A→right) and
+        // dirB=+y (axis B→down):
+        //   (.lower,.lower) → (-x,-y) ↖   (.upper,.upper) → (+x,+y) ↘  [↖↘ pair]
+        //   (.lower,.upper) → (-x,+y) ↙   (.upper,.lower) → (+x,-y) ↗  [↗↙ pair]
+        let dirA = CGPoint(x: 10, y: 0)
+        let dirB = CGPoint(x: 0, y: 10)
+        XCTAssertEqual(View.resizeCursor(for: handle(.lower, .lower), dirA: dirA, dirB: dirB), .diagUpLeftDownRight)
+        XCTAssertEqual(View.resizeCursor(for: handle(.upper, .upper), dirA: dirA, dirB: dirB), .diagUpLeftDownRight)
+        XCTAssertEqual(View.resizeCursor(for: handle(.lower, .upper), dirA: dirA, dirB: dirB), .diagUpRightDownLeft)
+        XCTAssertEqual(View.resizeCursor(for: handle(.upper, .lower), dirA: dirA, dirB: dirB), .diagUpRightDownLeft)
+    }
+
     func testEdgeMidpointMovingAxisAUsesAxisADirection() {
-        // Edge midpoint: gripB is .fixed → only axis A moves.
+        // Edge midpoint: gripB is .fixed → only axis A moves; .lower negates it.
         let h = handle(.lower, .fixed)
         let r = View.resizeCursor(for: h, dirA: CGPoint(x: 10, y: 0), dirB: CGPoint(x: 0, y: 10))
         XCTAssertEqual(r, .leftRight)
     }
 
     func testEdgeMidpointMovingAxisBUsesAxisBDirection() {
+        // (.fixed,.upper): only axis B moves; .upper keeps +dirB = +y(down).
         let h = handle(.fixed, .upper)
         let r = View.resizeCursor(for: h, dirA: CGPoint(x: 10, y: 0), dirB: CGPoint(x: 0, y: 10))
         XCTAssertEqual(r, .upDown)
     }
 
+    func testEdgeMidpointLowerGripNegatesAxis() {
+        // (.fixed,.lower): only axis B moves; .lower negates +dirB → -y(up).
+        let h = handle(.fixed, .lower)
+        let r = View.resizeCursor(for: h, dirA: CGPoint(x: 10, y: 0), dirB: CGPoint(x: 0, y: 10))
+        // (-10) is degenerate-ish on x but |dy|=10 > 2.5·|dx|=0 → upDown.
+        XCTAssertEqual(r, .upDown)
+    }
+
     func testRotatedAxesStillClassifyByScreenDirection() {
-        // After a 90° panel rotation, in-plane axis A may map to vertical and
-        // axis B to horizontal-left. A corner handle must still pick the right
-        // DIAGONAL from the actual screen directions, not assume "A=horizontal".
-        // dirA=(0,10) [A now points down], dirB=(-10,0) [B now points left].
-        let h = handle(.upper, .upper)
-        let r = View.resizeCursor(for: h, dirA: CGPoint(x: 0, y: 10), dirB: CGPoint(x: -10, y: 0))
-        // sum = (-10, 10) → opposite sign → ↗↙ diagonal.
-        XCTAssertEqual(r, .diagUpRightDownLeft)
+        // The cursor must be classified from the ACTUAL screen directions of the
+        // in-plane axes, not hardcoded to "axis A = horizontal". Give both axes
+        // a diagonal screen direction (as a non-axis-aligned view would):
+        //   dirA = (+3, +1) [A points mostly right, slightly down]
+        //   dirB = (+1, +3) [B points mostly down, slightly right]
+        // A (.upper,.upper) corner keeps both → (+4,+4) same-sign → ↖↘.
+        // A (.upper,.lower) corner keeps A, negates B → (+3-1, +1-3) = (+2,-2)
+        //   opposite-sign → ↗↙. This is the two-diagonal distinction the P3
+        //   fix enables, derived purely from the screen directions.
+        let dirA = CGPoint(x: 3, y: 1)
+        let dirB = CGPoint(x: 1, y: 3)
+        XCTAssertEqual(View.resizeCursor(for: handle(.upper, .upper), dirA: dirA, dirB: dirB), .diagUpLeftDownRight)
+        XCTAssertEqual(View.resizeCursor(for: handle(.upper, .lower), dirA: dirA, dirB: dirB), .diagUpRightDownLeft)
     }
 
     func testFullyFixedHandleFallsBack() {
