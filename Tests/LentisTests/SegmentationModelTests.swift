@@ -589,4 +589,38 @@ final class SegmentationModelTests: XCTestCase {
         model.activateTool(.calcBrush)
         XCTAssertEqual(model.activeTool, .select, "an in-flight draft blocks the Brush")
     }
+
+    /// The Pan tool is greyed out on the 3D panel (where the default pointer
+    /// already rotates the camera — `rotatesVolumeOnPrimaryDrag`), and selectable
+    /// on MPR / when no panel is focused. This is the ONE gate the palette and
+    /// the `p` shortcut both consult, so they can't disagree.
+    func testCanActivateGatesPanOnVolume3DPanel() {
+        let model = ViewerModel()
+
+        // No panels → no active panel → Pan stays selectable (no inconsistent
+        // gap in the bare palette).
+        XCTAssertTrue(model.canActivate(.pan), "Pan selectable with no active panel")
+
+        // MPR active panel → Pan available.
+        let mpr = PanelState()
+        mpr.panelMode = .mprAxial
+        model.panels = [mpr]
+        model.activePanelID = mpr.id
+        XCTAssertTrue(model.canActivate(.pan), "Pan available on an MPR panel")
+
+        // 3D active panel → Pan greyed out (Select already rotates there).
+        mpr.panelMode = .volume3D
+        XCTAssertFalse(model.canActivate(.pan), "Pan greyed out on the 3D panel")
+
+        // And activateTool honors the gate (the `p` shortcut path).
+        model.activeTool = .select
+        model.activateTool(.pan)
+        XCTAssertEqual(model.activeTool, .select, "`p` is ignored on the 3D panel, matching the disabled palette button")
+
+        // Switch back to MPR → Pan selectable again, and `p` arms it.
+        mpr.panelMode = .mprCoronal
+        XCTAssertTrue(model.canActivate(.pan))
+        model.activateTool(.pan)
+        XCTAssertEqual(model.activeTool, .pan, "`p` arms Pan on an MPR panel")
+    }
 }

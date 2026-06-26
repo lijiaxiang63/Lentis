@@ -184,6 +184,54 @@ final class PanelStateTests: XCTestCase {
         XCTAssertGreaterThan(delta.pitch, 0)
     }
 
+    // MARK: - MPR Pan Interaction
+
+    /// The Pan tool derives motion from absolute locationInWindow deltas (not
+    /// NSEvent.deltaX/deltaY, which can be zero on coalesced/synthetic events).
+    /// `dx` follows the cursor (right = positive); `dy` mirrors the legacy
+    /// `-event.deltaY` → m42 mapping, so a cursor-down motion (window y
+    /// decreases, AppKit Y-up) yields a *positive* dy — exactly what the old
+    /// `-deltaY` produced for a downward drag (deltaY<0 → -deltaY>0).
+    func testPanDeltaRightwardIsPositiveDX() {
+        let d = PanelPanInteraction.panDelta(from: CGPoint(x: 10, y: 50), to: CGPoint(x: 70, y: 50))
+        XCTAssertEqual(d.dx, 60, accuracy: 0.0001)
+        XCTAssertEqual(d.dy, 0, accuracy: 0.0001)
+    }
+
+    func testPanDeltaDownwardYieldsPositiveDY() {
+        // Cursor moves down (window y 50→20, AppKit Y-up) → dy = -(20-50) = +30,
+        // matching legacy -deltaY for a downward drag.
+        let d = PanelPanInteraction.panDelta(from: CGPoint(x: 10, y: 50), to: CGPoint(x: 10, y: 20))
+        XCTAssertEqual(d.dx, 0, accuracy: 0.0001)
+        XCTAssertEqual(d.dy, 30, accuracy: 0.0001)
+        XCTAssertGreaterThan(d.dy, 0)
+    }
+
+    func testPanDeltaUpwardYieldsNegativeDY() {
+        // Cursor moves up (window y 20→50) → dy = -(50-20) = -30.
+        let d = PanelPanInteraction.panDelta(from: CGPoint(x: 10, y: 20), to: CGPoint(x: 10, y: 50))
+        XCTAssertEqual(d.dx, 0, accuracy: 0.0001)
+        XCTAssertEqual(d.dy, -30, accuracy: 0.0001)
+        XCTAssertLessThan(d.dy, 0)
+    }
+
+    func testPanDeltaIsZeroWhenCursorHeldStill() {
+        // A coalesced event reporting the same location must yield no motion —
+        // the regression this guard prevents (the old deltaX/deltaY=0 stall).
+        let p = CGPoint(x: 42, y: 17)
+        let d = PanelPanInteraction.panDelta(from: p, to: p)
+        XCTAssertEqual(d.dx, 0, accuracy: 0.0001)
+        XCTAssertEqual(d.dy, 0, accuracy: 0.0001)
+    }
+
+    func testPanDeltaIsEquatable() {
+        let a = PanelPanDelta(dx: 5, dy: -3)
+        let b = PanelPanDelta(dx: 5, dy: -3)
+        let c = PanelPanDelta(dx: 5, dy: 3)
+        XCTAssertEqual(a, b)
+        XCTAssertNotEqual(a, c)
+    }
+
     // MARK: - PanelState basics
 
     func testPanelStateInitialValues() {

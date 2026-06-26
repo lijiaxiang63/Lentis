@@ -833,8 +833,15 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 }
 
             case .pan:
-                // Just activate (handled above)
-                break
+                // Record the drag anchor. The Pan tool (and the Opt/Ctrl
+                // modifier pan) derives motion from absolute locationInWindow
+                // differences, not NSEvent.deltaX/deltaY (coalesced/synthetic
+                // events can report zero deltas — the same root cause as the
+                // 3D rotation "stuck then jump" bug). On the 3D panel, pan is
+                // gated off via canActivate, but if it's already active when
+                // the 3D panel is clicked this anchor also seeds the rotation
+                // drag (rotatesVolumeOnPrimaryDrag == true for .pan).
+                lastDragLocation = event.locationInWindow
 
             case .windowLevel:
                 lastDragLocation = event.locationInWindow
@@ -1154,15 +1161,23 @@ struct PanelInteractiveImageView: NSViewRepresentable {
         override func mouseDragged(with event: NSEvent) {
             guard let panel = panel, let model = model else { return }
 
-            // Modifier overrides: Option/Control + left-drag = pan
+            // Modifier overrides: Option/Control + left-drag = pan. Like the Pan
+            // tool, motion comes from absolute locationInWindow deltas (the
+            // mouseDown handler seeded lastDragLocation), not the unreliable
+            // NSEvent.deltaX/deltaY — coalesced/synthetic events can report
+            // zero deltas even when the cursor moved (the 3D rotation bug's
+            // root cause). The sign convention is preserved via PanelPanDelta.
             let mods = event.modifierFlags.intersection([.option, .control])
             if !mods.isEmpty {
                 guard let layer = imageView.layer else { return }
-                let dx = event.deltaX
-                let dy = -event.deltaY
-                layer.transform.m41 += CGFloat(dx)
-                layer.transform.m42 += CGFloat(dy)
-                saveState()
+                let current = event.locationInWindow
+                if let previous = lastDragLocation {
+                    let d = PanelPanInteraction.panDelta(from: previous, to: current)
+                    layer.transform.m41 += d.dx
+                    layer.transform.m42 += d.dy
+                    saveState()
+                }
+                lastDragLocation = current
                 return
             }
 
@@ -1197,13 +1212,21 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 }
 
             case .pan:
-                // Left-click drag = pan
+                // Left-click drag = pan (MPR; the 3D panel routes .pan through
+                // the rotation branch above via rotatesVolumeOnPrimaryDrag).
+                // Absolute-coordinate delta — NSEvent.deltaX/deltaY are
+                // unreliable on coalesced/synthetic drag events, so the Pan
+                // tool was effectively dead on trackpads until this matched
+                // the 3D rotation fix's absolute-coordinate approach.
                 guard let layer = imageView.layer else { return }
-                let dx = event.deltaX
-                let dy = -event.deltaY
-                layer.transform.m41 += CGFloat(dx)
-                layer.transform.m42 += CGFloat(dy)
-                saveState()
+                let current = event.locationInWindow
+                if let previous = lastDragLocation {
+                    let d = PanelPanInteraction.panDelta(from: previous, to: current)
+                    layer.transform.m41 += d.dx
+                    layer.transform.m42 += d.dy
+                    saveState()
+                }
+                lastDragLocation = current
 
             case .windowLevel:
                 // W/L adjustment (same as right-drag)
@@ -1293,8 +1316,11 @@ struct PanelInteractiveImageView: NSViewRepresentable {
             case .pan:
                 if panel.panelMode == .volume3D {
                     flushPendingVolumeRotationIfNeeded(force: true)
-                    lastDragLocation = nil
                 }
+                // Clear the drag anchor on both MPR and 3D (the MPR pan path
+                // uses lastDragLocation too now, so leaving it set would let a
+                // later non-pan drag jump from the stale anchor).
+                lastDragLocation = nil
 
             case .roiWL:
                 if let rect = panel.roiRect, rect.width > 1 && rect.height > 1 {

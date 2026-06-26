@@ -73,6 +73,13 @@ extension ViewerModel {
         switch tool {
         case .roiBox:    return segmentationVolume != nil
         case .calcBrush: return hasSegmentation && draftRegion == nil
+        // The Pan tool is meaningless on the 3D panel — there the default
+        // pointer (Select) already rotates the camera
+        // (rotatesVolumeOnPrimaryDrag), so Pan would only duplicate it under
+        // a misleading "move" name. Grey it out on 3D so the palette can't
+        // offer a no-op. With no active panel (nothing loaded) Pan stays
+        // selectable so the bare palette doesn't show an inconsistent gap.
+        case .pan:       return activePanel?.panelMode != .volume3D
         default:         return true
         }
     }

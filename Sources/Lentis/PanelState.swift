@@ -166,7 +166,7 @@ enum ActiveTool: String, CaseIterable, Identifiable {
     var description: String {
         switch self {
         case .select:      return "Click to activate a panel or set the crosshair; drag on the 3D view to rotate it"
-        case .pan:         return "Click and drag to pan the image"
+        case .pan:         return "Click and drag to pan the image (unavailable on the 3D panel, where the default pointer rotates)"
         case .windowLevel: return "Drag to adjust brightness (level) and contrast (window)"
         case .zoom:        return "Drag up/down to zoom in/out"
         case .roiWL:       return "Draw a rectangle to auto-set window/level from that region"
@@ -213,6 +213,31 @@ enum VolumeRotationInteraction {
             yaw: Double(previous.x - current.x) * yawDegreesPerPoint,
             pitch: Double(previous.y - current.y) * pitchDegreesPerPoint
         )
+    }
+}
+
+// MARK: - MPR Pan Interaction
+
+/// Per-event pan delta for the Pan tool / Opt-Ctrl modifier pan. Like the 3D
+/// rotation fix, motion is derived from two consecutive absolute
+/// `locationInWindow` points rather than `NSEvent.deltaX/deltaY`, because
+/// coalesced and synthetic macOS drag events can report zero deltas even when
+/// the cursor moved — the same root cause that made the old 3D rotation
+/// "stuck then jump" before commit `fbe5b1d`'s absolute-coordinate fix. The
+/// sign convention mirrors the legacy `event.deltaX` / `-event.deltaY` mapping
+/// exactly, so the image tracks the cursor the same way it always did on the
+/// events where `deltaX/deltaY` were reliable.
+struct PanelPanDelta: Equatable {
+    let dx: CGFloat
+    let dy: CGFloat
+}
+
+enum PanelPanInteraction {
+    /// Per-event pan delta from two consecutive `locationInWindow` points.
+    /// `dy` is negated to match the legacy `-event.deltaY` → `m42` mapping
+    /// (AppKit window coords are Y-up; this keeps cursor-up = image-up).
+    static func panDelta(from previous: CGPoint, to current: CGPoint) -> PanelPanDelta {
+        PanelPanDelta(dx: current.x - previous.x, dy: -(current.y - previous.y))
     }
 }
 
