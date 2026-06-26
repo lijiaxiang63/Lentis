@@ -114,6 +114,10 @@ jobs:
           # no-ops (no appcast) so releases still publish the DMG; set the
           # secret to enable in-app auto-update. See scripts/sparkle_tools.swift.
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          # Public key (base64) — must match the private key AND be the same
+          # value the build step baked into Info.plist as SUPublicEDKey. Sourced
+          # from the repo variable so a mismatch is impossible by construction.
+          LENTIS_SPARKLE_PUBLIC_KEY: ${{ vars.LENTIS_SPARKLE_PUBLIC_KEY }}
           VERSION: ${{ steps.version.outputs.version }}
           MARKETING: ${{ steps.version.outputs.marketing }}
           BUILD: ${{ github.run_number }}
@@ -122,6 +126,17 @@ jobs:
           if [[ -z "${SPARKLE_PRIVATE_KEY}" ]]; then
             echo "SPARKLE_PRIVATE_KEY not set — skipping appcast (set the repo secret to enable auto-update)."
             exit 0
+          fi
+          # Hard gate: a signed appcast is only useful if the app it ships with
+          # embeds the matching public key (SUPublicEDKey, baked in by the build
+          # step from LENTIS_SPARKLE_PUBLIC_KEY). If the public var is missing or
+          # empty, the DMG's app can't verify EdDSA-signed updates — so refuse to
+          # publish an appcast rather than strand that release's installs. Set
+          # the LENTIS_SPARKLE_PUBLIC_KEY repo variable (it must be the public
+          # half of the SPARKLE_PRIVATE_KEY secret) to enable auto-update.
+          if [[ -z "${LENTIS_SPARKLE_PUBLIC_KEY}" ]]; then
+            echo "::error::SPARKLE_PRIVATE_KEY is set but LENTIS_SPARKLE_PUBLIC_KEY is missing/empty. The built app has no SUPublicEDKey, so a signed appcast would strand installs (they couldn't verify future updates). Add the matching public key as a repo variable, or remove the private key to publish a DMG-only release."
+            exit 1
           fi
           # Ed25519 signature over the DMG bytes (interoperable with Sparkle's
           # libsodium verification). Apple CryptoKit, no external deps.

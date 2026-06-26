@@ -53,6 +53,10 @@ swift scripts/sparkle_tools.swift generate
 # Local release builds can also set LENTIS_SPARKLE_PUBLIC_KEY=<pub> env before
 # ./scripts/package_app.sh. Releases then sign the DMG + emit appcast.xml
 # (hosted as a Release asset; SUFeedURL = releases/latest/download/appcast.xml).
+# NOTE: the Release workflow hard-gates the appcast on BOTH keys being set —
+# a signed appcast is only published when the matching public key is also
+# baked into the app's Info.plist (otherwise installs can't verify updates,
+# so a private-key-only config is a hard CI error, not a silent mis-release).
 ```
 
 - **Perf probe:** `--benchmark` writes `~/Desktop/lentis_benchmark.csv` (and `[BENCH]` to stderr).
