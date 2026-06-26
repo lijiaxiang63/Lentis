@@ -133,37 +133,68 @@ struct LayerInspectorView: View {
 
     private var layersPane: some View {
         VStack(alignment: .leading, spacing: 0) {
-            InspectorSectionHeader(
-                title: "Layers",
-                // The list is stored top-first and composited last, so the top
-                // row is what you see in front. Spell that out instead of the
-                // terse "Top renders last".
-                trailing: store.layers.count > 1 ? "Top draws on top" : nil
-            )
+            // Header with an inline Add button so a layer can be added right
+            // here once one already exists (the toolbar +/- are easy to miss —
+            // the empty state itself notes that). The "Top draws on top" hint
+            // is kept as a muted trailing caption.
+            HStack(alignment: .firstTextBaseline) {
+                Text("Layers")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                if store.layers.count > 1 {
+                    Text("Top draws on top")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 8)
+                Button(action: model.openLayerFiles) {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderless)
+                .disabled(model.niftiDataset == nil || model.isImportingLayers)
+                .help("Add Mask or Atlas Layer")
+                .accessibilityLabel("Add layer")
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
             layerList
         }
     }
 
     /// Shown in place of the list+details split when there are no layers yet.
-    /// Carries the only inline "Add Layer…" affordance (the toolbar +/- are easy
-    /// to miss), and falls back to a hint to open a base image first.
+    /// Hand-built to match the Segment tab's empty state (a bare
+    /// `ContentUnavailableView` renders flush-left and clashes with the
+    /// inspector column) — a centered glyph + title + caption, with an inline
+    /// Add action when a base image is open (the toolbar +/- are easy to miss,
+    /// and drag-drop is the other entry point).
     private var emptyLayersState: some View {
-        ContentUnavailableView {
-            Label("No Layers", systemImage: "square.3.layers.3d")
-        } description: {
-            Text(model.niftiDataset == nil
-                 ? "Open a base NIfTI image first, then add a mask or atlas overlay."
-                 : "Add or drop a 3D mask or atlas NIfTI to overlay it on the image.")
-        } actions: {
+        VStack(spacing: Spacing.m) {
+            Image(systemName: "square.3.layers.3d")
+                .font(.system(size: 38, weight: .light))
+                .foregroundStyle(.tertiary)
+            VStack(spacing: Spacing.xs) {
+                Text("No Layers")
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                Text(model.niftiDataset == nil
+                     ? "Open a base NIfTI image, then add a mask or atlas overlay."
+                     : "Add or drop a 3D mask or atlas NIfTI to overlay it on the image.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if model.niftiDataset != nil {
                 Button(action: model.openLayerFiles) {
                     Label("Add Layer…", systemImage: "plus")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.glassProminent)
                 .disabled(model.isImportingLayers)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .padding(Spacing.xl)
     }
 
     private var layerList: some View {
@@ -269,6 +300,9 @@ struct InspectorSection<Content: View>: View {
 private struct LayerRow: View {
     @ObservedObject var store: LayerStore
     @ObservedObject var layer: OverlayLayer
+    @Environment(\.undoManager) private var undoManager
+
+    private var isSelected: Bool { store.selectedLayerID == layer.id }
 
     private var subtitle: String {
         let count = layer.volume.labelCounts.values.reduce(0, +)
@@ -311,6 +345,30 @@ private struct LayerRow: View {
         }
         .contentShape(Rectangle())
         .opacity(layer.isVisible ? 1 : 0.62)
+        // Selection highlight — with .scrollContentBackground(.hidden) the List's
+        // default selection tint is invisible, so mirror the Segment tab's
+        // RegionRow: an accent fill + ring on the selected row.
+        .background {
+            RoundedRectangle(cornerRadius: Radius.chip)
+                .fill(isSelected ? Color.lentisAccent.opacity(0.18) : .clear)
+                .overlay {
+                    RoundedRectangle(cornerRadius: Radius.chip)
+                        .strokeBorder(Color.lentisAccent.opacity(isSelected ? 0.55 : 0), lineWidth: 1)
+                }
+        }
+        // Right-click Remove Layer (mirrors the Segment tab's RegionRow context
+        // menu). Registers undo so an accidental delete is recoverable, matching
+        // the toolbar − button's removeSelectedLayer path.
+        .contextMenu {
+            Button("Remove Layer", role: .destructive) {
+                if let removed = store.remove(id: layer.id) {
+                    undoManager?.registerUndo(withTarget: store) { target in
+                        target.restore(removed.layer, at: removed.index)
+                    }
+                    undoManager?.setActionName("Remove Layer")
+                }
+            }
+        }
     }
 }
 
