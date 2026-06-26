@@ -143,6 +143,25 @@ enum ActiveTool: String, CaseIterable, Identifiable {
         }
     }
 
+    /// One-line functional description of what the tool does, surfaced on hover
+    /// via the tool palette's `.help`. Condensed from HelpView's longer wording
+    /// and kept accurate for the current MPR/crosshair/segmentation behavior.
+    var description: String {
+        switch self {
+        case .select:      return "Click to activate a panel or set the crosshair; drag on the 3D view to rotate it"
+        case .pan:         return "Click and drag to pan the image"
+        case .windowLevel: return "Drag to adjust brightness (level) and contrast (window)"
+        case .zoom:        return "Drag up/down to zoom in/out"
+        case .roiWL:       return "Draw a rectangle to auto-set window/level from that region"
+        case .roiStats:    return "Draw a rectangle to see mean, min, max, std dev of pixel values"
+        case .ruler:       return "Click two points to measure distance in mm"
+        case .angle:       return "Click three points (vertex, arm1, arm2) to measure an angle"
+        case .eraser:      return "Click an annotation to delete it"
+        case .roiBox:      return "Draw a 3D box around a calcification to segment it; drag handles to resize"
+        case .calcBrush:   return "Paint/erase voxels of the selected calcification region"
+        }
+    }
+
     /// On the 3D panel, both the default pointer and hand tool should directly
     /// manipulate the camera. Window/level and annotation tools keep their own
     /// existing drag behavior.

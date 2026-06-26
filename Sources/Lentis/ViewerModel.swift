@@ -786,16 +786,34 @@ class ViewerModel: ObservableObject {
         navigatePanelToSlice(panel, index: toFirst ? 0 : total - 1)
     }
 
-    /// Reset view: zoom/pan to default and auto W/L
+    /// Reset view: restore ALL spatial transforms (zoom, pan, 90° rotation,
+    /// horizontal/vertical flip, invert) to their defaults in one shot. Window/
+    /// Level is deliberately preserved — use `A` / the Auto button for an
+    /// auto window. For the 3D panel, the camera (yaw/pitch/opacity) is reset
+    /// via `resetVolumeCamera` IN ADDITION to zoom/pan — the 3D image layer
+    /// shares the same `restoreState()` transform as MPR, so Option/Control-drag
+    /// pan and scroll/drag zoom still move `panel.scale`/`panel.translation` on
+    /// a 3D panel, and those must be cleared too (not just the camera).
+    ///
+    /// Wired to the R key, the View menu's "Reset View" item, and the one-shot
+    /// button at the bottom of the left tool palette. `F` (Fit to Window) is a
+    /// lighter variant that resets only zoom/pan.
     func resetViewForPanel(_ panel: PanelState?) {
         guard let panel = panel else { return }
+        // Zoom/pan apply to every panel (the image layer's `restoreState` uses
+        // `panel.scale`/`panel.translation` for MPR and 3D alike; the scroll/drag
+        // zoom + Option/Control-drag pan handlers are not 3D-guarded).
         panel.scale = 1.0
         panel.translation = .zero
         if panel.panelMode == .volume3D {
+            // 3D has no rotation/flip/invert; reset the camera + density instead.
             resetVolumeCamera(panel)
-        } else {
-            autoWindowLevelForPanel(panel)
+            return
         }
+        panel.rotationSteps = 0
+        panel.isFlippedH = false
+        panel.isFlippedV = false
+        panel.isInverted = false
     }
 
     /// Fit image to window (reset zoom/pan only, keep W/L)

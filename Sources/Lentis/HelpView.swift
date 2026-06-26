@@ -113,7 +113,7 @@ struct HelpView: View {
                     helpSection("Display Transforms") {
                         VStack(alignment: .leading, spacing: 6) {
                             shortcutRow("F", "Fit image to window")
-                            shortcutRow("R", "Reset view (zoom, pan, and auto W/L)")
+                            shortcutRow("R", "Reset view — zoom, pan, rotation, flips, invert (keeps Window/Level)")
                             shortcutRow("] or .", "Rotate clockwise 90\u{00B0}")
                             shortcutRow("[ or ,", "Rotate counter-clockwise 90\u{00B0}")
                             shortcutRow("H", "Flip horizontal")
