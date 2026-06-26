@@ -24,11 +24,11 @@ Status legend: ☐ todo · ◐ in progress · ☑ done · ⤬ deferred (with rea
 
 ## Phase B — Layers tab (`LayerInspectorView.swift`)
 
-- ☐ **B1 — Inline "Add Layer…" action in the empty state.** The +/- live in the window
+- ☑ **B1 — Inline "Add Layer…" action in the empty state.** The +/- live in the window
   toolbar (far from the list); the empty state says "add or drop here" with no button in the pane.
-- ☐ **B2 — Single empty state.** Today both the list overlay AND the details pane show an
+- ☑ **B2 — Single empty state.** Today both the list overlay AND the details pane show an
   empty state (same icon) when there are no layers — collapse to one.
-- ☐ **B4 — Clarify z-order hint** ("Top renders last" → plainer wording).
+- ☑ **B4 — Clarify z-order hint** ("Top renders last" → plainer wording).
 - ⤬ **B3 — Tighten the sparse Mask detail pane.** Low value; documented, not done.
 
 ## Phase C — Segment tab (`SegmentInspectorView.swift`)
@@ -63,3 +63,12 @@ Status legend: ☐ todo · ◐ in progress · ☑ done · ⤬ deferred (with rea
   Brush needs a committed segmentation + no live draft (parity with the K key / Segment tab).
 - `PanelStateTests.swift`: +2 tests (group partitions all 11 tools exactly once; spot assignments).
 - Build clean; `PanelStateTests` 29/29 green.
+- Commit `50adb55`.
+
+### Phase B — Layers tab (done)
+- `LayerInspectorView.swift`: the `.layers` tab now shows a single `emptyLayersState`
+  (`ContentUnavailableView` with an inline **Add Layer…** `borderedProminent` action, gated on a
+  loaded base image) when there are no layers, and only builds the list+details `VSplitView` once
+  at least one layer exists — removing the old double placeholder (list overlay + details pane).
+  Dropped the now-dead `layerList` empty overlay. z-order hint "Top renders last" → "Top draws on top".
+- Pure view restructure (no logic) — no new tests. Build clean.

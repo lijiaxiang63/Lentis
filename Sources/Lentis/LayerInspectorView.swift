@@ -33,11 +33,20 @@ struct LayerInspectorView: View {
 
             switch model.inspectorTab {
             case .layers:
-                VSplitView {
-                    layersPane
-                        .frame(minHeight: 140, idealHeight: 230)
-                    detailsPane
-                        .frame(minHeight: 240)
+                // No layers → one combined empty state with an inline Add action
+                // (the +/- live in the window toolbar, far from this pane). Only
+                // split into the list+details panes once there is something to
+                // show, so the empty list and empty details no longer both render
+                // a "No Layers" placeholder at once.
+                if store.layers.isEmpty {
+                    emptyLayersState
+                } else {
+                    VSplitView {
+                        layersPane
+                            .frame(minHeight: 140, idealHeight: 230)
+                        detailsPane
+                            .frame(minHeight: 240)
+                    }
                 }
             case .segment:
                 SegmentInspectorView(model: model)
@@ -126,13 +135,40 @@ struct LayerInspectorView: View {
         VStack(alignment: .leading, spacing: 0) {
             InspectorSectionHeader(
                 title: "Layers",
-                trailing: store.layers.count > 1 ? "Top renders last" : nil
+                // The list is stored top-first and composited last, so the top
+                // row is what you see in front. Spell that out instead of the
+                // terse "Top renders last".
+                trailing: store.layers.count > 1 ? "Top draws on top" : nil
             )
             layerList
         }
     }
 
+    /// Shown in place of the list+details split when there are no layers yet.
+    /// Carries the only inline "Add Layer…" affordance (the toolbar +/- are easy
+    /// to miss), and falls back to a hint to open a base image first.
+    private var emptyLayersState: some View {
+        ContentUnavailableView {
+            Label("No Layers", systemImage: "square.3.layers.3d")
+        } description: {
+            Text(model.niftiDataset == nil
+                 ? "Open a base NIfTI image first, then add a mask or atlas overlay."
+                 : "Add or drop a 3D mask or atlas NIfTI to overlay it on the image.")
+        } actions: {
+            if model.niftiDataset != nil {
+                Button(action: model.openLayerFiles) {
+                    Label("Add Layer…", systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.isImportingLayers)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var layerList: some View {
+        // Only rendered when there is at least one layer (the empty state is
+        // handled at the tab level), so no empty-overlay placeholder is needed.
         List(selection: Binding(
             get: { store.selectedLayerID },
             set: { store.selectedLayerID = $0 }
@@ -145,17 +181,6 @@ struct LayerInspectorView: View {
         }
         .listStyle(.inset)
         .scrollContentBackground(.hidden)
-        .overlay {
-            if store.layers.isEmpty {
-                ContentUnavailableView {
-                    Label("No Layers", systemImage: "square.3.layers.3d")
-                } description: {
-                    Text(model.niftiDataset == nil
-                         ? "Open a base NIfTI image first."
-                         : "Add or drop a 3D mask or atlas NIfTI here.")
-                }
-            }
-        }
     }
 
     // MARK: - Selected-layer details (bottom pane)
