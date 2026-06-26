@@ -91,6 +91,17 @@
       Lentis is MIT-licensed research/visualization software and is not a medical device. It retains attribution to the original <a href="https://github.com/jnheo-md/open-dicom-viewer" style="color: var(--accent);">OpenDicomViewer</a> project.
     </footer>
   </main>
+  <script>
+    // Auto-update the download button version from the latest GitHub release.
+    (function () {
+      const verEl = document.querySelector('a.button .ver');
+      if (!verEl) return;
+      fetch('https://api.github.com/repos/lijiaxiang63/Lentis/releases/latest')
+        .then(r => r.ok ? r.json() : Promise.reject())
+        .then(d => { if (d.tag_name) verEl.textContent = d.tag_name; })
+        .catch(() => {});
+    })();
+  </script>
 </body>
 </html>
 
