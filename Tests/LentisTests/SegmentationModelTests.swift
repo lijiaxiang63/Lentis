@@ -866,4 +866,81 @@ final class SegmentationModelTests: XCTestCase {
         XCTAssertEqual(count(mask, label: label), afterStroke1,
                        "undo of stroke 2 (the latest) correctly reverts it")
     }
+
+    /// A brush undo must NOT restore an orphaned label. When the brush paints
+    /// the active region over voxels that belonged to a DIFFERENT region, the
+    /// backup records that other region's label. If that other region is later
+    /// deleted, restoring its label would orphan it (no `calcRegions` entry owns
+    /// it; `recomputeRegionVoxelCounts` won't count it, but it still exports in
+    /// atlas mode). The undo remaps any nonzero pre-stroke label whose owner no
+    /// longer exists to 0 (background). [Codex P2]
+    func testBrushUndoRemapsOrphanedPreStrokeLabelToBackground() {
+        // Two separate calc blobs so both regions have voxels; blob2 is far
+        // enough that the brush at blob2 paints A over B's voxels.
+        let vol = makeCTVolume(40, 40, 40) { x, y, z in
+            if inCube(x, y, z, 8..<12) { return 400 }
+            if inCube(x, y, z, 28..<32) { return 400 }
+            return nil
+        }
+        let model = ViewerModel()
+        let idx = model.registerStandaloneVolume(vol, cacheKey: "seg2", description: "seg2")
+        model.niftiSeriesIndex = idx
+
+        // Region A around blob1 (8..<12).
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 6..<14, yRange: 6..<14, zRange: 6..<14))
+        let idA = model.draftRegion!.id
+        let labelA = model.draftRegion!.label
+        model.commitActiveRegion()
+
+        // Region B around blob2 (28..<32).
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 26..<34, yRange: 26..<34, zRange: 26..<34))
+        let idB = model.draftRegion!.id
+        let labelB = model.draftRegion!.label
+        model.commitActiveRegion()
+
+        guard let mask = vol.labelMask else { return XCTFail("no mask after commits") }
+
+        XCTAssertNotEqual(labelA, labelB, "regions have distinct labels")
+        XCTAssertGreaterThan(count(mask, label: labelA), 0, "A has voxels")
+        XCTAssertGreaterThan(count(mask, label: labelB), 0, "B has voxels")
+
+        // Select A as the active region for the brush.
+        model.selectRegion(idA)
+        XCTAssertEqual(model.activeRegionID, idA)
+
+        // Paint A at (29,29,29) — inside blob2, currently B's label. radius 0
+        // = just the center voxel, so the test is precise about what changed.
+        let voxel = (29, 29, 29)
+        XCTAssertEqual(mask.labelAt(x: voxel.0, y: voxel.1, z: voxel.2), labelB,
+                       "voxel is B's before the stroke")
+        let undo = UndoManager()
+        model.calcBrushErase = false
+        model.beginBrushStroke()
+        model.paintBrush(atVoxel: voxel, radius: 0, erase: false)
+        model.endBrushStroke(undoManager: undo)
+        XCTAssertEqual(mask.labelAt(x: voxel.0, y: voxel.1, z: voxel.2), labelA,
+                       "paint changed the voxel to A's label")
+
+        // Delete region B. Its voxels (label B) are zeroed; the painted voxel
+        // is now labelA, so deleteRegion doesn't touch it.
+        model.deleteRegion(idB)
+        XCTAssertFalse(model.calcRegions.contains { $0.id == idB })
+        XCTAssertFalse(model.calcRegions.contains { $0.label == labelB })
+        XCTAssertEqual(mask.labelAt(x: voxel.0, y: voxel.1, z: voxel.2), labelA,
+                       "painted voxel still A after B deleted")
+
+        // Undo the brush stroke. The pre-stroke label was labelB, but B is gone.
+        // Without the fix: restores labelB → orphaned voxel (exports in atlas,
+        // invisible in the UI). With the fix: remaps to 0 (background).
+        undo.undo()
+        XCTAssertEqual(mask.labelAt(x: voxel.0, y: voxel.1, z: voxel.2), 0,
+                       "undo restored to background, not B's orphaned label")
+        XCTAssertEqual(count(mask, label: labelB), 0,
+                       "no orphaned label-B voxels remain after undo")
+        // A is untouched by the undo (the painted voxel reverted to background,
+        // not to A's label — B was the pre-stroke owner, and it's gone).
+        XCTAssertGreaterThan(count(mask, label: labelA), 0, "A still has its voxels")
+    }
 }

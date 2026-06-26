@@ -546,8 +546,15 @@ extension ViewerModel {
     ///    A later edit to that voxel (another stroke, a re-edit/commit, an
     ///    overlapping region's paint) leaves a different label and is preserved
     ///    — the older undo can't clobber newer work on the same voxel.
+    /// 4. orphaned-pre-stroke-label remap — a voxel'\''s PRE-stroke label may
+    ///    have belonged to a DIFFERENT region that was later deleted (the brush
+    ///    can paint the active region over another region'\''s voxels). Restoring
+    ///    that nonzero label would orphan it (no calcRegions entry owns it,
+    ///    recomputeRegionVoxelCounts won'\''t count it, but it still exports in
+    ///    atlas mode). Map any nonzero oldLabel whose region no longer exists
+    ///    to 0 (background) at restore time.
     /// `UndoManager` has no per-action invalidation, so the closure
-    /// self-invalidates (wholesale via 1+2, per-voxel via 3).
+    /// self-invalidates (wholesale via 1+2, per-voxel via 3, remap via 4).
     func endBrushStroke(undoManager: UndoManager?) {
         guard brushStrokeInProgress else { return }
         brushStrokeInProgress = false
@@ -573,6 +580,10 @@ extension ViewerModel {
             guard let id = regionID,
                   target.calcRegions.contains(where: { $0.id == id }),
                   let mask = target.baseLabelMask else { return }
+            // (4) Labels currently owned by a committed region. A nonzero
+            // pre-stroke label whose owner was deleted is remapped to 0 so the
+            // undo can'\''t orphan it.
+            let ownedLabels = Set(target.calcRegions.map { $0.label })
             var restored = 0
             for (key, oldLabel) in backup {
                 guard key.x >= 0, key.x < mask.width,
@@ -584,7 +595,12 @@ extension ViewerModel {
                 // left a different label and must NOT be clobbered by the
                 // older undo.
                 guard mask.labelAt(x: key.x, y: key.y, z: key.z) == postStroke[key] else { continue }
-                mask.setLabel(oldLabel, x: key.x, y: key.y, z: key.z)
+                // (4) Remap an orphaned pre-stroke label to background. The
+                // brush can paint the active region over another region'\''s
+                // voxels; if that other region was later deleted, restoring its
+                // label would leave an invisible orphan that still exports.
+                let restoreLabel = (oldLabel != 0 && !ownedLabels.contains(oldLabel)) ? 0 : oldLabel
+                mask.setLabel(restoreLabel, x: key.x, y: key.y, z: key.z)
                 restored += 1
             }
             guard restored > 0 else { return }   // nothing was safe to restore
