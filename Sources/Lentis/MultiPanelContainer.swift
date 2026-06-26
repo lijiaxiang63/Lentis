@@ -699,12 +699,13 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 return
             }
 
-            // Tool changed (or first push). If a handle cursor is on top,
-            // pop it first so the stack returns to the pre-handle depth before
-            // we swap the tool cursor.
+            // Tool changed (or first push). If a handle cursor is on top, pop
+            // it; the stack is then empty (pushHandleCursor swapped away the
+            // tool cursor), so fall to the `.none` branch to push the new tool
+            // cursor. This keeps the stack at most one layer deep.
             if cursorStackState == .handle {
                 NSCursor.pop()
-                cursorStackState = .tool
+                cursorStackState = .none
             }
             if cursorStackState == .none {
                 desiredCursor.push()
@@ -719,12 +720,20 @@ struct PanelInteractiveImageView: NSViewRepresentable {
         /// Push (or swap in) a resize-handle cursor over the tool cursor. Idempotent
         /// for the same handle cursor; called from mouseMoved while hovering a
         /// draft-box handle in the .roiBox tool.
+        ///
+        /// Invariant: the NSCursor stack is at most ONE layer deep (`.none`=0,
+        /// `.tool`/`.handle`=1). Going `.tool`→`.handle` SWAPS (pop the tool
+        /// cursor, push the handle cursor), never stacks — so the single pop in
+        /// `mouseExited` / `clearHandleCursor` / the `.select` path always fully
+        /// clears the custom cursor and can never leave a stuck tool cursor
+        /// with a desynced `.none` state.
         private func pushHandleCursor(_ cursor: NSCursor) {
             switch cursorStackState {
             case .none:
                 cursor.push()
                 cursorStackState = .handle
             case .tool:
+                NSCursor.pop()
                 cursor.push()
                 cursorStackState = .handle
             case .handle:
@@ -736,10 +745,12 @@ struct PanelInteractiveImageView: NSViewRepresentable {
         /// Pop the handle cursor (if active) and restore the active-tool cursor.
         /// Called when the cursor leaves all handles, and on mouseUp/mouseDown
         /// away from a handle, so the resize hint never outstays its welcome.
+        /// After the pop the stack is empty (the tool cursor was swapped away
+        /// by pushHandleCursor), so set `.none` and let updateROICursor re-push.
         private func clearHandleCursor() {
             guard cursorStackState == .handle else { return }
             NSCursor.pop()
-            cursorStackState = .tool
+            cursorStackState = .none
             updateROICursor()
         }
 
