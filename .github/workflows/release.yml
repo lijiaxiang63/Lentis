@@ -138,6 +138,15 @@ jobs:
             echo "::error::SPARKLE_PRIVATE_KEY is set but LENTIS_SPARKLE_PUBLIC_KEY is missing/empty. The built app has no SUPublicEDKey, so a signed appcast would strand installs (they couldn't verify future updates). Add the matching public key as a repo variable, or remove the private key to publish a DMG-only release."
             exit 1
           fi
+          # Key-pair integrity check: derive the public key from the private key
+          # and compare to the repo variable. Catches a copy/paste from the wrong
+          # keypair (or a typo) — both keys present but mismatched would still
+          # strand installs on a release that can't verify future updates.
+          DERIVED_PUB="$(SPARKLE_PRIVATE_KEY="${SPARKLE_PRIVATE_KEY}" swift scripts/sparkle_tools.swift public-key)"
+          if [[ "${DERIVED_PUB}" != "${LENTIS_SPARKLE_PUBLIC_KEY}" ]]; then
+            echo "::error::LENTIS_SPARKLE_PUBLIC_KEY does not match the public key derived from SPARKLE_PRIVATE_KEY. Expected (derived): ${DERIVED_PUB}, repo variable: ${LENTIS_SPARKLE_PUBLIC_KEY}. Re-run 'swift scripts/sparkle_tools.swift generate' and set BOTH the public repo variable and the private secret from the SAME keypair."
+            exit 1
+          fi
           # Ed25519 signature over the DMG bytes (interoperable with Sparkle's
           # libsodium verification). Apple CryptoKit, no external deps.
           SIG="$(SPARKLE_PRIVATE_KEY="${SPARKLE_PRIVATE_KEY}" swift scripts/sparkle_tools.swift sign "${DMG}")"

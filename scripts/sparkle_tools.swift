@@ -16,13 +16,20 @@
 //        sparkle:edSignature value for the appcast enclosure). Used by the
 //        Release workflow.
 //
+//   SPARKLE_PRIVATE_KEY=<base64> swift scripts/sparkle_tools.swift public-key
+//     -> prints the base64 PUBLIC key derived from the private key. The Release
+//        workflow uses this to verify LENTIS_SPARKLE_PUBLIC_KEY matches the
+//        private key before publishing an appcast (catches a copy/paste from the
+//        wrong keypair, which would strand installs on a release that can't
+//        verify future updates).
+//
 // Licensed under the MIT License. See LICENSE for details.
 
 import CryptoKit
 import Foundation
 
 enum Mode: String {
-    case generate, sign
+    case generate, sign, publicKey = "public-key"
 }
 
 func b64(_ data: Data) -> String { data.base64EncodedString() }
@@ -54,9 +61,20 @@ func runSign(path: String) throws {
     print(b64(sig))
 }
 
+func runPublicKey() throws {
+    let env = ProcessInfo.processInfo.environment
+    guard let seedB64 = env["SPARKLE_PRIVATE_KEY"], !seedB64.isEmpty,
+          let seed = Data(base64Encoded: seedB64) else {
+        FileHandle.standardError.write("error: SPARKLE_PRIVATE_KEY env (base64 32-byte seed) is required\n".data(using: .utf8)!)
+        exit(64)
+    }
+    let key = try Curve25519.Signing.PrivateKey(rawRepresentation: seed)
+    print(b64(key.publicKey.rawRepresentation))
+}
+
 let argv = CommandLine.arguments
 guard argv.count >= 2, let mode = Mode(rawValue: argv[1]) else {
-    FileHandle.standardError.write("usage: sparkle_tools.swift [generate|sign <file>]\n".data(using: .utf8)!)
+    FileHandle.standardError.write("usage: sparkle_tools.swift [generate|sign <file>|public-key]\n".data(using: .utf8)!)
     exit(64)
 }
 switch mode {
@@ -68,4 +86,6 @@ case .sign:
         exit(64)
     }
     try runSign(path: argv[2])
+case .publicKey:
+    try runPublicKey()
 }
