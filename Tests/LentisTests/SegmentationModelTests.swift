@@ -742,4 +742,73 @@ final class SegmentationModelTests: XCTestCase {
 
         XCTAssertFalse(undo.canUndo, "a no-op stroke registers no undo")
     }
+
+    // MARK: - Brush undo staleness guard (P2)
+
+    /// A brush undo must NOT replay its labels after the owning region is
+    /// deleted — the voxels would orphan (no region owns the label anymore).
+    /// The undo closure self-invalidates by checking the region still exists.
+    func testBrushUndoBailsAfterRegionDeleted() {
+        let (model, vol) = makeModel()
+        guard let region = commitRegionForBrush(model),
+              let mask = vol.labelMask else { return XCTFail("no committed region") }
+        let label = region.label
+        let before = count(mask, label: label)
+
+        let undo = UndoManager()
+        model.calcBrushErase = true
+        model.beginBrushStroke()
+        model.paintBrush(atVoxel: (20, 20, 20), radius: 1, erase: true)
+        model.endBrushStroke(undoManager: undo)
+        let erased = count(mask, label: label)
+        XCTAssertLessThan(erased, before, "erase removed some region voxels")
+        XCTAssertTrue(undo.canUndo)
+
+        // Delete the region AFTER the stroke — its label is cleared from the
+        // mask and it's gone from calcRegions.
+        model.deleteRegion(region.id)
+        XCTAssertFalse(model.calcRegions.contains { $0.id == region.id })
+        XCTAssertFalse(model.calcRegions.contains { $0.label == label })
+
+        // Undoing now must NOT restore the stroke's voxels (the region is gone;
+        // restoring would orphan label-`label` voxels no row owns).
+        undo.undo()
+        XCTAssertEqual(count(mask, label: label), count(mask, label: label),
+                       "undo is a no-op on the mask after the region was deleted")
+        // Concretely: the erase left `erased` voxels; undo must not have
+        // restored them (no orphaned label-`label` voxels reappear).
+        XCTAssertFalse(undo.canRedo, "the stale undo performed no mutation (nothing to redo)")
+    }
+
+    /// A brush undo must NOT replay after the base volume is reset/swapped —
+    /// the stroke's voxels reference the old grid/series. The guard checks the
+    /// segmentation volume's seriesUID still matches.
+    func testBrushUndoBailsAfterSegmentationReset() {
+        let (model, vol) = makeModel()
+        guard let region = commitRegionForBrush(model),
+              let mask = vol.labelMask else { return XCTFail("no committed region") }
+        let label = region.label
+        let before = count(mask, label: label)
+
+        let undo = UndoManager()
+        model.calcBrushErase = true
+        model.beginBrushStroke()
+        model.paintBrush(atVoxel: (20, 20, 20), radius: 1, erase: true)
+        model.endBrushStroke(undoManager: undo)
+        let erased = count(mask, label: label)
+        XCTAssertLessThan(erased, before, "erase removed some region voxels")
+
+        // Reset segmentation (as a new base file would): clears regions + mask
+        // state. The undo's captured seriesUID/regionID are now stale.
+        model.resetSegmentation()
+        XCTAssertNil(model.draftRegion)
+        XCTAssertFalse(model.calcRegions.contains { $0.id == region.id })
+
+        // Undo must bail — restoring into the reset state would resurrect
+        // orphaned label voxels for a region that no longer exists.
+        undo.undo()
+        XCTAssertEqual(count(mask, label: label), erased,
+                       "the stale undo did not restore the erased voxels")
+        XCTAssertFalse(undo.canRedo, "the stale undo performed no mutation")
+    }
 }

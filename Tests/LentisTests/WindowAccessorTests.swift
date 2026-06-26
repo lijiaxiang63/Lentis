@@ -53,4 +53,24 @@ final class WindowAccessorTests: XCTestCase {
         // An unmapped key is not handled (so AppKit can route it onward).
         XCTAssertFalse(interceptor.handle(key: "ä", model: model))
     }
+
+    @MainActor
+    func testKeyInterceptorRoutesSegmentationToolShortcuts() {
+        // B / K must route through the GLOBAL key interceptor (which fires
+        // before the IME and regardless of first-responder), not only through
+        // the image view's performKeyEquivalent — otherwise the documented
+        // shortcuts go inert when focus is in the inspector. Both are gated via
+        // activateTool (no volume → no-op, matching the disabled palette).
+        let model = ViewerModel()
+        let interceptor = KeyInterceptorView()
+
+        // No volume: B is gated (ROI Box needs a volume), so it's still
+        // *handled* (returns true — the key was claimed) but doesn't arm.
+        XCTAssertTrue(interceptor.handle(key: "b", model: model), "B is routed (claimed) by the interceptor")
+        XCTAssertEqual(model.activeTool, .select, "B gated with no volume")
+
+        // K is likewise routed but gated (Brush needs a committed region).
+        XCTAssertTrue(interceptor.handle(key: "k", model: model))
+        XCTAssertEqual(model.activeTool, .select, "K gated with no segmentation")
+    }
 }

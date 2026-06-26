@@ -531,6 +531,15 @@ extension ViewerModel {
     /// End a brush stroke (mouseUp) and register a single undo that restores
     /// every touched voxel to its pre-stroke label. One stroke = one undo step,
     /// so a drag that fires many `paintBrush` calls undoes as a group (⌘Z).
+    ///
+    /// The undo captures the segmentation volume's `seriesUID` and the owning
+    /// region's id at stroke end, and bails (restores nothing) if either no
+    /// longer matches at undo time — i.e. the base file was swapped/reset, or
+    /// the region was deleted or pulled into a re-edit draft. Without this guard
+    /// a ⌘Z after `deleteRegion`/`resetSegmentation`/a file swap would replay
+    /// the stroke's labels into a mask the region no longer owns (orphaned
+    /// voxels, or voxels on a different volume's grid). `UndoManager` doesn't
+    /// expose per-action invalidation, so the closure self-invalidates.
     func endBrushStroke(undoManager: UndoManager?) {
         guard brushStrokeInProgress else { return }
         brushStrokeInProgress = false
@@ -538,12 +547,18 @@ extension ViewerModel {
         brushStrokeBackup.removeAll(keepingCapacity: true)
         guard !backup.isEmpty, baseLabelMask != nil else { return }
         let erased = calcBrushErase   // capture for the action name
+        // Capture the stroke's context so the undo can detect it has gone stale.
+        let seriesUID = segmentationVolume?.seriesUID
+        let regionID = activeRegionID
         undoManager?.registerUndo(withTarget: self) { target in
-            guard let mask = target.baseLabelMask else { return }
+            // Bail if the base volume changed (file swap / resetSegmentation) or
+            // the owning region was deleted / pulled into a re-edit draft — the
+            // stroke's voxels no longer belong anywhere valid.
+            guard target.segmentationVolume?.seriesUID == seriesUID,
+                  let id = regionID,
+                  target.calcRegions.contains(where: { $0.id == id }),
+                  let mask = target.baseLabelMask else { return }
             for (key, oldLabel) in backup {
-                // Guard defensively against a volume swap between the stroke
-                // and its undo (the mask can't resize, but a new base file
-                // would have changed the grid).
                 guard key.x >= 0, key.x < mask.width,
                       key.y >= 0, key.y < mask.height,
                       key.z >= 0, key.z < mask.depth else { continue }

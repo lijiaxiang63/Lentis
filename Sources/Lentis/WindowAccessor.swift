@@ -52,6 +52,13 @@ final class KeyInterceptorView: NSView {
         case "d": model.activateTool(.ruler)
         case "n": model.activateTool(.angle)
         case "e": model.activateTool(.eraser)
+        // Phase-9 segmentation tools — routed here too so the documented B/K
+        // shortcuts work when focus is in the inspector (the image view's
+        // performKeyEquivalent only fires when it's first responder). Both are
+        // context-gated via activateTool (ROI Box needs a volume, Brush needs a
+        // committed region + no draft), matching the palette.
+        case "b": model.activateTool(.roiBox)
+        case "k": model.activateTool(.calcBrush)
         case "]", ".": model.rotateClockwiseForPanel(model.activePanel)
         case "[", ",": model.rotateCounterClockwiseForPanel(model.activePanel)
         case "w": model.activateTool(.windowLevel)

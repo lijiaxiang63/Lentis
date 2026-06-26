@@ -201,6 +201,11 @@ struct LentisApp: App {
                 Divider()
 
                 Button("Eraser (E)") { model.activateTool(.eraser) }
+
+                Divider()
+
+                Button("Calcification ROI (B)") { model.activateTool(.roiBox) }
+                Button("Calcification Brush (K)") { model.activateTool(.calcBrush) }
             }
 
             CommandGroup(replacing: .help) {

@@ -113,13 +113,20 @@ struct BrushFootprintOverlay: View {
                 let cx = Double(panel.cursorVoxelX), cy = Double(panel.cursorVoxelY), cz = Double(panel.cursorVoxelZ)
                 let center = SIMD3<Double>(cx, cy, cz)
                 let r = Double(max(1, model.calcBrushRadius))
-                // Screen radius = projected distance of r voxel units along the
-                // in-plane col axis. Robust to zoom/rotate/flip (a rotation maps
-                // the col axis to screen-vertical, but the distance is unchanged).
+                // The on-slice footprint is a disk of `r` voxel units, but the
+                // screen radius must be measured along an IN-PLANE axis: the
+                // slice-normal axis is dropped by `PlaneGeometry.pixel(of:)`,
+                // so projecting +r along it yields the center again (radius 0)
+                // — the collapse bug on sagittal, where X is the slice-normal.
+                // Measure both in-plane axes per mode and average, so the ring
+                // is correct on every plane and roughly right under minor
+                // anisotropic spacing (distance is rotation-invariant, so a
+                // Circle stays correct under 90° rotation too).
                 let centerScreen = screenPoint(forVoxel: center, geometry: g, viewSize: geo.size)
-                let edge = SIMD3<Double>(cx + r, cy, cz)
-                let edgeScreen = screenPoint(forVoxel: edge, geometry: g, viewSize: geo.size)
-                let screenRadius = max(2, hypot(edgeScreen.x - centerScreen.x, edgeScreen.y - centerScreen.y))
+                let inPlaneAxes = self.inPlaneAxes(for: panel.panelMode)
+                let rA = screenDistance(from: center, along: inPlaneAxes.0, by: r, geometry: g, viewSize: geo.size, anchor: centerScreen)
+                let rB = screenDistance(from: center, along: inPlaneAxes.1, by: r, geometry: g, viewSize: geo.size, anchor: centerScreen)
+                let screenRadius = max(2, (rA + rB) / 2)
                 Circle()
                     .strokeBorder(brushColor, lineWidth: 1.5)
                     .frame(width: screenRadius * 2, height: screenRadius * 2)
@@ -133,6 +140,28 @@ struct BrushFootprintOverlay: View {
             }
         }
         .allowsHitTesting(false)
+    }
+
+    /// The two in-plane voxel axes for a plane (the third is the slice-normal,
+    /// which `PlaneGeometry.pixel(of:)` drops). axial→(x,y), sagittal→(y,z),
+    /// coronal→(x,z) — per `MPREngine.planeGeometry` (canonical RAS: i→R, j→A,
+    /// k→S; axial slices along k, sagittal along i, coronal along j).
+    private func inPlaneAxes(for mode: PanelMode) -> (SIMD3<Double>, SIMD3<Double>) {
+        switch mode {
+        case .mprAxial:    return (SIMD3(1, 0, 0), SIMD3(0, 1, 0))
+        case .mprSagittal: return (SIMD3(0, 1, 0), SIMD3(0, 0, 1))
+        case .mprCoronal:  return (SIMD3(1, 0, 0), SIMD3(0, 0, 1))
+        default:           return (SIMD3(1, 0, 0), SIMD3(0, 1, 0))
+        }
+    }
+
+    /// Screen distance from the center voxel to the voxel `r` units along an
+    /// in-plane axis — the per-axis screen radius of the footprint disk.
+    private func screenDistance(from center: SIMD3<Double>, along axis: SIMD3<Double>, by r: Double,
+                                geometry g: PlaneGeometry, viewSize: CGSize, anchor: CGPoint) -> CGFloat {
+        let edge = center + axis * r
+        let edgeScreen = screenPoint(forVoxel: edge, geometry: g, viewSize: viewSize)
+        return hypot(edgeScreen.x - anchor.x, edgeScreen.y - anchor.y)
     }
 
     /// The active region's color so the ring matches what will be painted,
