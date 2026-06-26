@@ -578,27 +578,30 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 }
                 return true
             case "o":
-                model.activeTool = .roiWL
+                model.activateTool(.roiWL)
                 return true
             case "s":
-                model.activeTool = .roiStats
+                model.activateTool(.roiStats)
                 return true
             case "d":
-                model.activeTool = .ruler
+                model.activateTool(.ruler)
                 return true
             case "n":
-                model.activeTool = .angle
+                model.activateTool(.angle)
                 return true
             case "e":
-                model.activeTool = .eraser
+                model.activateTool(.eraser)
                 return true
             case "b":
-                model.activeTool = .roiBox
+                // Context-gated via `activateTool` — arming ROI Box needs a loaded
+                // volume, matching the palette (a no-volume `b` press is ignored).
+                model.activateTool(.roiBox)
                 return true
             case "k":
-                // The touch-up brush edits a committed region; only arm it when one
-                // exists and no draft is in progress (otherwise it would no-op).
-                if model.hasSegmentation, model.draftRegion == nil { model.activeTool = .calcBrush }
+                // The touch-up brush edits a committed region; `activateTool` only
+                // arms it when a segmentation exists and no draft is in progress
+                // (the same gate the palette + Segment tab enforce).
+                model.activateTool(.calcBrush)
                 return true
             case "]", ".":
                 model.rotateClockwiseForPanel(model.activePanel)
@@ -607,16 +610,16 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 model.rotateCounterClockwiseForPanel(model.activePanel)
                 return true
             case "w":
-                model.activeTool = .windowLevel
+                model.activateTool(.windowLevel)
                 return true
             case "v":
-                model.activeTool = .select
+                model.activateTool(.select)
                 return true
             case "p":
-                model.activeTool = .pan
+                model.activateTool(.pan)
                 return true
             case "z":
-                model.activeTool = .zoom
+                model.activateTool(.zoom)
                 return true
             case "h":
                 model.flipHorizontalForPanel(model.activePanel)
@@ -1034,17 +1037,17 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 case "a":
                     if let p = model.activePanel { model.autoWindow(for: p) }
                     return
-                case "o": model.activeTool = .roiWL; return
-                case "s": model.activeTool = .roiStats; return
-                case "d": model.activeTool = .ruler; return
-                case "n": model.activeTool = .angle; return
-                case "e": model.activeTool = .eraser; return
+                case "o": model.activateTool(.roiWL); return
+                case "s": model.activateTool(.roiStats); return
+                case "d": model.activateTool(.ruler); return
+                case "n": model.activateTool(.angle); return
+                case "e": model.activateTool(.eraser); return
                 case "]", ".": model.rotateClockwiseForPanel(model.activePanel); return
                 case "[", ",": model.rotateCounterClockwiseForPanel(model.activePanel); return
-                case "w": model.activeTool = .windowLevel; return
-                case "v": model.activeTool = .select; return
-                case "p": model.activeTool = .pan; return
-                case "z": model.activeTool = .zoom; return
+                case "w": model.activateTool(.windowLevel); return
+                case "v": model.activateTool(.select); return
+                case "p": model.activateTool(.pan); return
+                case "z": model.activateTool(.zoom); return
                 case "h": model.flipHorizontalForPanel(model.activePanel); return
                 default: break
                 }
@@ -2184,20 +2187,13 @@ struct ToolPalette: View {
         .opacity(enabled ? 1.0 : 0.35)
     }
 
-    /// Context-gating that mirrors the K-shortcut + Segment-tab logic, which the
-    /// palette previously ignored (clicking ROI Box / Brush with no volume or no
-    /// segmentation set the tool but silently did nothing on drag).
-    /// - No volume → every tool is inert.
-    /// - ROI Box → needs a loaded volume to draw into.
-    /// - Brush → only edits a committed region, so it needs a segmentation and
-    ///   no in-flight draft (matches `KeyInterceptor`'s K gate and the inspector).
+    /// Context-gating for the palette. No volume → every tool is greyed out;
+    /// otherwise the per-tool logic is delegated to `model.canActivate(_:)`, the
+    /// SAME gate the keyboard shortcuts route through (`activateTool`), so the
+    /// palette and the shortcuts can never disagree about ROI Box / Brush.
     private func isEnabled(_ tool: ActiveTool) -> Bool {
         guard hasVolume else { return false }
-        switch tool {
-        case .roiBox:    return model.segmentationVolume != nil
-        case .calcBrush: return model.hasSegmentation && model.draftRegion == nil
-        default:         return true
-        }
+        return model.canActivate(tool)
     }
 }
 

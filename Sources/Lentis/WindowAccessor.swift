@@ -47,17 +47,17 @@ final class KeyInterceptorView: NSView {
         case "i": model.invertForPanel(model.activePanel)
         case "f": model.fitToWindowForPanel(model.activePanel)
         case "a": if let panel = model.activePanel { model.autoWindowLevelForPanel(panel) }
-        case "o": model.activeTool = .roiWL
-        case "s": model.activeTool = .roiStats
-        case "d": model.activeTool = .ruler
-        case "n": model.activeTool = .angle
-        case "e": model.activeTool = .eraser
+        case "o": model.activateTool(.roiWL)
+        case "s": model.activateTool(.roiStats)
+        case "d": model.activateTool(.ruler)
+        case "n": model.activateTool(.angle)
+        case "e": model.activateTool(.eraser)
         case "]", ".": model.rotateClockwiseForPanel(model.activePanel)
         case "[", ",": model.rotateCounterClockwiseForPanel(model.activePanel)
-        case "w": model.activeTool = .windowLevel
-        case "v": model.activeTool = .select
-        case "p": model.activeTool = .pan
-        case "z": model.activeTool = .zoom
+        case "w": model.activateTool(.windowLevel)
+        case "v": model.activateTool(.select)
+        case "p": model.activateTool(.pan)
+        case "z": model.activateTool(.zoom)
         case "h": model.flipHorizontalForPanel(model.activePanel)
         default: return false
         }

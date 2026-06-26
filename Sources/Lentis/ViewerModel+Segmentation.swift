@@ -60,6 +60,33 @@ extension ViewerModel {
     var hasBrainMask: Bool { brainMaskLayer != nil }
     var hasSegmentation: Bool { !calcRegions.isEmpty }
 
+    // MARK: - Tool context-gating (shared by palette + shortcuts + menus)
+
+    /// Whether `tool` can currently be activated. The two segmentation tools are
+    /// context-gated — ROI Box needs a loaded volume to draw into, and the
+    /// touch-up Brush only edits a committed region (so it needs a segmentation
+    /// and no in-flight draft). Every other tool is always selectable. This is
+    /// the ONE gate the tool palette, the keyboard shortcuts, and the Tools menu
+    /// all consult, so a shortcut can't enter a mode the palette shows as
+    /// disabled (e.g. arming ROI Box with no volume, which then silently no-ops).
+    func canActivate(_ tool: ActiveTool) -> Bool {
+        switch tool {
+        case .roiBox:    return segmentationVolume != nil
+        case .calcBrush: return hasSegmentation && draftRegion == nil
+        default:         return true
+        }
+    }
+
+    /// Set `activeTool`, but only when `canActivate(_:)` permits it — the single
+    /// choke point user-initiated tool selection (palette / shortcut / menu)
+    /// routes through, so context-gating can't be bypassed. Deliberate internal
+    /// transitions that *establish* a tool's context (e.g. `beginRegion` arming
+    /// ROI Box) keep assigning `activeTool` directly.
+    func activateTool(_ tool: ActiveTool) {
+        guard canActivate(tool) else { return }
+        activeTool = tool
+    }
+
     // MARK: - Physical size readouts
 
     /// Physical volume of a voxel count using the base volume's spacing — the unit

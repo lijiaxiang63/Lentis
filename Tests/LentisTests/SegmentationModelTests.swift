@@ -535,4 +535,58 @@ final class SegmentationModelTests: XCTestCase {
         XCTAssertFalse(model.hasExportedSegmentation,
                        "committing a re-edit invalidates the prior export")
     }
+
+    // MARK: - Tool context-gating (P3)
+
+    /// The ONE gate the palette + every shortcut/menu consult. ROI Box needs a
+    /// loaded volume; Brush needs a committed region and no in-flight draft; all
+    /// other tools are always selectable.
+    func testCanActivateGatesSegmentationToolsByContext() {
+        let bare = ViewerModel()
+        XCTAssertFalse(bare.canActivate(.roiBox), "ROI Box needs a loaded volume")
+        XCTAssertFalse(bare.canActivate(.calcBrush), "Brush needs a committed region")
+        XCTAssertTrue(bare.canActivate(.windowLevel), "plain tools are always selectable")
+        XCTAssertTrue(bare.canActivate(.select))
+
+        let (model, _) = makeModel()   // a volume is registered
+        XCTAssertTrue(model.canActivate(.roiBox), "with a volume, ROI Box is available")
+        XCTAssertFalse(model.canActivate(.calcBrush), "no committed region yet → Brush gated")
+    }
+
+    /// `activateTool` is the choke point shortcuts/menus route through — it must
+    /// REFUSE a gated tool (so a `b`/`k` keypress can't enter a mode the palette
+    /// shows as disabled) and accept it once the context is satisfied.
+    func testActivateToolHonorsGate() {
+        // No volume: the `b` shortcut path must not arm ROI Box.
+        let bare = ViewerModel()
+        bare.activeTool = .select
+        bare.activateTool(.roiBox)
+        XCTAssertEqual(bare.activeTool, .select, "no-volume `b` is ignored, matching the disabled palette button")
+        bare.activateTool(.windowLevel)
+        XCTAssertEqual(bare.activeTool, .windowLevel, "ungated tools still switch with no volume")
+
+        // With a volume, `b` arms ROI Box.
+        let (model, _) = makeModel()
+        model.activeTool = .select
+        model.activateTool(.roiBox)
+        XCTAssertEqual(model.activeTool, .roiBox, "with a volume, `b` arms ROI Box")
+
+        // Brush: gated until a region is committed, and re-gated during a draft.
+        model.activeTool = .select
+        model.activateTool(.calcBrush)
+        XCTAssertEqual(model.activeTool, .select, "Brush needs a committed region")
+
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))
+        model.commitActiveRegion()
+        XCTAssertTrue(model.hasSegmentation)
+        model.activeTool = .select
+        model.activateTool(.calcBrush)
+        XCTAssertEqual(model.activeTool, .calcBrush, "committed region + no draft → `k` arms the Brush")
+
+        model.beginRegion(method: .thresholdInROI)   // new in-flight draft
+        model.activeTool = .select                   // isolate the gate from beginRegion's .roiBox
+        model.activateTool(.calcBrush)
+        XCTAssertEqual(model.activeTool, .select, "an in-flight draft blocks the Brush")
+    }
 }

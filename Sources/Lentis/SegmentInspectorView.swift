@@ -247,6 +247,10 @@ struct SegmentInspectorView: View {
                     } label: {
                         brainMaskDisclosureLabel
                     }
+                    // Surface a Load Existing… result (a failure, or the transient
+                    // "Loading…") even when the disclosure is collapsed — otherwise
+                    // an incompatible mask fails with no visible feedback here.
+                    brainMaskInlineStatus
                 }
 
                 if !model.synthSegOutputFiles.isEmpty {
@@ -331,6 +335,34 @@ struct SegmentInspectorView: View {
                     .font(.caption2).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    /// Inline feedback for the no-mask state: surfaces a `loadBrainMask` result
+    /// (a failure, or the transient "Loading…") that would otherwise be invisible
+    /// because the no-mask branch only renders the static disclosure label. A
+    /// failure is emphasized (orange warning); the transient load is a quiet
+    /// caption. Empty status (the idle no-mask case) renders nothing.
+    @ViewBuilder
+    private var brainMaskInlineStatus: some View {
+        let status = model.brainMaskStatus
+        if !status.isEmpty {
+            let isError = status.localizedCaseInsensitiveContains("fail")
+                || status.hasPrefix("Open a CT")
+            HStack(alignment: .top, spacing: Spacing.xs) {
+                Image(systemName: isError ? "exclamationmark.triangle.fill"
+                                          : "arrow.triangle.2.circlepath")
+                    .font(.caption2)
+                    .foregroundStyle(isError ? Color.orange : Color.secondary)
+                Text(status)
+                    .font(.caption2)
+                    .foregroundStyle(isError ? Color.primary : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, Spacing.xs)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(status)
         }
     }
 

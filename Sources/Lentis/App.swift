@@ -183,24 +183,24 @@ struct LentisApp: App {
             }
 
             CommandMenu("Tools") {
-                Button("Select (V)") { model.activeTool = .select }
-                Button("Pan (P)") { model.activeTool = .pan }
-                Button("Window/Level (W)") { model.activeTool = .windowLevel }
-                Button("Zoom (Z)") { model.activeTool = .zoom }
+                Button("Select (V)") { model.activateTool(.select) }
+                Button("Pan (P)") { model.activateTool(.pan) }
+                Button("Window/Level (W)") { model.activateTool(.windowLevel) }
+                Button("Zoom (Z)") { model.activateTool(.zoom) }
 
                 Divider()
 
-                Button("ROI W/L (O)") { model.activeTool = .roiWL }
-                Button("ROI Stats (S)") { model.activeTool = .roiStats }
+                Button("ROI W/L (O)") { model.activateTool(.roiWL) }
+                Button("ROI Stats (S)") { model.activateTool(.roiStats) }
 
                 Divider()
 
-                Button("Ruler (D)") { model.activeTool = .ruler }
-                Button("Angle (N)") { model.activeTool = .angle }
+                Button("Ruler (D)") { model.activateTool(.ruler) }
+                Button("Angle (N)") { model.activateTool(.angle) }
 
                 Divider()
 
-                Button("Eraser (E)") { model.activeTool = .eraser }
+                Button("Eraser (E)") { model.activateTool(.eraser) }
             }
 
             CommandGroup(replacing: .help) {
