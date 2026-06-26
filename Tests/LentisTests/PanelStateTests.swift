@@ -217,6 +217,52 @@ final class PanelStateTests: XCTestCase {
         XCTAssertNotEqual(state1.id, state2.id)
     }
 
+    // MARK: - Reset View (ViewerModel.resetViewForPanel)
+
+    /// resetViewForPanel must restore ALL spatial transforms (zoom, pan, 90°
+    /// rotation, horizontal/vertical flip, invert) while PRESERVING the user's
+    /// Window/Level. Previously it only reset zoom/pan and re-ran auto W/L,
+    /// leaving rotation/flip/invert stuck — so "R" never fully restored the
+    /// image after transform changes. Use a ViewerModel so the model-level
+    /// reset path (the one wired to the R key, the menu item, and the new
+    /// tool-palette button) is exercised directly.
+    @MainActor
+    func testResetViewRestoresSpatialTransformsKeepsWindowLevel() {
+        let model = ViewerModel()
+        let panel = model.panels[0]
+        // Simulate the user changing every spatial transform + W/L.
+        panel.scale = 2.5
+        panel.translation = CGPoint(x: 40, y: -30)
+        panel.rotationSteps = 2
+        panel.isFlippedH = true
+        panel.isFlippedV = true
+        panel.isInverted = true
+        panel.windowWidth = 400
+        panel.windowCenter = 50
+
+        model.resetViewForPanel(panel)
+
+        // Spatial transforms back to defaults.
+        XCTAssertEqual(panel.scale, 1.0)
+        XCTAssertEqual(panel.translation, .zero)
+        XCTAssertEqual(panel.rotationSteps, 0)
+        XCTAssertFalse(panel.isFlippedH)
+        XCTAssertFalse(panel.isFlippedV)
+        XCTAssertFalse(panel.isInverted)
+        // Window/Level preserved (not auto-restarted).
+        XCTAssertEqual(panel.windowWidth, 400)
+        XCTAssertEqual(panel.windowCenter, 50)
+    }
+
+    /// Resetting a nil panel must be a safe no-op (the toolbar/menu/button all
+    /// pass model.activePanel, which can be nil).
+    @MainActor
+    func testResetViewForNilPanelIsNoOp() {
+        let model = ViewerModel()
+        model.resetViewForPanel(nil)  // should not crash
+        XCTAssertTrue(true)
+    }
+
     func testPanelStateIsRawDataAvailable() {
         let state = PanelState()
         XCTAssertFalse(state.isRawDataAvailable)

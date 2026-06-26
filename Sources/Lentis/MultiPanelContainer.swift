@@ -2118,9 +2118,13 @@ struct AnnotationOverlay: View {
 
 /// Floating vertical Liquid Glass capsule of tools, overlaid on the viewport's
 /// leading edge. The active tool tints with the signature accent; neighbouring
-/// glass buttons blend within the GlassEffectContainer.
+/// glass buttons blend within the GlassEffectContainer. A one-shot Reset View
+/// button sits below a divider at the capsule's bottom — the most discoverable
+/// place to "undo" zoom/pan/rotation/flip/invert in one click (R key mirrors it).
 struct ToolPalette: View {
     @ObservedObject var model: ViewerModel
+
+    private var hasVolume: Bool { model.activePanel?.image != nil }
 
     var body: some View {
         GlassEffectContainer(spacing: Spacing.xs) {
@@ -2130,11 +2134,34 @@ struct ToolPalette: View {
                         systemName: tool.icon,
                         isActive: model.activeTool == tool,
                         size: 34,
-                        help: "\(tool.displayName) (\(tool.shortcutHint))"
+                        help: "\(tool.displayName) (\(tool.shortcutHint)) — \(tool.description)"
                     ) {
                         model.activeTool = tool
                     }
                 }
+
+                // One-shot "Reset View" — restores all spatial transforms
+                // (zoom, pan, 90° rotation, horizontal/vertical flip, invert)
+                // in a single click. Kept visually distinct from the tools:
+                // never accent-tinted, separated by a divider. W/L is preserved
+                // (use A / the Auto button for an auto window). The R key and
+                // the menu's "Reset View" route through the same model call.
+                Divider()
+                    .frame(width: 22)
+                    .opacity(0.5)
+
+                GlassIconButton(
+                    systemName: "arrow.counterclockwise",
+                    isActive: false,
+                    size: 34,
+                    help: "Reset View (R) — restore zoom, pan, rotation, flips, invert (keeps Window/Level)"
+                ) {
+                    if let panel = model.activePanel {
+                        model.resetViewForPanel(panel)
+                    }
+                }
+                .disabled(!hasVolume)
+                .opacity(hasVolume ? 1.0 : 0.4)
             }
         }
     }

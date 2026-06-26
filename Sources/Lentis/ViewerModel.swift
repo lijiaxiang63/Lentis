@@ -786,16 +786,27 @@ class ViewerModel: ObservableObject {
         navigatePanelToSlice(panel, index: toFirst ? 0 : total - 1)
     }
 
-    /// Reset view: zoom/pan to default and auto W/L
+    /// Reset view: restore ALL spatial transforms (zoom, pan, 90° rotation,
+    /// horizontal/vertical flip, invert) to their defaults in one shot. Window/
+    /// Level is deliberately preserved — use `A` / the Auto button for an
+    /// auto window. For the 3D panel, the camera (yaw/pitch/opacity) is the
+    /// spatial state, so `resetVolumeCamera` handles it.
+    ///
+    /// Wired to the R key, the View menu's "Reset View" item, and the one-shot
+    /// button at the bottom of the left tool palette. `F` (Fit to Window) is a
+    /// lighter variant that resets only zoom/pan.
     func resetViewForPanel(_ panel: PanelState?) {
         guard let panel = panel else { return }
-        panel.scale = 1.0
-        panel.translation = .zero
         if panel.panelMode == .volume3D {
             resetVolumeCamera(panel)
-        } else {
-            autoWindowLevelForPanel(panel)
+            return
         }
+        panel.scale = 1.0
+        panel.translation = .zero
+        panel.rotationSteps = 0
+        panel.isFlippedH = false
+        panel.isFlippedV = false
+        panel.isInverted = false
     }
 
     /// Fit image to window (reset zoom/pan only, keep W/L)
