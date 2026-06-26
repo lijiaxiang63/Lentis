@@ -169,6 +169,8 @@ struct HelpView: View {
                                 shortcutCompact("D", "Ruler tool")
                                 shortcutCompact("N", "Angle tool")
                                 shortcutCompact("E", "Eraser tool")
+                                shortcutCompact("B", "Calcification ROI Box")
+                                shortcutCompact("K", "Calcification Brush")
                             }
                             Divider().padding(.vertical, 4)
                             Group {
@@ -179,6 +181,7 @@ struct HelpView: View {
                                 shortcutCompact("H", "Flip horizontal")
                                 shortcutCompact("] / .", "Rotate CW 90\u{00B0}")
                                 shortcutCompact("[ / ,", "Rotate CCW 90\u{00B0}")
+                                shortcutCompact("- / =", "Brush size down / up (Brush active)")
                             }
                             Divider().padding(.vertical, 4)
                             Group {

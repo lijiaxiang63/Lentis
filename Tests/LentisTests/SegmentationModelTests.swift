@@ -623,4 +623,32 @@ final class SegmentationModelTests: XCTestCase {
         model.activateTool(.pan)
         XCTAssertEqual(model.activeTool, .pan, "`p` arms Pan on an MPR panel")
     }
+
+    /// The `-`/`=` brush-size shortcuts route through `adjustBrushRadius(by:)`,
+    /// which clamps to 0...8 (matching the inspector slider). Pure + testable so
+    /// the key routing can be locked without driving a GUI key event.
+    func testAdjustBrushRadiusClampsToValidRange() {
+        let model = ViewerModel()
+        model.calcBrushRadius = 2
+
+        // Increase / decrease within range.
+        XCTAssertEqual(model.adjustBrushRadius(by: 1), 3)
+        XCTAssertEqual(model.calcBrushRadius, 3)
+        XCTAssertEqual(model.adjustBrushRadius(by: -1), 2)
+        XCTAssertEqual(model.calcBrushRadius, 2)
+
+        // Large delta clamps to the upper bound (8, matching the slider max).
+        XCTAssertEqual(model.adjustBrushRadius(by: 100), 8)
+        XCTAssertEqual(model.calcBrushRadius, 8)
+
+        // Large negative delta clamps to 0 (no negative radius).
+        XCTAssertEqual(model.adjustBrushRadius(by: -100), 0)
+        XCTAssertEqual(model.calcBrushRadius, 0)
+
+        // Boundary: 8 + 1 stays 8; 0 - 1 stays 0.
+        model.calcBrushRadius = 8
+        XCTAssertEqual(model.adjustBrushRadius(by: 1), 8)
+        model.calcBrushRadius = 0
+        XCTAssertEqual(model.adjustBrushRadius(by: -1), 0)
+    }
 }

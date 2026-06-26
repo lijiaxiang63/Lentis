@@ -59,6 +59,15 @@ final class KeyInterceptorView: NSView {
         case "p": model.activateTool(.pan)
         case "z": model.activateTool(.zoom)
         case "h": model.flipHorizontalForPanel(model.activePanel)
+        // Brush size shortcuts — only meaningful while the touch-up Brush is
+        // active (gated so plain `-`/`=` typing still works otherwise). `[`/`]`
+        // are taken by 90° rotation, so `-`/`=` resize the brush (Fiji-style).
+        case "-", "_":
+            guard model.activeTool == .calcBrush else { return false }
+            model.adjustBrushRadius(by: -1)
+        case "=", "+":
+            guard model.activeTool == .calcBrush else { return false }
+            model.adjustBrushRadius(by: 1)
         default: return false
         }
         return true

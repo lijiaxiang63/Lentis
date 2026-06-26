@@ -86,3 +86,67 @@ struct SegmentationBoxOverlay: View {
         }
     }
 }
+
+// MARK: - Brush footprint overlay
+
+/// Draws the touch-up Brush's footprint on the current MPR slice — a hollow
+/// ring centered on the cursor, sized to `calcBrushRadius` voxels — so the user
+/// can see how big the brush is before/while painting (the inspector slider's
+/// numeric radius is otherwise hard to translate to the image). The brush
+/// paints a sphere in voxel-index space (`dx²+dy²+dz² ≤ r²`), and its center
+/// lies on the current slice, so the on-slice footprint is a full disk of
+/// radius `r` voxel units. The screen radius is derived by projecting two
+/// voxels `r` apart through the SAME `viewPoint(forRawPixel:)` transform the
+/// image uses, so the ring stays glued to the pixels under zoom/pan/rotate/
+/// flip. The 3D panel is excluded (no cursor voxel readout there). Follows the
+/// cursor via `panel.cursorPixelX/Y` (updated in `mouseMoved`); during an
+/// active paint-drag the painted voxels themselves are the feedback.
+struct BrushFootprintOverlay: View {
+    @ObservedObject var panel: PanelState
+    @ObservedObject var model: ViewerModel
+    let volume: VolumeData
+
+    var body: some View {
+        GeometryReader { geo in
+            if panel.panelMode.isMPR, panel.showCursorInfo, panel.hasCursorVoxelPosition,
+               let g = panel.displayedPlaneGeometry {
+                let cx = Double(panel.cursorVoxelX), cy = Double(panel.cursorVoxelY), cz = Double(panel.cursorVoxelZ)
+                let center = SIMD3<Double>(cx, cy, cz)
+                let r = Double(max(1, model.calcBrushRadius))
+                // Screen radius = projected distance of r voxel units along the
+                // in-plane col axis. Robust to zoom/rotate/flip (a rotation maps
+                // the col axis to screen-vertical, but the distance is unchanged).
+                let centerScreen = screenPoint(forVoxel: center, geometry: g, viewSize: geo.size)
+                let edge = SIMD3<Double>(cx + r, cy, cz)
+                let edgeScreen = screenPoint(forVoxel: edge, geometry: g, viewSize: geo.size)
+                let screenRadius = max(2, hypot(edgeScreen.x - centerScreen.x, edgeScreen.y - centerScreen.y))
+                Circle()
+                    .strokeBorder(brushColor, lineWidth: 1.5)
+                    .frame(width: screenRadius * 2, height: screenRadius * 2)
+                    .position(centerScreen)
+                    // Faint white outer ring for legibility on bright slices.
+                    .overlay {
+                        Circle().strokeBorder(.white.opacity(0.5), lineWidth: 0.5)
+                            .frame(width: screenRadius * 2 + 1, height: screenRadius * 2 + 1)
+                            .position(centerScreen)
+                    }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    /// The active region's color so the ring matches what will be painted,
+    /// falling back to the accent when no region is selected.
+    private var brushColor: Color {
+        if let id = model.activeRegionID,
+           let region = model.calcRegions.first(where: { $0.id == id }) {
+            return Color(.sRGB, red: region.color.x, green: region.color.y, blue: region.color.z, opacity: 1)
+        }
+        return .lentisAccent
+    }
+
+    private func screenPoint(forVoxel v: SIMD3<Double>, geometry g: PlaneGeometry, viewSize: CGSize) -> CGPoint {
+        let world = volume.voxelToWorld(v)
+        return panel.viewPoint(forRawPixel: g.pixel(of: world), viewSize: viewSize)
+    }
+}

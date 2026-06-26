@@ -494,6 +494,17 @@ extension ViewerModel {
         rerenderSegmentation()
     }
 
+    /// Adjust the touch-up brush radius by a signed delta, clamped to 0...8
+    /// (matching the inspector slider's range). Routed through by the `-`/`=`
+    /// shortcuts while the Brush tool is active; pure + testable so the key
+    /// routing can be locked without a GUI. Returns the new radius.
+    @discardableResult
+    func adjustBrushRadius(by delta: Int) -> Int {
+        let r = max(0, min(8, calcBrushRadius + delta))
+        calcBrushRadius = r
+        return r
+    }
+
     // MARK: - Brain mask / SynthSeg
 
     var synthSegAvailable: Bool { SynthSegRunner.isAvailable(userOverride: synthSegBinaryOverride) }

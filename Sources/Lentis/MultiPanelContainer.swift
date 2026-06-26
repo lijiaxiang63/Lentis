@@ -215,6 +215,15 @@ struct PanelView: View {
                     .zIndex(11)
             }
 
+            // Touch-up brush footprint: a ring on the current slice showing the
+            // brush size (calcBrushRadius voxels) at the cursor, so the inspector
+            // slider's numeric radius reads against the image. Brush-only.
+            if panel.image != nil, panel.panelMode.isMPR, model.activeTool == .calcBrush,
+               let vol = model.cachedVolume(forSeriesIndex: panel.seriesIndex) {
+                BrushFootprintOverlay(panel: panel, model: model, volume: vol)
+                    .zIndex(12)
+            }
+
             // ROI rectangle overlay
             if panel.image != nil, panel.panelMode != .volume3D, let roiRect = panel.roiRect {
                 ROIOverlay(panel: panel, roiRect: roiRect)
@@ -602,6 +611,17 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 // arms it when a segmentation exists and no draft is in progress
                 // (the same gate the palette + Segment tab enforce).
                 model.activateTool(.calcBrush)
+                return true
+            case "-", "_":
+                // Brush size down — only while the Brush is active (otherwise
+                // plain `-` typing must pass through). `[`/`]` are rotation.
+                guard model.activeTool == .calcBrush else { return super.performKeyEquivalent(with: event) }
+                model.adjustBrushRadius(by: -1)
+                return true
+            case "=", "+":
+                // Brush size up — only while the Brush is active.
+                guard model.activeTool == .calcBrush else { return super.performKeyEquivalent(with: event) }
+                model.adjustBrushRadius(by: 1)
                 return true
             case "]", ".":
                 model.rotateClockwiseForPanel(model.activePanel)
