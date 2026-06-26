@@ -331,7 +331,19 @@ struct PanelInteractiveImageView: NSViewRepresentable {
         // When a roiBox drag began on a resize handle, which in-plane bounds it
         // moves (nil = the drag is drawing a new box, the legacy behavior).
         private var roiResizeGrip: (BoxGrip, BoxGrip)?
-        private var isCrosshairCursorActive: Bool = false
+
+        // Cursor stack state machine. The NSCursor stack is one layer deep at
+        // most: either a tool cursor (pushed by updateROICursor) or a handle
+        // cursor (pushed over the tool cursor while hovering a resize handle).
+        // `.none` = arrow default (no custom cursor pushed); `.tool` = the
+        // active-tool cursor is on top; `.handle` = a resize-handle cursor has
+        // been swapped onto the tool cursor's slot. Tracking which one is live
+        // (instead of a single bool) lets mouseMoved overlay a handle cursor
+        // and mouseExited/updateROICursor pop exactly one layer without ever
+        // under/over-popping the NSCursor stack.
+        private enum CursorStackState: Equatable { case none, tool, handle }
+        private var cursorStackState: CursorStackState = .none
+        private var cursorTool: ActiveTool = .select
         private var wlPendingDeltaWidth: Double = 0
         private var wlPendingDeltaCenter: Double = 0
         private var wlLastRenderTime: CFTimeInterval = 0
@@ -668,23 +680,99 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 desiredCursor = .disappearingItem
             }
 
+            // .select on an MPR panel = the system arrow (no custom cursor on
+            // the stack). Pop whatever is live so the default returns.
             if tool == .select && panel?.panelMode != .volume3D {
-                // Default arrow cursor — pop any custom cursor
-                if isCrosshairCursorActive {
+                if cursorStackState != .none {
                     NSCursor.pop()
-                    isCrosshairCursorActive = false
+                    cursorStackState = .none
                 }
+                cursorTool = tool
                 return
             }
 
-            if !isCrosshairCursorActive {
+            // Preserve an active handle-hover cursor when the tool hasn't
+            // changed — SwiftUI re-evaluates (updateNSView) on W/L / slice /
+            // panel mutations, and re-pushing the tool cursor here would
+            // flicker away the resize hint the user is seeing.
+            if cursorStackState == .handle && cursorTool == tool {
+                return
+            }
+
+            // Tool changed (or first push). If a handle cursor is on top, pop
+            // it; the stack is then empty (pushHandleCursor swapped away the
+            // tool cursor), so fall to the `.none` branch to push the new tool
+            // cursor. This keeps the stack at most one layer deep.
+            if cursorStackState == .handle {
+                NSCursor.pop()
+                cursorStackState = .none
+            }
+            if cursorStackState == .none {
                 desiredCursor.push()
-                isCrosshairCursorActive = true
-            } else {
-                // Pop previous and push new
+                cursorStackState = .tool
+            } else { // .tool
                 NSCursor.pop()
                 desiredCursor.push()
             }
+            cursorTool = tool
+        }
+
+        /// Push (or swap in) a resize-handle cursor over the tool cursor. Idempotent
+        /// for the same handle cursor; called from mouseMoved while hovering a
+        /// draft-box handle in the .roiBox tool.
+        ///
+        /// Invariant: the NSCursor stack is at most ONE layer deep (`.none`=0,
+        /// `.tool`/`.handle`=1). Going `.tool`→`.handle` SWAPS (pop the tool
+        /// cursor, push the handle cursor), never stacks — so the single pop in
+        /// `mouseExited` / `clearHandleCursor` / the `.select` path always fully
+        /// clears the custom cursor and can never leave a stuck tool cursor
+        /// with a desynced `.none` state.
+        private func pushHandleCursor(_ cursor: NSCursor) {
+            switch cursorStackState {
+            case .none:
+                cursor.push()
+                cursorStackState = .handle
+            case .tool:
+                NSCursor.pop()
+                cursor.push()
+                cursorStackState = .handle
+            case .handle:
+                NSCursor.pop()
+                cursor.push()
+            }
+        }
+
+        /// Pop the handle cursor (if active) and restore the active-tool cursor.
+        /// Called when the cursor leaves all handles, and on mouseUp/mouseDown
+        /// away from a handle, so the resize hint never outstays its welcome.
+        /// After the pop the stack is empty (the tool cursor was swapped away
+        /// by pushHandleCursor), so set `.none` and let updateROICursor re-push.
+        private func clearHandleCursor() {
+            guard cursorStackState == .handle else { return }
+            NSCursor.pop()
+            cursorStackState = .none
+            updateROICursor()
+        }
+
+        /// Show a directional resize cursor when the pointer is over a draft-box
+        /// handle in the .roiBox tool; otherwise restore the tool cursor. Driven
+        /// from mouseMoved, so the hint tracks the pointer at full tracking-area
+        /// rate. Only the .roiBox tool can actually start a resize drag (mouseDown
+        /// .roiBox → roiHandleGrip), so the hint is never shown when dragging
+        /// wouldn't work — it never "lies".
+        private func updateHandleHoverCursor(with event: NSEvent) {
+            guard let model = model, let panel = panel,
+                  model.activeTool == .roiBox,
+                  let handle = roiHandleGrip(at: event),
+                  let g = panel.displayedPlaneGeometry,
+                  let vol = model.segmentationVolume,
+                  let axes = VoxelBox.inPlaneAxes(forPlane: panel.panelMode) else {
+                clearHandleCursor()
+                return
+            }
+            let dirA = screenAxisDelta(axis: axes.0, at: handle.voxel, geometry: g, volume: vol, viewSize: bounds.size)
+            let dirB = screenAxisDelta(axis: axes.1, at: handle.voxel, geometry: g, volume: vol, viewSize: bounds.size)
+            pushHandleCursor(Self.resizeCursor(for: handle, dirA: dirA, dirB: dirB).nsCursor)
         }
 
         /// Convert a window-space NSEvent location to image pixel coordinates.
@@ -786,11 +874,14 @@ struct PanelInteractiveImageView: NSViewRepresentable {
         }
 
         /// If `event` is within grab distance of one of the draft box's resize
-        /// handles on this plane, return which in-plane bounds that handle moves.
-        /// Handle screen positions use the SAME forward transform the overlay
-        /// draws with (`panel.viewPoint(forRawPixel:)`), so the grab targets line
-        /// up with the drawn dots under any zoom/pan/rotate/flip.
-        private func roiHandleGrip(at event: NSEvent) -> (BoxGrip, BoxGrip)? {
+        /// handles on this plane, return that handle (its in-plane grip pair +
+        /// voxel coordinate). Returns nil when there is no draft, the plane is
+        /// not MPR, the box is empty, or the cursor isn't near any handle.
+        /// Shared by mouseDown (to start a resize drag) and mouseMoved (to show
+        /// a directional resize cursor on hover), so the grab target can never
+        /// drift from the drawn dots (`panel.viewPoint(forRawPixel:)` is the
+        /// SAME forward transform the overlay draws with).
+        private func roiHandleGrip(at event: NSEvent) -> BoxHandle? {
             guard let model = model, let panel = panel, panel.panelMode.isMPR,
                   let draft = model.draftRegion, !draft.box.isEmpty,
                   let g = panel.displayedPlaneGeometry,
@@ -801,15 +892,124 @@ struct PanelInteractiveImageView: NSViewRepresentable {
             // viewPoint returns top-left/y-down coords; NSView is y-up.
             let cursor = CGPoint(x: loc.x, y: bounds.height - loc.y)
             let threshold: CGFloat = 12
-            var best: (BoxGrip, BoxGrip)?
+            var best: BoxHandle?
             var bestDist = threshold
             for h in handles {
                 let raw = g.pixel(of: vol.voxelToWorld(h.voxel))
                 let pt = panel.viewPoint(forRawPixel: raw, viewSize: bounds.size)
                 let d = hypot(pt.x - cursor.x, pt.y - cursor.y)
-                if d < bestDist { bestDist = d; best = (h.gripA, h.gripB) }
+                if d < bestDist { bestDist = d; best = h }
             }
             return best
+        }
+
+        /// Screen-space direction (y-down, view coords) of one step along voxel
+        /// `axis` starting at `voxel`, via the ONE shared forward transform
+        /// (`voxelToWorld` → `PlaneGeometry.pixel` → `viewPoint`). Mirrors how
+        /// `SegmentationBoxOverlay` and `roiHandleGrip` project, so the resize
+        /// cursor's on-screen orientation stays correct under zoom/pan/flip and
+        /// a 90° panel rotation (where in-plane axis A may map to vertical).
+        private func screenAxisDelta(axis: Int, at voxel: SIMD3<Double>,
+                                     geometry: PlaneGeometry, volume: VolumeData,
+                                     viewSize: CGSize) -> CGPoint {
+            var next = voxel
+            next[axis] += 1
+            let p0 = panel?.viewPoint(forRawPixel: geometry.pixel(of: volume.voxelToWorld(voxel)), viewSize: viewSize) ?? .zero
+            let p1 = panel?.viewPoint(forRawPixel: geometry.pixel(of: volume.voxelToWorld(next)), viewSize: viewSize) ?? .zero
+            return CGPoint(x: p1.x - p0.x, y: p1.y - p0.y)
+        }
+
+        /// Which directional resize cursor a handle should show. AppKit provides
+        /// only the two cardinal resize cursors (`resizeLeftRight`/`resizeUpDown`),
+        /// so the two diagonals are rendered from SF Symbols (lazily, once).
+        enum ResizeCursorKind: Equatable {
+            case leftRight, upDown, diagUpLeftDownRight, diagUpRightDownLeft
+
+            /// The `NSCursor` for this kind. Cardinal kinds use the built-in
+            /// cursors; diagonals are built once from SF Symbols and cached.
+            var nsCursor: NSCursor {
+                switch self {
+                case .leftRight: return .resizeLeftRight
+                case .upDown: return .resizeUpDown
+                case .diagUpLeftDownRight:
+                    if let c = Self.diagUpLeftDownRightCursor { return c }
+                    let c = Self.makeDiagonalCursor(symbol: "arrow.up.left.and.arrow.down.right")
+                    Self.diagUpLeftDownRightCursor = c
+                    return c
+                case .diagUpRightDownLeft:
+                    if let c = Self.diagUpRightDownLeftCursor { return c }
+                    let c = Self.makeDiagonalCursor(symbol: "arrow.up.right.and.arrow.down.left")
+                    Self.diagUpRightDownLeftCursor = c
+                    return c
+                }
+            }
+
+            private static var diagUpLeftDownRightCursor: NSCursor?
+            private static var diagUpRightDownLeftCursor: NSCursor?
+
+            /// Build a centered-hot-spot cursor from an SF Symbol name.
+            private static func makeDiagonalCursor(symbol: String) -> NSCursor {
+                guard let img = NSImage(systemSymbolName: symbol, accessibilityDescription: "Diagonal resize") else {
+                    return .crosshair
+                }
+                // Render at a fixed point size so the cursor isn't tiny.
+                let cfg = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+                let rendered = img.withSymbolConfiguration(cfg) ?? img
+                let size = rendered.size
+                return NSCursor(image: rendered, hotSpot: NSPoint(x: size.width / 2, y: size.height / 2))
+            }
+        }
+
+        /// Pick a directional resize cursor for a handle given the screen
+        /// directions of the plane's two in-plane voxel axes (each as returned
+        /// by `screenAxisDelta`, i.e. the +axis screen direction as a FULL 2D
+        /// vector — after a 90°/270° panel rotation an axis may point mostly
+        /// vertical or horizontal, so never assume "A contributes x, B
+        /// contributes y"). Corners move both axes → diagonal cursor; edge
+        /// midpoints move one axis → that axis's cursor.
+        ///
+        /// A handle's `BoxGrip` signs the drag direction: dragging a `.lower`
+        /// grip pulls that bound toward the box's lower edge (the −axis
+        /// direction), while `.upper` pulls toward +axis. So `.lower` negates
+        /// that axis's full screen vector, `.upper` keeps it, and `.fixed`
+        /// drops it (contributes nothing). The corner drag direction is the
+        /// SUM of the two signed full vectors (`signedDirA + signedDirB`),
+        /// not a per-component pick — this keeps it correct under rotation
+        /// (where axis A may carry the y component and axis B the x). Without
+        /// signing, all four corners collapse to one diagonal; without summing
+        /// full vectors, a rotated panel can collapse the direction to (0,0).
+        /// The two opposing corners of one diagonal still map to the same
+        /// cursor (a resize cursor is direction-agnostic about which end is
+        /// grabbed), but the two diagonals are correctly distinguished.
+        static func resizeCursor(for handle: BoxHandle, dirA: CGPoint, dirB: CGPoint) -> ResizeCursorKind {
+            func signed(_ grip: BoxGrip, _ v: CGPoint) -> CGPoint {
+                switch grip {
+                case .upper: return v
+                case .lower: return CGPoint(x: -v.x, y: -v.y)
+                case .fixed: return .zero
+                }
+            }
+            let sa = signed(handle.gripA, dirA)
+            let sb = signed(handle.gripB, dirB)
+            return directionalResizeCursor(dx: sa.x + sb.x, dy: sa.y + sb.y)
+        }
+
+        /// Map an unnormalized screen-space drag direction (y-down) to one of
+        /// the four directional resize cursor kinds. The 2.5× ratio distinguishes
+        /// "mostly horizontal/vertical" from diagonal; for the diagonal case
+        /// the cursor only cares about which diagonal, so `(dx,dy)` and
+        /// `(-dx,-dy)` (same handle, opposite end) map to the same kind.
+        /// Pure — unit-tested without an NSView.
+        static func directionalResizeCursor(dx: CGFloat, dy: CGFloat) -> ResizeCursorKind {
+            let ax = abs(dx), ay = abs(dy)
+            // Guard against a degenerate (zero) direction.
+            if ax < 1e-6 && ay < 1e-6 { return .leftRight }
+            if ax > 2.5 * ay { return .leftRight }
+            if ay > 2.5 * ax { return .upDown }
+            // Diagonal. In y-down screen space, (dx>0, dy>0) points down-right
+            // ↔ the ↖↘ cursor; (dx>0, dy<0) points up-right ↔ the ↗↙ cursor.
+            let sameSign = (dx >= 0) == (dy >= 0)
+            return sameSign ? .diagUpLeftDownRight : .diagUpRightDownLeft
         }
 
         override func mouseDown(with event: NSEvent) {
@@ -964,11 +1164,14 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 // (finalized into a 3D slab box on mouseUp; drawn by ROIOverlay).
                 roiResizeGrip = nil
                 if panel.panelMode.isMPR {
-                    if let grip = roiHandleGrip(at: event) {
-                        roiResizeGrip = grip
+                    if let handle = roiHandleGrip(at: event) {
+                        roiResizeGrip = (handle.gripA, handle.gripB)
                     } else if let px = screenToPixel(event) {
                         roiStartPixel = px
                         panel.roiRect = CGRect(x: px.x, y: px.y, width: 0, height: 0)
+                        // Drawing a new box replaces the old one; drop the resize
+                        // hint until the pointer returns over a handle.
+                        clearHandleCursor()
                     }
                 }
 
@@ -1386,6 +1589,9 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 }
                 roiStartPixel = nil
                 panel.roiRect = nil
+                // Release may land away from the handle; restore the tool cursor
+                // (mouseMoved will re-show the resize hint if still over a handle).
+                clearHandleCursor()
 
             case .calcBrush:
                 // Reconcile per-region counts after a brush stroke.
@@ -1462,9 +1668,9 @@ struct PanelInteractiveImageView: NSViewRepresentable {
 
         override func mouseExited(with event: NSEvent) {
             panel?.showCursorInfo = false
-            if isCrosshairCursorActive {
+            if cursorStackState != .none {
                 NSCursor.pop()
-                isCrosshairCursorActive = false
+                cursorStackState = .none
             }
         }
 
@@ -1477,6 +1683,12 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 panel.showCursorInfo = false
                 return
             }
+
+            // Show a directional resize cursor when hovering a draft-box handle
+            // in the .roiBox tool (restores the tool cursor when not). Placed
+            // before the screenToPixel guard so the hint still works when a
+            // handle sits just outside the image bounds.
+            updateHandleHoverCursor(with: event)
 
             // Update ruler/angle preview line to follow mouse
             if let model = model, let currentPixel = screenToPixel(event) {
