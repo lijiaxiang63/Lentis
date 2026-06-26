@@ -769,14 +769,21 @@ final class SegmentationModelTests: XCTestCase {
         model.deleteRegion(region.id)
         XCTAssertFalse(model.calcRegions.contains { $0.id == region.id })
         XCTAssertFalse(model.calcRegions.contains { $0.label == label })
+        // After deleteRegion the region's label is cleared from the mask, so the
+        // count of label-`label` voxels is 0. Capture it so the post-undo check
+        // is a real comparison (the old assertion compared the value to itself).
+        let postDelete = count(mask, label: label)
+        XCTAssertEqual(postDelete, 0, "deleteRegion cleared the region's label")
 
-        // Undoing now must NOT restore the stroke's voxels (the region is gone;
-        // restoring would orphan label-`label` voxels no row owns).
+        // Undoing now must NOT restore the stroke's voxels. Guard (2) — the
+        // owning region must still be in calcRegions — blocks this wholesale:
+        // for an erase stroke the post-stroke label is 0 == background, and
+        // after deleteRegion the erased voxels are also 0, so the per-voxel
+        // guard (3) alone would naively restore them to the region's label
+        // (re-orphaning). The region-existence check is the real defense here.
         undo.undo()
-        XCTAssertEqual(count(mask, label: label), count(mask, label: label),
-                       "undo is a no-op on the mask after the region was deleted")
-        // Concretely: the erase left `erased` voxels; undo must not have
-        // restored them (no orphaned label-`label` voxels reappear).
+        XCTAssertEqual(count(mask, label: label), postDelete,
+                       "undo did not restore orphaned label-`label` voxels after delete")
         XCTAssertFalse(undo.canRedo, "the stale undo performed no mutation (nothing to redo)")
     }
 
@@ -810,5 +817,53 @@ final class SegmentationModelTests: XCTestCase {
         XCTAssertEqual(count(mask, label: label), erased,
                        "the stale undo did not restore the erased voxels")
         XCTAssertFalse(undo.canRedo, "the stale undo performed no mutation")
+    }
+
+    /// A brush undo must NOT clobber a LATER edit to the same voxels. The
+    /// per-voxel post-stroke-label guard (3) blocks this: after the stroke,
+    /// another edit changes a touched voxel's label, so at undo time the
+    /// current label no longer matches the captured post-stroke label and that
+    /// voxel is skipped (preserved as-is). This is the Codex P2 scenario:
+    /// stroke → overlapping commit / re-edit-commit / another stroke on the
+    /// same voxels → old ⌘Z would otherwise overwrite the newer mask labels.
+    func testBrushUndoPreservesLaterEditOnSameVoxels() {
+        let (model, vol) = makeModel()
+        guard let region = commitRegionForBrush(model),
+              let mask = vol.labelMask else { return XCTFail("no committed region") }
+        let label = region.label
+
+        // Stroke 1: erase a few voxels of the region (post-stroke label 0).
+        let undo1 = UndoManager()
+        model.calcBrushErase = true
+        model.beginBrushStroke()
+        model.paintBrush(atVoxel: (20, 20, 20), radius: 1, erase: true)
+        model.endBrushStroke(undoManager: undo1)
+        let afterStroke1 = count(mask, label: label)
+        let bgAfterStroke1 = count(mask, label: 0)
+
+        // Stroke 2: paint the SAME voxels back (and maybe more) — a later edit
+        // on the voxels stroke 1 touched. Its own undo is separate.
+        let undo2 = UndoManager()
+        model.calcBrushErase = false
+        model.beginBrushStroke()
+        model.paintBrush(atVoxel: (20, 20, 20), radius: 1, erase: false)
+        model.endBrushStroke(undoManager: undo2)
+        let afterStroke2 = count(mask, label: label)
+        XCTAssertGreaterThan(afterStroke2, afterStroke1,
+                             "stroke 2 re-painted the erased voxels back to the region label")
+
+        // Undo stroke 1 — it must NOT clobber stroke 2's re-paint. The per-voxel
+        // guard sees the voxels are now `label` (not the post-stroke-1 label 0),
+        // so it skips them; stroke 2's edit is preserved.
+        undo1.undo()
+        XCTAssertEqual(count(mask, label: label), afterStroke2,
+                       "undo of stroke 1 did not clobber stroke 2's re-paint")
+        XCTAssertEqual(count(mask, label: 0), bgAfterStroke1 - (afterStroke2 - afterStroke1),
+                       "background voxels unchanged by the stale undo (stroke 2 preserved)")
+
+        // Undo stroke 2 — its own undo still works (it's the most recent edit).
+        undo2.undo()
+        XCTAssertEqual(count(mask, label: label), afterStroke1,
+                       "undo of stroke 2 (the latest) correctly reverts it")
     }
 }

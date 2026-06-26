@@ -532,38 +532,62 @@ extension ViewerModel {
     /// every touched voxel to its pre-stroke label. One stroke = one undo step,
     /// so a drag that fires many `paintBrush` calls undoes as a group (⌘Z).
     ///
-    /// The undo captures the segmentation volume's `seriesUID` and the owning
-    /// region's id at stroke end, and bails (restores nothing) if either no
-    /// longer matches at undo time — i.e. the base file was swapped/reset, or
-    /// the region was deleted or pulled into a re-edit draft. Without this guard
-    /// a ⌘Z after `deleteRegion`/`resetSegmentation`/a file swap would replay
-    /// the stroke's labels into a mask the region no longer owns (orphaned
-    /// voxels, or voxels on a different volume's grid). `UndoManager` doesn't
-    /// expose per-action invalidation, so the closure self-invalidates.
+    /// Staleness guard (layered, strictest-first):
+    /// 1. seriesUID match — bail wholesale if the base volume changed (file
+    ///    swap / resetSegmentation); the stroke's voxels reference the old grid.
+    /// 2. owning region still in calcRegions — bail wholesale if the region was
+    ///    deleted or is mid-re-edit (pulled into a draft); restoring would
+    ///    orphan its label. (For an erase stroke the post-stroke label is 0 ==
+    ///    background, so the per-voxel guard alone can't block re-orphaning
+    ///    after deleteRegion, since deleteRegion also zeroes the region's
+    ///    remaining voxels to 0. The region-existence check covers that.)
+    /// 3. per-voxel post-stroke label match — only restore a voxel whose
+    ///    CURRENT label still equals the label captured right after the stroke.
+    ///    A later edit to that voxel (another stroke, a re-edit/commit, an
+    ///    overlapping region's paint) leaves a different label and is preserved
+    ///    — the older undo can't clobber newer work on the same voxel.
+    /// `UndoManager` has no per-action invalidation, so the closure
+    /// self-invalidates (wholesale via 1+2, per-voxel via 3).
     func endBrushStroke(undoManager: UndoManager?) {
         guard brushStrokeInProgress else { return }
         brushStrokeInProgress = false
         let backup = brushStrokeBackup
         brushStrokeBackup.removeAll(keepingCapacity: true)
-        guard !backup.isEmpty, baseLabelMask != nil else { return }
+        guard let mask = baseLabelMask, !backup.isEmpty else { return }
         let erased = calcBrushErase   // capture for the action name
-        // Capture the stroke's context so the undo can detect it has gone stale.
+        // Capture the post-stroke label per voxel — the value the undo expects
+        // to still find at undo time. Only voxels still holding this label are
+        // restored; a later edit to a voxel (another stroke, a re-edit/commit,
+        // an overlapping region) leaves a different label and is preserved.
+        var postStroke: [BrushVoxelKey: UInt8] = [:]
+        postStroke.reserveCapacity(backup.count)
+        for key in backup.keys {
+            postStroke[key] = mask.labelAt(x: key.x, y: key.y, z: key.z)
+        }
         let seriesUID = segmentationVolume?.seriesUID
         let regionID = activeRegionID
         undoManager?.registerUndo(withTarget: self) { target in
-            // Bail if the base volume changed (file swap / resetSegmentation) or
-            // the owning region was deleted / pulled into a re-edit draft — the
-            // stroke's voxels no longer belong anywhere valid.
-            guard target.segmentationVolume?.seriesUID == seriesUID,
-                  let id = regionID,
+            // (1) Base volume must be unchanged (file swap / resetSegmentation).
+            guard target.segmentationVolume?.seriesUID == seriesUID else { return }
+            // (2) Owning region must still be committed (not deleted / re-editing).
+            guard let id = regionID,
                   target.calcRegions.contains(where: { $0.id == id }),
                   let mask = target.baseLabelMask else { return }
+            var restored = 0
             for (key, oldLabel) in backup {
                 guard key.x >= 0, key.x < mask.width,
                       key.y >= 0, key.y < mask.height,
                       key.z >= 0, key.z < mask.depth else { continue }
+                // (3) Only restore a voxel whose current label still matches the
+                // post-stroke label we captured — a later edit to this voxel
+                // (another stroke, a re-edit/commit, an overlapping region)
+                // left a different label and must NOT be clobbered by the
+                // older undo.
+                guard mask.labelAt(x: key.x, y: key.y, z: key.z) == postStroke[key] else { continue }
                 mask.setLabel(oldLabel, x: key.x, y: key.y, z: key.z)
+                restored += 1
             }
+            guard restored > 0 else { return }   // nothing was safe to restore
             target.recomputeRegionVoxelCounts()
             target.invalidateSegmentationExports()
             target.segmentationRevision &+= 1
