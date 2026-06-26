@@ -493,6 +493,16 @@ struct SegmentInspectorView: View {
         VStack(alignment: .leading, spacing: Spacing.s) {
             InspectorSectionHeader(title: "Regions",
                                    trailing: model.calcRegions.isEmpty ? nil : "\(model.calcRegions.count)")
+            // While a draft is in flight, selecting/re-editing a committed
+            // region is paused (selectRegion no-ops); surface that so a row tap
+            // doesn't read as a silent dead control.
+            if model.draftRegion != nil, !model.calcRegions.isEmpty {
+                Label("Finish or cancel the active region to select another.",
+                      systemImage: "hand.raised.fill")
+                    .font(.caption2).foregroundStyle(Color.lentisAccent)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Spacing.s)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 if model.calcRegions.isEmpty {
                     Text("No regions yet — pick a method above, then drag a box on a slice.")
@@ -547,7 +557,21 @@ struct SegmentInspectorView: View {
                     Text(verbatim: "Diameter \(model.brushDiameterString(radius: model.calcBrushRadius))")
                         .font(.caption2).foregroundStyle(.tertiary)
                 }
+                Text(verbatim: "Tip: press − / = to resize the brush while painting.")
+                    .font(.caption2).foregroundStyle(.tertiary)
             }
+        } else if model.draftRegion == nil, model.hasSegmentation {
+            // Regions exist but none is selected (the brush edits the SELECTED
+            // region's voxels). Surface that prerequisite instead of silently
+            // hiding the controls — the row tap that selects is gated during a
+            // draft, so this hint also covers the post-draft "nothing selected"
+            // edge case.
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "paintbrush.pointed").font(.caption2).foregroundStyle(.tertiary)
+                Text("Select a region to use the touch-up brush.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            .padding(.top, Spacing.xs)
         }
     }
 
@@ -1021,7 +1045,11 @@ private struct RegionRow: View {
         }
         // Dim a hidden region's row so its state is obvious in the list (matches
         // the Layers tab); the eye/menu stay clickable (opacity ≠ disabled).
-        .opacity(region.isVisible ? 1 : 0.5)
+        // While a draft is in flight, dim committed rows further to signal that
+        // selection/re-edit is paused (selectRegion is a no-op during a draft —
+        // the draft owns the active state — so without this the tap would feel
+        // like a silent dead control).
+        .opacity(model.draftRegion != nil ? 0.5 : (region.isVisible ? 1 : 0.5))
         .padding(.vertical, Spacing.xs)
         .padding(.horizontal, Spacing.s)
         .background {
