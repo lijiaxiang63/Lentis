@@ -133,10 +133,27 @@ enum ActiveTool: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Visual grouping for the left tool palette. The palette draws a divider
+    /// between groups so the eleven tools read as three intents instead of one
+    /// undifferentiated stack: spatial navigation, session-only measurement /
+    /// markup (carried over from the imaging-viewer lineage), and the Phase-9
+    /// calcification-segmentation tools.
+    var group: ToolGroup {
+        switch self {
+        case .select, .pan, .windowLevel, .zoom: return .navigate
+        case .roiWL, .roiStats, .ruler, .angle, .eraser: return .measure
+        case .roiBox, .calcBrush: return .segment
+        }
+    }
+
     /// Full name for tooltips and menus. rawValue stays the compact identity ("W/L").
     var displayName: String {
         switch self {
         case .windowLevel: return "Window/Level"
+        // The "Eraser" rawValue is kept (used widely), but the palette tooltip
+        // spells out that it removes annotations — in a segmentation app a bare
+        // "Eraser" reads as "erase the mask", which is the Brush's Erase mode.
+        case .eraser:      return "Delete Annotation"
         case .roiBox:      return "Calcification ROI"
         case .calcBrush:   return "Calcification Brush"
         default:           return rawValue
@@ -156,7 +173,7 @@ enum ActiveTool: String, CaseIterable, Identifiable {
         case .roiStats:    return "Draw a rectangle to see mean, min, max, std dev of pixel values"
         case .ruler:       return "Click two points to measure distance in mm"
         case .angle:       return "Click three points (vertex, arm1, arm2) to measure an angle"
-        case .eraser:      return "Click an annotation to delete it"
+        case .eraser:      return "Click a ruler / angle / ROI annotation to delete it (does not edit the mask)"
         case .roiBox:      return "Draw a 3D box around a calcification to segment it; drag handles to resize"
         case .calcBrush:   return "Paint/erase voxels of the selected calcification region"
         }
@@ -168,6 +185,16 @@ enum ActiveTool: String, CaseIterable, Identifiable {
     var rotatesVolumeOnPrimaryDrag: Bool {
         self == .select || self == .pan
     }
+}
+
+/// The three intents the left tool palette is partitioned into (see
+/// `ActiveTool.group`). `allCases` order is the palette's top-to-bottom order.
+enum ToolGroup: String, CaseIterable, Identifiable {
+    case navigate = "Navigate"
+    case measure = "Measure"
+    case segment = "Segment"
+
+    var id: String { rawValue }
 }
 
 // MARK: - 3D Volume Interaction

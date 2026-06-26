@@ -133,6 +133,34 @@ final class PanelStateTests: XCTestCase {
         XCTAssertFalse(ActiveTool.zoom.rotatesVolumeOnPrimaryDrag)
     }
 
+    // MARK: - ToolGroup (tool-palette partitioning)
+
+    /// Every tool must fall into exactly one group, and the three groups together
+    /// must cover all 11 tools — so the grouped palette can never silently drop or
+    /// duplicate a tool when a new `ActiveTool` case is added.
+    func testToolGroupPartitionsAllTools() {
+        let grouped = ToolGroup.allCases.flatMap { group in
+            ActiveTool.allCases.filter { $0.group == group }
+        }
+        XCTAssertEqual(grouped.count, ActiveTool.allCases.count,
+                       "Tool groups must partition every ActiveTool exactly once")
+        XCTAssertEqual(Set(grouped).count, ActiveTool.allCases.count,
+                       "No tool may appear in more than one group")
+        for group in ToolGroup.allCases {
+            XCTAssertFalse(ActiveTool.allCases.filter { $0.group == group }.isEmpty,
+                           "\(group.rawValue) group should not be empty")
+        }
+    }
+
+    func testToolGroupAssignments() {
+        XCTAssertEqual(ActiveTool.select.group, .navigate)
+        XCTAssertEqual(ActiveTool.windowLevel.group, .navigate)
+        XCTAssertEqual(ActiveTool.ruler.group, .measure)
+        XCTAssertEqual(ActiveTool.eraser.group, .measure)
+        XCTAssertEqual(ActiveTool.roiBox.group, .segment)
+        XCTAssertEqual(ActiveTool.calcBrush.group, .segment)
+    }
+
     // MARK: - 3D Volume Interaction
 
     func testHorizontalVolumeDragTurnsWithPointerWithoutPitch() {

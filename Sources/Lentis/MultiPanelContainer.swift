@@ -2129,14 +2129,13 @@ struct ToolPalette: View {
     var body: some View {
         GlassEffectContainer(spacing: Spacing.xs) {
             VStack(spacing: Spacing.xs) {
-                ForEach(ActiveTool.allCases) { tool in
-                    GlassIconButton(
-                        systemName: tool.icon,
-                        isActive: model.activeTool == tool,
-                        size: 34,
-                        help: "\(tool.displayName) (\(tool.shortcutHint)) — \(tool.description)"
-                    ) {
-                        model.activeTool = tool
+                // Tools are partitioned into Navigate / Measure / Segment groups
+                // (ActiveTool.group); a thin divider separates each group so the
+                // eleven tools read as three intents rather than one long stack.
+                ForEach(ToolGroup.allCases) { group in
+                    if group != ToolGroup.allCases.first { groupDivider }
+                    ForEach(ActiveTool.allCases.filter { $0.group == group }) { tool in
+                        toolButton(tool)
                     }
                 }
 
@@ -2146,9 +2145,7 @@ struct ToolPalette: View {
                 // never accent-tinted, separated by a divider. W/L is preserved
                 // (use A / the Auto button for an auto window). The R key and
                 // the menu's "Reset View" route through the same model call.
-                Divider()
-                    .frame(width: 22)
-                    .opacity(0.5)
+                groupDivider
 
                 GlassIconButton(
                     systemName: "arrow.counterclockwise",
@@ -2163,6 +2160,43 @@ struct ToolPalette: View {
                 .disabled(!hasVolume)
                 .opacity(hasVolume ? 1.0 : 0.4)
             }
+        }
+    }
+
+    private var groupDivider: some View {
+        Divider()
+            .frame(width: 22)
+            .opacity(0.5)
+    }
+
+    @ViewBuilder
+    private func toolButton(_ tool: ActiveTool) -> some View {
+        let enabled = isEnabled(tool)
+        GlassIconButton(
+            systemName: tool.icon,
+            isActive: model.activeTool == tool,
+            size: 34,
+            help: "\(tool.displayName) (\(tool.shortcutHint)) — \(tool.description)"
+        ) {
+            model.activeTool = tool
+        }
+        .disabled(!enabled)
+        .opacity(enabled ? 1.0 : 0.35)
+    }
+
+    /// Context-gating that mirrors the K-shortcut + Segment-tab logic, which the
+    /// palette previously ignored (clicking ROI Box / Brush with no volume or no
+    /// segmentation set the tool but silently did nothing on drag).
+    /// - No volume → every tool is inert.
+    /// - ROI Box → needs a loaded volume to draw into.
+    /// - Brush → only edits a committed region, so it needs a segmentation and
+    ///   no in-flight draft (matches `KeyInterceptor`'s K gate and the inspector).
+    private func isEnabled(_ tool: ActiveTool) -> Bool {
+        guard hasVolume else { return false }
+        switch tool {
+        case .roiBox:    return model.segmentationVolume != nil
+        case .calcBrush: return model.hasSegmentation && model.draftRegion == nil
+        default:         return true
         }
     }
 }
