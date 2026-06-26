@@ -109,6 +109,10 @@ cat > "${CONTENTS_DIR}/Info.plist" <<EOF
     <string>Lentis needs access to open image files.</string>
     <key>SUFeedURL</key>
     <string>${SPARKLE_FEED_URL}</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUAutomaticallyUpdate</key>
+    <true/>
 EOF
 # EdDSA public key — only when provided (releases). Omitting it disables EdDSA
 # verification; Sparkle then relies on Apple code signing (OK for dev builds).
