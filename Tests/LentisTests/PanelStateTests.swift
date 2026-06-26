@@ -263,6 +263,40 @@ final class PanelStateTests: XCTestCase {
         XCTAssertTrue(true)
     }
 
+    /// A 3D panel's image layer shares the same `restoreState()` transform as
+    /// MPR, so Option/Control-drag pan and scroll/drag zoom still mutate
+    /// `panel.scale`/`panel.translation` on a 3D panel. resetViewForPanel must
+    /// clear those IN ADDITION to the camera (yaw/pitch/opacity) — otherwise R
+    /// / menu / the reset button leaves 3D zoom/pan stuck (Codex review P2).
+    @MainActor
+    func testResetViewRestores3DZoomPanAndCamera() {
+        let model = ViewerModel()
+        let panel = model.panels[0]
+        panel.panelMode = .volume3D
+        // Simulate the user zooming, panning, and rotating the 3D view.
+        panel.scale = 2.0
+        panel.translation = CGPoint(x: 25, y: -15)
+        panel.volumeYawDegrees = 120
+        panel.volumePitchDegrees = -60
+        panel.volumeOpacity = 2.2
+        // W/L should be preserved on 3D too.
+        panel.windowWidth = 400
+        panel.windowCenter = 50
+
+        model.resetViewForPanel(panel)
+
+        // Image-layer zoom/pan restored.
+        XCTAssertEqual(panel.scale, 1.0)
+        XCTAssertEqual(panel.translation, .zero)
+        // Camera + density restored (resetVolumeCamera defaults).
+        XCTAssertEqual(panel.volumeYawDegrees, -25)
+        XCTAssertEqual(panel.volumePitchDegrees, 18)
+        XCTAssertEqual(panel.volumeOpacity, 1.0)
+        // W/L preserved.
+        XCTAssertEqual(panel.windowWidth, 400)
+        XCTAssertEqual(panel.windowCenter, 50)
+    }
+
     func testPanelStateIsRawDataAvailable() {
         let state = PanelState()
         XCTAssertFalse(state.isRawDataAvailable)
