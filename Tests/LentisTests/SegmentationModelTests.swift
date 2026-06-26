@@ -651,4 +651,95 @@ final class SegmentationModelTests: XCTestCase {
         model.calcBrushRadius = 0
         XCTAssertEqual(model.adjustBrushRadius(by: -1), 0)
     }
+
+    // MARK: - Brush stroke Undo
+
+    /// Helper: commit a 5³ calc region so the brush has a selected region.
+    private func commitRegionForBrush(_ model: ViewerModel) -> CalcificationRegion? {
+        model.beginRegion(method: .thresholdInROI)
+        model.setActiveRegionBox(VoxelBox(xRange: 16..<25, yRange: 16..<25, zRange: 16..<25))
+        model.commitActiveRegion()
+        return model.calcRegions.first
+    }
+
+    /// A paint stroke (mouseDown→up) registers ONE undo that restores every
+    /// painted voxel to its pre-stroke (background) label.
+    func testBrushStrokeUndoRestoresPaintedVoxels() {
+        let (model, vol) = makeModel()
+        guard let region = commitRegionForBrush(model),
+              let mask = vol.labelMask else { return XCTFail("no committed region") }
+        let before = count(mask, label: region.label)
+        XCTAssertGreaterThan(before, 0)
+
+        let undo = UndoManager()
+        // Paint a dot at a background voxel (5,5,5 is air in the 40³ volume).
+        model.beginBrushStroke()
+        model.paintBrush(atVoxel: (5, 5, 5), radius: 2, erase: false)
+        model.endBrushStroke(undoManager: undo)
+
+        let after = count(mask, label: region.label)
+        XCTAssertGreaterThan(after, before, "paint added voxels of the region's label")
+        XCTAssertTrue(undo.canUndo, "the stroke registered an undo")
+        XCTAssertEqual(undo.undoActionName, "Paint Brush")
+
+        undo.undo()
+        XCTAssertEqual(count(mask, label: region.label), before,
+                       "undo restored the painted voxels to their pre-stroke label")
+    }
+
+    /// An erase stroke registers ONE undo that restores the erased region voxels.
+    func testBrushStrokeUndoRestoresErasedVoxels() {
+        let (model, vol) = makeModel()
+        guard let region = commitRegionForBrush(model),
+              let mask = vol.labelMask else { return XCTFail("no committed region") }
+        let before = count(mask, label: region.label)
+
+        let undo = UndoManager()
+        model.calcBrushErase = true
+        model.beginBrushStroke()
+        // Erase at the region's center (20,20,20 is inside the 18..<23 cube).
+        model.paintBrush(atVoxel: (20, 20, 20), radius: 1, erase: true)
+        model.endBrushStroke(undoManager: undo)
+
+        XCTAssertLessThan(count(mask, label: region.label), before, "erase removed region voxels")
+        XCTAssertEqual(undo.undoActionName, "Erase Brush")
+
+        undo.undo()
+        XCTAssertEqual(count(mask, label: region.label), before,
+                       "undo restored the erased voxels")
+    }
+
+    /// Multiple paintBrush calls within one stroke (a drag fires many) register
+    /// a SINGLE undo step — one stroke = one ⌘Z, not one per paint call.
+    func testBrushStrokeGroupsMultiplePaintsIntoOneUndo() {
+        let (model, _) = makeModel()
+        _ = commitRegionForBrush(model)
+
+        let undo = UndoManager()
+        model.beginBrushStroke()
+        model.paintBrush(atVoxel: (5, 5, 5), radius: 1, erase: false)
+        model.paintBrush(atVoxel: (8, 8, 8), radius: 1, erase: false)
+        model.paintBrush(atVoxel: (11, 11, 11), radius: 1, erase: false)
+        model.endBrushStroke(undoManager: undo)
+
+        XCTAssertTrue(undo.canUndo, "the stroke registered an undo")
+        undo.undo()
+        XCTAssertFalse(undo.canUndo, "one stroke = one undo step, not one per paint call")
+    }
+
+    /// A stroke that paints nothing (e.g. paint on voxels already the region's
+    /// label) registers NO undo — no backup, no undo entry, no clutter.
+    func testBrushStrokeWithNoChangeRegistersNoUndo() {
+        let (model, _) = makeModel()
+        _ = commitRegionForBrush(model)
+
+        let undo = UndoManager()
+        model.beginBrushStroke()
+        // Paint at the region's center where the label already equals the
+        // region's label → paintBrush is a no-op (delta 0), backup stays empty.
+        model.paintBrush(atVoxel: (20, 20, 20), radius: 1, erase: false)
+        model.endBrushStroke(undoManager: undo)
+
+        XCTAssertFalse(undo.canUndo, "a no-op stroke registers no undo")
+    }
 }

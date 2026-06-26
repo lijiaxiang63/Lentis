@@ -973,6 +973,9 @@ struct PanelInteractiveImageView: NSViewRepresentable {
                 }
 
             case .calcBrush:
+                // Start a new brush stroke so every paintBrush call between now
+                // and mouseUp records into one undo backup (one stroke = one ⌘Z).
+                model.beginBrushStroke()
                 if let v = brushVoxel(at: event) {
                     model.paintBrush(atVoxel: v, radius: model.calcBrushRadius, erase: model.calcBrushErase)
                 }
@@ -1387,6 +1390,8 @@ struct PanelInteractiveImageView: NSViewRepresentable {
             case .calcBrush:
                 // Reconcile per-region counts after a brush stroke.
                 model.recomputeRegionVoxelCounts()
+                // Register the single undo for the whole stroke (mouseDown→up).
+                model.endBrushStroke(undoManager: self.undoManager)
 
             default:
                 break

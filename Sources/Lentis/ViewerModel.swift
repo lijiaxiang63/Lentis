@@ -336,6 +336,16 @@ class ViewerModel: ObservableObject {
     /// Voxel values under the current draft preview, so clearing the preview
     /// restores committed labels instead of zeroing them.
     var segPreviewBackup: [(x: Int, y: Int, z: Int, prev: UInt8)] = []
+    /// Touch-up brush stroke undo backup: the PRE-STROKE label of every voxel
+    /// touched during the current mouse-down→up stroke, keyed by coordinate.
+    /// Only the first touch per voxel is recorded, so a voxel painted then
+    /// erased within one stroke restores to its original (pre-stroke) value on
+    /// undo. `beginBrushStroke` clears it; `endBrushStroke` registers the undo.
+    var brushStrokeBackup: [BrushVoxelKey: UInt8] = [:]
+    /// True between the mouseDown and mouseUp of a brush stroke so `paintBrush`
+    /// knows to record the backup (a programmatic paint call outside a stroke
+    /// — there is none today, but defensively — won't accumulate undo state).
+    var brushStrokeInProgress: Bool = false
     /// When a committed region is pulled into a draft for re-editing
     /// (`reEditRegion`), remember where it lived in `calcRegions` and the exact
     /// voxels it owned, so abandoning the edit (`cancelActiveRegion`) restores it

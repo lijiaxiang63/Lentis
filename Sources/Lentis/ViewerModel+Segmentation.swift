@@ -23,6 +23,11 @@ import AppKit
 /// Which pane the trailing inspector shows.
 enum InspectorTab: String { case layers, segment }
 
+/// Hashable voxel coordinate key for the touch-up brush's per-stroke undo
+/// backup (tuples aren't Hashable). Maps a touched voxel to its pre-stroke
+/// label so a single undo restores the whole stroke.
+struct BrushVoxelKey: Hashable { let x: Int; let y: Int; let z: Int }
+
 extension ViewerModel {
 
     /// Reserved transient label for the in-progress draft preview.
@@ -435,6 +440,11 @@ extension ViewerModel {
     /// Clear all segmentation state (called on a new base file).
     func resetSegmentation() {
         segPreviewBackup.removeAll()
+        // Abandon any in-flight brush stroke: its backup references voxels on
+        // the old grid, and a dangling brushStrokeInProgress would make the
+        // next paint on the new volume accumulate into a stale undo.
+        brushStrokeInProgress = false
+        brushStrokeBackup.removeAll(keepingCapacity: true)
         clearReEditStash()
         calcRegions = []
         draftRegion = nil
@@ -458,7 +468,10 @@ extension ViewerModel {
 
     /// Paint or erase a spherical brush of the selected region's label, centered
     /// at a voxel. Erase only removes voxels of that region. Brain-mask
-    /// constraint (if any) limits painting to inside the brain.
+    /// constraint (if any) limits painting to inside the brain. During an
+    /// active stroke (`beginBrushStroke`…`endBrushStroke`), each voxel about to
+    /// change is recorded into `brushStrokeBackup` (first touch only) so one
+    /// undo restores the whole stroke to its pre-stroke state.
     func paintBrush(atVoxel center: (Int, Int, Int), radius: Int, erase: Bool) {
         guard let mask = baseLabelMask,
               let id = activeRegionID,
@@ -473,12 +486,14 @@ extension ViewerModel {
                     let x = center.0 + dx, y = center.1 + dy, z = center.2 + dz
                     if erase {
                         if mask.labelAt(x: x, y: y, z: z) == region.label {
+                            recordBrushBackup(x: x, y: y, z: z, mask: mask)
                             mask.setLabel(0, x: x, y: y, z: z); delta -= 1
                         }
                     } else {
                         guard x >= 0, x < mask.width, y >= 0, y < mask.height, z >= 0, z < mask.depth else { continue }
                         if let brain, !brain.contains(x: x, y: y, z: z) { continue }
                         if mask.labelAt(x: x, y: y, z: z) != region.label {
+                            recordBrushBackup(x: x, y: y, z: z, mask: mask)
                             mask.setLabel(region.label, x: x, y: y, z: z); delta += 1
                         }
                     }
@@ -492,6 +507,54 @@ extension ViewerModel {
         // Brush edits land on the active panel's current slice; re-render all
         // MPR panels so the orthogonal views stay consistent.
         rerenderSegmentation()
+    }
+
+    /// Record a voxel's current label into the stroke backup (first touch only),
+    /// so a single undo restores the whole stroke to its pre-stroke state. A
+    /// no-op outside an active stroke (so programmatic paints can't accumulate
+    /// undo state).
+    private func recordBrushBackup(x: Int, y: Int, z: Int, mask: LabelVolume) {
+        guard brushStrokeInProgress else { return }
+        let key = BrushVoxelKey(x: x, y: y, z: z)
+        if brushStrokeBackup[key] == nil {
+            brushStrokeBackup[key] = mask.labelAt(x: x, y: y, z: z)
+        }
+    }
+
+    /// Begin a brush stroke (mouseDown). Clears any prior stroke's backup so
+    /// the undo registered on mouseUp covers exactly this stroke's voxels.
+    func beginBrushStroke() {
+        brushStrokeInProgress = true
+        brushStrokeBackup.removeAll(keepingCapacity: true)
+    }
+
+    /// End a brush stroke (mouseUp) and register a single undo that restores
+    /// every touched voxel to its pre-stroke label. One stroke = one undo step,
+    /// so a drag that fires many `paintBrush` calls undoes as a group (⌘Z).
+    func endBrushStroke(undoManager: UndoManager?) {
+        guard brushStrokeInProgress else { return }
+        brushStrokeInProgress = false
+        let backup = brushStrokeBackup
+        brushStrokeBackup.removeAll(keepingCapacity: true)
+        guard !backup.isEmpty, baseLabelMask != nil else { return }
+        let erased = calcBrushErase   // capture for the action name
+        undoManager?.registerUndo(withTarget: self) { target in
+            guard let mask = target.baseLabelMask else { return }
+            for (key, oldLabel) in backup {
+                // Guard defensively against a volume swap between the stroke
+                // and its undo (the mask can't resize, but a new base file
+                // would have changed the grid).
+                guard key.x >= 0, key.x < mask.width,
+                      key.y >= 0, key.y < mask.height,
+                      key.z >= 0, key.z < mask.depth else { continue }
+                mask.setLabel(oldLabel, x: key.x, y: key.y, z: key.z)
+            }
+            target.recomputeRegionVoxelCounts()
+            target.invalidateSegmentationExports()
+            target.segmentationRevision &+= 1
+            target.rerenderSegmentation()
+        }
+        undoManager?.setActionName(erased ? "Erase Brush" : "Paint Brush")
     }
 
     /// Adjust the touch-up brush radius by a signed delta, clamped to 0...8
