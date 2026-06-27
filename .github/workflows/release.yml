@@ -175,7 +175,7 @@ jobs:
             echo "      <sparkle:version>${BUILD}</sparkle:version>"
             echo "      <sparkle:shortVersionString>${MARKETING}</sparkle:shortVersionString>"
             echo "      <description sparkle:format=\"markdown\">"
-            xml_escape < sparkle-release-notes.md | sed 's/^/        /'
+            xml_escape < sparkle-release-notes.md
             echo "      </description>"
             echo "      <sparkle:fullReleaseNotesLink>${RELEASE_URL}</sparkle:fullReleaseNotesLink>"
             echo "      <enclosure url=\"${ENCLOSURE_URL}\" sparkle:edSignature=\"${SIG}\" length=\"${LENGTH}\" type=\"application/octet-stream\" />"
