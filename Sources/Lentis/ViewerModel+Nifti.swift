@@ -21,6 +21,11 @@ extension ViewerModel {
     func loadNifti(url: URL) {
         isLoading = true
         errorMessage = nil
+        // Bump the load generation so any previously in-flight load (or a load
+        // racing with this one) is discarded by `applyNiftiDataset`. Capture the
+        // new value to compare on the main-thread apply.
+        loadGeneration &+= 1
+        let gen = loadGeneration
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let secured = url.startAccessingSecurityScopedResource()
@@ -36,20 +41,27 @@ extension ViewerModel {
                 )
                 let volume = dataset.makeVolume(timepoint: 0)
                 DispatchQueue.main.async {
-                    self?.applyNiftiDataset(dataset, firstVolume: volume)
+                    self?.applyNiftiDataset(dataset, firstVolume: volume, generation: gen)
                 }
             } catch {
                 DispatchQueue.main.async {
-                    self?.isLoading = false
-                    self?.isScanning = false
-                    self?.errorMessage = "Failed to open NIfTI: \(error)"
+                    // Don't clobber state cleared by a close/new load that
+                    // superseded this attempt.
+                    guard let self, self.loadGeneration == gen else { return }
+                    self.isLoading = false
+                    self.isScanning = false
+                    self.errorMessage = "Failed to open NIfTI: \(error)"
                 }
             }
         }
     }
 
-    /// Install a freshly-loaded dataset into the viewer (main thread).
-    private func applyNiftiDataset(_ dataset: NiftiDataset, firstVolume volume: VolumeData) {
+    /// Install a freshly-loaded dataset into the viewer (main thread). Aborts
+    /// if the load was superseded by a close or a newer open (`generation` no
+    /// longer matches `loadGeneration`) — a stale decode must not reopen a file
+    /// the user already closed.
+    private func applyNiftiDataset(_ dataset: NiftiDataset, firstVolume volume: VolumeData, generation gen: UInt64) {
+        guard loadGeneration == gen else { return }
         niftiDataset = dataset
         currentTimepoint = 0
         modalityOverride = nil

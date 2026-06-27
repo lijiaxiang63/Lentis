@@ -246,6 +246,22 @@ class ViewerModel: ObservableObject {
     // Request Token to prevent stale background loads from overriding current view
     private var currentLoadRequestID: UUID = UUID()
     private var lastPrecachedSeriesIndex: Int = -1
+
+    /// Monotonic generation token for the in-flight NIfTI load. Bumped on every
+    /// new `loadNifti` and on `closeCurrentFile`; `applyNiftiDataset` checks it
+    /// before installing a decoded dataset so a load that was superseded by a
+    /// close (or a newer open) can't reopen the file after the viewer was
+    /// cleared. Closes the close-undoes-in-flight-load seam (review P1).
+    /// Internal (not `private`) so the `ViewerModel+Nifti` extension can read it.
+    var loadGeneration: UInt64 = 0
+
+    /// Monotonic generation token for in-flight layer imports. Bumped on
+    /// `closeCurrentFile` and on every new base load (which clears
+    /// `layerStore`); the `addLayerFiles` background completion checks it before
+    /// appending loaded layers so a stale import can't repopulate the store
+    /// after a close. Closes the close-doesn't-cancel-in-flight-layer-import
+    /// seam (review P2).
+    var layerImportGeneration: UInt64 = 0
     
     // Series Thumbnails
     @Published var seriesThumbnails: [String: NSImage] = [:]
@@ -593,6 +609,10 @@ class ViewerModel: ObservableObject {
         showLayerInspector = true
         isImportingLayers = true
         layerImportError = nil
+        // Bump the import generation so a stale import completing after a close
+        // (or a new base load) is discarded by the completion below.
+        layerImportGeneration &+= 1
+        let gen = layerImportGeneration
         let startingColorIndex = layerStore.layers.count
         let palette: [SIMD3<Double>] = [
             SIMD3(1.00, 0.23, 0.19), SIMD3(0.20, 0.67, 0.96),
@@ -616,6 +636,8 @@ class ViewerModel: ObservableObject {
             }
             DispatchQueue.main.async {
                 guard let self else { return }
+                // Discard a stale import (closed / new base load superseded it).
+                guard self.layerImportGeneration == gen else { return }
                 for layer in loaded { self.layerStore.add(layer) }
                 self.isImportingLayers = false
                 if !failures.isEmpty {
@@ -665,6 +687,11 @@ class ViewerModel: ObservableObject {
                     self.currentDatasetFile = nil
                 }
                 self.layerStore.removeAll()
+                // A new base file invalidates any in-flight layer import from
+                // the previous file (the completion's `matching: base` capture
+                // references the old grid).
+                self.layerImportGeneration &+= 1
+                self.isImportingLayers = false
                 self.resetSegmentation()
                 self.resetAllPanels()
                 self.loadNifti(url: url)
@@ -961,8 +988,19 @@ class ViewerModel: ObservableObject {
     /// regions, external layers, and caches are released. The window stays
     /// open — the user can then open another file.
     func closeCurrentFile() {
+        // Bump the generation tokens FIRST so any in-flight NIfTI decode or
+        // layer import completing after this close is discarded by its
+        // main-thread completion (closes the close-undoes-in-flight-load and
+        // close-doesn't-cancel-in-flight-layer-import seams — review P1/P2).
+        loadGeneration &+= 1
+        layerImportGeneration &+= 1
+        isImportingLayers = false
+        layerImportError = nil
         cachingQueue.cancelAllOperations()
         for panel in panels { panel.loadingQueue.cancelAllOperations() }
+        isLoading = false
+        isScanningFolder = false
+        isScanning = false
         errorMessage = nil
         image = nil
         rawPixelData = nil

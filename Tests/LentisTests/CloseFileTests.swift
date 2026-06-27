@@ -235,4 +235,111 @@ final class CloseFileTests: XCTestCase {
         // load() runs async off-main; don't assert final state here, just that
         // no confirmation was requested.
     }
+
+    // MARK: - Race: close must not be undone by an in-flight NIfTI load (P1)
+
+    /// Write a small uncompressed `.nii` to a temp file and return its URL.
+    /// `loadNifti` reads from disk via `NiftiImage.read(contentsOf:)`, which
+    /// handles both `.nii` and `.nii.gz`.
+    private func writeTempNifti() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lentis-close-race-\(UUID().uuidString).nii")
+        let data = buildNifti(
+            NiftiSpec(nx: 4, ny: 4, nz: 2, datatype: 4, bitpix: 16),
+            voxels: [Float](repeating: 40, count: 4 * 4 * 2))
+        try data.write(to: url)
+        return url
+    }
+
+    /// Close while a NIfTI decode is in flight must win: the background decode's
+    /// main-thread `applyNiftiDataset` completion runs AFTER close (close is
+    /// synchronous on main; the completion is queued onto main), so the load-
+    /// generation guard discards it and the viewer stays empty.
+    func testCloseDuringInFlightLoadDoesNotReopen() throws {
+        let url = try writeTempNifti()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let model = ViewerModel()
+        model.loadNifti(url: url)        // kicks off background decode
+        XCTAssertTrue(model.isLoading, "load started")
+        model.closeCurrentFile()          // supersede it on the main queue
+
+        // Drain the main run loop so the background completion (queued onto main)
+        // lands. The generation guard must discard it.
+        let exp = expectation(description: "in-flight load settled")
+        DispatchQueue.main.async { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertNil(model.niftiDataset, "stale load discarded — viewer stays empty")
+        XCTAssertEqual(model.loadedFileName, "")
+        XCTAssertTrue(model.allSeries.isEmpty)
+        XCTAssertFalse(model.isLoading, "close reset isLoading; stale load didn't clobber it")
+    }
+
+    /// Sanity check: without a superseding close, the load DOES apply (proves the
+    /// test fixture is valid and the guard isn't just always-aborting).
+    func testLoadAppliesWhenNotSuperseded() throws {
+        let url = try writeTempNifti()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let model = ViewerModel()
+        model.loadNifti(url: url)
+
+        // Poll until the background decode + main apply lands.
+        let deadline = Date().addingTimeInterval(5)
+        while model.niftiDataset == nil && model.errorMessage == nil && Date() < deadline {
+            let exp = expectation(description: "load apply")
+            DispatchQueue.main.async { exp.fulfill() }
+            wait(for: [exp], timeout: 1.0)
+        }
+        XCTAssertNotNil(model.niftiDataset, "load applied when not superseded")
+        XCTAssertFalse(model.allSeries.isEmpty)
+    }
+
+    // MARK: - Race: close must cancel an in-flight layer import (P2)
+
+    /// Write a small same-grid mask NIfTI (single nonzero label) to a temp file.
+    private func writeTempMaskNifti(matchingWidth w: Int, height h: Int, depth d: Int) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lentis-close-mask-\(UUID().uuidString).nii")
+        var vox = [Float](repeating: 0, count: w * h * d)
+        if !vox.isEmpty { vox[0] = 1 }
+        let data = buildNifti(
+            NiftiSpec(nx: w, ny: h, nz: d, datatype: 4, bitpix: 16), voxels: vox)
+        try data.write(to: url)
+        return url
+    }
+
+    /// Close while a layer import is in flight must win: the background import's
+    /// main-thread completion is discarded by the layer-import-generation guard,
+    /// so no layers are appended after close and `isImportingLayers` stays false.
+    func testCloseDuringInFlightLayerImportDiscardsIt() throws {
+        let (model, vol) = makeLoadedModel()
+        let maskURL = try writeTempMaskNifti(
+            matchingWidth: vol.width, height: vol.height, depth: vol.depth)
+        defer { try? FileManager.default.removeItem(at: maskURL) }
+
+        model.addLayerFiles([maskURL])   // kicks off background import
+        XCTAssertTrue(model.isImportingLayers, "import started")
+        model.closeCurrentFile()          // supersede it on the main queue
+
+        // Drain the main run loop so the background completion lands.
+        let exp = expectation(description: "in-flight import settled")
+        DispatchQueue.main.async { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertTrue(model.layerStore.layers.isEmpty, "stale import discarded — no layers after close")
+        XCTAssertFalse(model.isImportingLayers, "close reset isImportingLayers; stale import didn't clobber it")
+    }
+
+    /// Close alone (no in-flight import) must still reset `isImportingLayers`
+    /// and clear any import error so the empty state isn't stuck "importing".
+    func testCloseResetsImportFlags() {
+        let (model, _) = makeLoadedModel()
+        model.isImportingLayers = true
+        model.layerImportError = "some error"
+        model.closeCurrentFile()
+        XCTAssertFalse(model.isImportingLayers, "isImportingLayers reset on close")
+        XCTAssertNil(model.layerImportError, "layerImportError cleared on close")
+    }
 }

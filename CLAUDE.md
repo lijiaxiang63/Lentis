@@ -467,8 +467,20 @@ All phases below are **DONE and merged to `master`** unless noted.
     cancel / no-prior-file / no-unsaved-work). `AppSettingsTests` adds persistence +
     default-on for `confirmReplaceOnDiscard`. A `confirmReplaceOnDiscardOverride` on
     `ViewerModel` keeps the gate tests isolated from the process-wide
-    `AppSettings.shared` singleton. Suite now 261 tests (174 XCTest + 87
+    `AppSettings.shared` singleton. Suite now 265 tests (178 XCTest + 87
     swift-testing), 0 failures.
+  - **In-flight-load / in-flight-import race hardening (review P1/P2):** a
+    monotonic `loadGeneration` token (bumped on every `loadNifti` +
+    `closeCurrentFile`) is captured by the background decode and checked in
+    `applyNiftiDataset` before installing the dataset — so a close (or a newer
+    open) supersedes an in-flight decode instead of being undone when it lands.
+    Likewise a `layerImportGeneration` token (bumped on close + every new base
+    load) guards the `addLayerFiles` completion so a stale import can't
+    repopulate `layerStore` after a close; `closeCurrentFile` also resets
+    `isImportingLayers`/`layerImportError`/`isLoading`/`isScanningFolder`/
+    `isScanning`. Regression tests: `testCloseDuringInFlightLoadDoesNotReopen`,
+    `testLoadAppliesWhenNotSuperseded` (sanity), and
+    `testCloseDuringInFlightLayerImportDiscardsIt` + `testCloseResetsImportFlags`.
 
 ---
 
