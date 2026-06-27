@@ -135,6 +135,17 @@ private struct GeneralSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section {
+                Toggle("Ask before replacing or closing a file with unsaved work",
+                       isOn: $settings.confirmReplaceOnDiscard)
+            } header: {
+                Text("File Handling")
+            } footer: {
+                Text("When on, closing the current file (⌘W) or dropping a new file onto the viewport prompts before discarding unsaved segmentation regions, drafts, and mask/atlas layers. Turn off for a silent drag-and-drop workflow.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .scrollDisabled(true)

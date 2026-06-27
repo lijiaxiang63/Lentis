@@ -57,6 +57,7 @@ final class AppSettings: ObservableObject {
         static let overlayOpacity     = "LentisOverlayOpacity"
         static let exportMaskSuffix   = "LentisExportMaskSuffix"
         static let exportAtlasSuffix  = "LentisExportAtlasSuffix"
+        static let confirmReplaceOnDiscard = "LentisConfirmReplaceOnDiscard"
     }
 
     /// Built-in default suffixes for direct (no-dialog) segmentation exports.
@@ -141,6 +142,16 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(overlayOpacity, forKey: Key.overlayOpacity) }
     }
 
+    // MARK: - File handling
+
+    /// When true, closing the current file or replacing it by drag-and-drop
+    /// prompts for confirmation if there is unsaved work (committed
+    /// segmentation regions, an in-flight draft, external mask/atlas layers,
+    /// or a brain-mask layer). On by default; turn off for a silent workflow.
+    @Published var confirmReplaceOnDiscard: Bool {
+        didSet { defaults.set(confirmReplaceOnDiscard, forKey: Key.confirmReplaceOnDiscard) }
+    }
+
     // MARK: - Init
 
     init(defaults: UserDefaults = .standard) {
@@ -160,6 +171,7 @@ final class AppSettings: ObservableObject {
         overlayOpacity = (defaults.object(forKey: Key.overlayOpacity) as? Double) ?? 0.45
         exportMaskSuffix = defaults.string(forKey: Key.exportMaskSuffix) ?? AppSettings.defaultMaskSuffix
         exportAtlasSuffix = defaults.string(forKey: Key.exportAtlasSuffix) ?? AppSettings.defaultAtlasSuffix
+        confirmReplaceOnDiscard = (defaults.object(forKey: Key.confirmReplaceOnDiscard) as? Bool) ?? true
     }
 
     // MARK: - Resolved URLs

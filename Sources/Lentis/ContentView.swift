@@ -190,6 +190,18 @@ struct ContentView: View {
         } message: {
             Text(model.layerImportError ?? "")
         }
+        .alert(model.pendingConfirmation?.title ?? "",
+               isPresented: Binding(
+                get: { model.pendingConfirmation != nil },
+                set: { if !$0 { model.cancelPendingConfirmation() } }
+               )) {
+            Button("Cancel", role: .cancel) { model.cancelPendingConfirmation() }
+            Button(model.pendingConfirmation?.actionLabel ?? "Continue", role: .destructive) {
+                model.performPendingConfirmation()
+            }
+        } message: {
+            Text(model.pendingConfirmation?.message ?? "")
+        }
         .animation(.easeInOut(duration: 0.2), value: model.isLoading)
         .preferredColorScheme(.dark)
         // Drive every accent-aware native control (segmented pickers, selection,
@@ -227,7 +239,11 @@ struct ContentView: View {
             if provider.canLoadObject(ofClass: URL.self) {
                 _ = provider.loadObject(ofClass: URL.self) { url, _ in
                     if let url = url {
-                        DispatchQueue.main.async { model.load(url: url) }
+                        // Route through `requestLoad` so an unsaved segmentation /
+                        // layers can be confirmed first (per the
+                        // `confirmReplaceOnDiscard` preference). With no prior file
+                        // open, requestLoad just loads — same as the Open menu.
+                        DispatchQueue.main.async { model.requestLoad(url: url) }
                     }
                 }
                 return true

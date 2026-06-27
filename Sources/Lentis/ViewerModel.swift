@@ -895,6 +895,140 @@ class ViewerModel: ObservableObject {
         seriesThumbnails.removeAll()
     }
 
+    // MARK: - Close current file / replace-with-confirmation
+
+    /// True when there is unsaved work the user might not want to discard: a
+    /// committed calcification region, an in-flight draft, external mask/atlas
+    /// layers, or a brain-mask/parcellation layer. Drives the close/replace
+    /// confirmation gate (`requestClose` / `requestLoad`).
+    var hasUnsavedWork: Bool {
+        hasSegmentation || draftRegion != nil
+            || !layerStore.layers.isEmpty || brainMaskLayer != nil
+    }
+
+    /// A deferred destructive action awaiting the user's confirmation. Set by
+    /// `requestClose` / `requestLoad` when `hasUnsavedWork` and the
+    /// `confirmReplaceOnDiscard` preference is on; the alert in `ContentView`
+    /// either performs it (`performPendingConfirmation`) or cancels it
+    /// (`cancelPendingConfirmation`). nil ⇒ no confirmation pending.
+    struct PendingConfirmation: Identifiable {
+        let id = UUID()
+        /// The kind of destructive action — drives the alert's button label.
+        let kind: Kind
+        let message: String
+        let action: () -> Void
+
+        enum Kind { case close, replace }
+        var title: String {
+            kind == .close ? "Close current file?" : "Replace current file?"
+        }
+        /// Affirmative button label (role: .destructive).
+        var actionLabel: String {
+            kind == .close ? "Close" : "Replace"
+        }
+    }
+    @Published var pendingConfirmation: PendingConfirmation? = nil
+
+    /// Perform the pending destructive action (user confirmed the alert).
+    func performPendingConfirmation() {
+        let pending = pendingConfirmation
+        pendingConfirmation = nil
+        pending?.action()
+    }
+
+    /// Cancel the pending destructive action (user dismissed the alert).
+    func cancelPendingConfirmation() {
+        pendingConfirmation = nil
+    }
+
+    /// Whether a close/replace action needs to confirm with the user first:
+    /// only when something is open, there's unsaved work, and the preference is
+    /// on. Reads `AppSettings.shared` (the established viewer→settings pattern).
+    /// `confirmReplaceOnDiscardOverride` (non-nil only in tests) substitutes for
+    /// the shared preference so the gate can be exercised without mutating the
+    /// process-wide singleton.
+    var confirmReplaceOnDiscardOverride: Bool? = nil
+
+    private var closeReplaceNeedsConfirmation: Bool {
+        let pref = confirmReplaceOnDiscardOverride ?? AppSettings.shared.confirmReplaceOnDiscard
+        return pref
+            && (niftiDataset != nil || dataset != nil)
+            && hasUnsavedWork
+    }
+
+    /// Close the current file (File → Close, ⌘W). Returns the viewer to the
+    /// empty "No file open" state, mirroring a fresh launch. Segmentation
+    /// regions, external layers, and caches are released. The window stays
+    /// open — the user can then open another file.
+    func closeCurrentFile() {
+        cachingQueue.cancelAllOperations()
+        for panel in panels { panel.loadingQueue.cancelAllOperations() }
+        errorMessage = nil
+        image = nil
+        rawPixelData = nil
+        allSeries = []
+        currentSeriesIndex = -1
+        currentImageIndex = -1
+        currentSeriesInfo = ""
+        currentImageInfo = ""
+        loadedFileName = ""
+        loadedFileURL = nil
+        dataset = nil
+        currentDatasetFile = nil
+        niftiDataset = nil
+        niftiSeriesIndex = -1
+        currentTimepoint = 0
+        modalityOverride = nil
+        crosshairWorld = nil
+        layerStore.removeAll()
+        resetSegmentation()
+        resetAllPanels()
+        // `load` does not clear these (it overwrites per-series entries), so a
+        // close must drop them to avoid a stale entry surviving into the next
+        // session and seeding the wrong window.
+        seriesStates.removeAll()
+        volumeCacheLock.lock()
+        _volumeCache.removeAll()
+        volumeCacheLock.unlock()
+        // Back to the launch layout: a single empty panel slot. MultiPanelContainer
+        // renders EmptyPanelView for an unassigned slot; an empty `panels` array
+        // likewise shows the empty state (and the sidebar's "No file open").
+        layout = .single
+        isMPRLayout = false
+        fullscreenPanelID = nil
+        panels = []
+        showLayerInspector = false
+        segmentationRevision &+= 1
+    }
+
+    /// File → Close, ⌘W. Confirms first if there is unsaved work and the
+    /// preference is on; otherwise closes immediately.
+    func requestClose() {
+        if closeReplaceNeedsConfirmation {
+            pendingConfirmation = PendingConfirmation(
+                kind: .close,
+                message: "Closing will discard unsaved segmentation regions, drafts, and layers.",
+                action: { [weak self] in self?.closeCurrentFile() })
+        } else {
+            closeCurrentFile()
+        }
+    }
+
+    /// Drop-to-replace entry point. A drop on the image viewport calls this
+    /// instead of `load` directly so an unsaved segmentation/layers can be
+    /// confirmed first (per the `confirmReplaceOnDiscard` preference). With no
+    /// prior file open it just loads — same as the Open menu.
+    func requestLoad(url: URL) {
+        if closeReplaceNeedsConfirmation {
+            pendingConfirmation = PendingConfirmation(
+                kind: .replace,
+                message: "Opening “\(url.lastPathComponent)” will discard unsaved segmentation regions, drafts, and layers.",
+                action: { [weak self] in self?.load(url: url) })
+        } else {
+            load(url: url)
+        }
+    }
+
     /// Auto-assign series to panels (one series per panel, in order)
     func autoAssignSeriesToPanels() {
         for i in 0..<panels.count {

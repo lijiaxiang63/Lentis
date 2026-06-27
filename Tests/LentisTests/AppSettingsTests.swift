@@ -148,6 +148,7 @@ struct AppSettingsTests {
         a.overlayOpacity = 0.72
         a.exportMaskSuffix = "_mymask"
         a.exportAtlasSuffix = "_myatlas"
+        a.confirmReplaceOnDiscard = false
 
         // A fresh instance over the same suite reflects every change.
         let b = AppSettings(defaults: suite)
@@ -163,6 +164,7 @@ struct AppSettingsTests {
         #expect(b.overlayOpacity == 0.72)
         #expect(b.exportMaskSuffix == "_mymask")
         #expect(b.exportAtlasSuffix == "_myatlas")
+        #expect(b.confirmReplaceOnDiscard == false)
     }
 
     @Test func defaultsAreSensibleOnFirstRun() throws {
@@ -181,5 +183,21 @@ struct AppSettingsTests {
         #expect(s.overlayOpacity == 0.45)
         #expect(s.exportMaskSuffix == "_calcmask")
         #expect(s.exportAtlasSuffix == "_calcatlas")
+        #expect(s.confirmReplaceOnDiscard, "close/replace confirmation is on by default")
+    }
+
+    // MARK: - Close/replace confirmation preference
+
+    @Test func confirmReplaceOnDiscardPersists() throws {
+        let suiteName = "lentis.test.\(UUID().uuidString)"
+        let suite = try #require(UserDefaults(suiteName: suiteName))
+        defer { suite.removePersistentDomain(forName: suiteName) }
+
+        let a = AppSettings(defaults: suite)
+        a.confirmReplaceOnDiscard = false
+        #expect(AppSettings(defaults: suite).confirmReplaceOnDiscard == false)
+
+        a.confirmReplaceOnDiscard = true
+        #expect(AppSettings(defaults: suite).confirmReplaceOnDiscard == true)
     }
 }

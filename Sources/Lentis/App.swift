@@ -95,6 +95,22 @@ struct LentisApp: App {
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
                 .disabled(model.niftiDataset == nil)
+
+                Divider()
+
+                // Close the current file and return to the empty "No file open"
+                // state. The window stays open — the user can still close it via
+                // the traffic light or ⌘Q. SwiftUI's `WindowGroup` auto-injects a
+                // system ⌘W (close window); an explicit key equivalent declared
+                // in a `replacing` command group takes precedence in practice, so
+                // ⌘W routes here to close the file instead. Confirms first via
+                // `requestClose` if there is unsaved work and the
+                // `confirmReplaceOnDiscard` preference is on.
+                Button("Close") {
+                    model.requestClose()
+                }
+                .keyboardShortcut("w", modifiers: .command)
+                .disabled(model.niftiDataset == nil && model.dataset == nil)
             }
 
             InspectorCommands()
