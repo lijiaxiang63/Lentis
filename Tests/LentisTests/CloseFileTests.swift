@@ -254,6 +254,25 @@ final class CloseFileTests: XCTestCase {
         XCTAssertFalse(model.allSeries.isEmpty, "drop must not replace until confirmed")
     }
 
+    /// Regression: dropping a file squarely on the *rendered image* (not just the
+    /// panel margins) must reach the panel's drop handler. NSImageView
+    /// auto-registers for image + `NSFilenamesPboardType` drags even when
+    /// non-editable, so as the front-most subview it silently swallowed Finder
+    /// file drops over the image — only the margins (which have no NSImageView)
+    /// accepted a drop. `setup()` strips the imageView's drag registration; this
+    /// test locks that in. The panel view itself must remain a file-URL +
+    /// series-index drop destination.
+    @MainActor
+    func testPanelImageSubviewDoesNotInterceptFileDrops() {
+        let view = PanelInteractiveImageView.PanelImageInteractView(frame: .zero)
+        XCTAssertTrue(view.imageSubviewRegisteredDraggedTypes.isEmpty,
+            "NSImageView must not be registered for any dragged types, or it intercepts Finder file drops over the rendered image.")
+        XCTAssertTrue(view.registeredDraggedTypes.contains(.fileURL),
+            "panel view must stay a file-URL drop destination so image drops route through performDragOperation → requestLoad")
+        XCTAssertTrue(view.registeredDraggedTypes.contains(.string),
+            "panel view must stay a series-index (.string) drop destination for sidebar drags")
+    }
+
     // MARK: - Race: close must not be undone by an in-flight NIfTI load (P1)
 
     /// Write a small uncompressed `.nii` to a temp file and return its URL.
