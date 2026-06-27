@@ -236,6 +236,24 @@ final class CloseFileTests: XCTestCase {
         // no confirmation was requested.
     }
 
+    func testImagePanelFileDropRoutesThroughReplaceConfirmation() {
+        let (model, _) = makeLoadedModel()
+        model.calcRegions = [makeRegion()]
+        model.confirmReplaceOnDiscardOverride = true
+
+        PanelInteractiveImageView.PanelImageInteractView.handleDroppedFileURL(
+            URL(fileURLWithPath: "/tmp/lentis-panel-drop-replacement.nii.gz"),
+            model: model)
+
+        let exp = expectation(description: "panel drop routed on main")
+        DispatchQueue.main.async { exp.fulfill() }
+        wait(for: [exp], timeout: 1)
+
+        XCTAssertEqual(model.pendingConfirmation?.kind, .replace)
+        XCTAssertEqual(model.pendingConfirmation?.actionLabel, "Replace")
+        XCTAssertFalse(model.allSeries.isEmpty, "drop must not replace until confirmed")
+    }
+
     // MARK: - Race: close must not be undone by an in-flight NIfTI load (P1)
 
     /// Write a small uncompressed `.nii` to a temp file and return its URL.

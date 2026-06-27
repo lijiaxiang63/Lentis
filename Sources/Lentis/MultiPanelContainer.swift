@@ -457,13 +457,21 @@ struct PanelInteractiveImageView: NSViewRepresentable {
             if let urls = pb.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
                let url = urls.first,
                let model = model {
-                DispatchQueue.main.async {
-                    model.load(url: url)
-                }
+                Self.handleDroppedFileURL(url, model: model)
                 return true
             }
 
             return false
+        }
+
+        static func handleDroppedFileURL(_ url: URL, model: ViewerModel) {
+            DispatchQueue.main.async {
+                // Match ContentView's SwiftUI drop path: file/folder drops onto
+                // an already-rendered image panel are replacements, so route
+                // through the close/replace confirmation gate instead of
+                // bypassing it with a direct load.
+                model.requestLoad(url: url)
+            }
         }
 
         func setImage(_ img: NSImage) {
