@@ -106,6 +106,10 @@ jobs:
           echo "----- release notes -----"
           cat release-notes.md
 
+          # Sparkle's update prompt should show just the changelog text, not the
+          # GitHub install instructions meant for first-time downloads.
+          awk '/^### Install$/ { exit } { print }' release-notes.md > sparkle-release-notes.md
+
       - name: Sign DMG + generate Sparkle appcast
         id: appcast
         if: startsWith(github.ref, 'refs/tags/')
@@ -154,6 +158,9 @@ jobs:
           PUBDATE="$(date -Ru)"
           ENCLOSURE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${VERSION}/${DMG}"
           RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${VERSION}"
+          xml_escape() {
+            sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+          }
           {
             echo '<?xml version="1.0" standalone="yes"?>'
             echo '<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">'
@@ -167,7 +174,10 @@ jobs:
             echo "      <pubDate>${PUBDATE}</pubDate>"
             echo "      <sparkle:version>${BUILD}</sparkle:version>"
             echo "      <sparkle:shortVersionString>${MARKETING}</sparkle:shortVersionString>"
-            echo "      <sparkle:releaseNotesLink>${RELEASE_URL}</sparkle:releaseNotesLink>"
+            echo "      <description sparkle:format=\"markdown\">"
+            xml_escape < sparkle-release-notes.md
+            echo "      </description>"
+            echo "      <sparkle:fullReleaseNotesLink>${RELEASE_URL}</sparkle:fullReleaseNotesLink>"
             echo "      <enclosure url=\"${ENCLOSURE_URL}\" sparkle:edSignature=\"${SIG}\" length=\"${LENGTH}\" type=\"application/octet-stream\" />"
             echo '    </item>'
             echo '  </channel>'
