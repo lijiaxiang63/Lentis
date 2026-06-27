@@ -55,7 +55,7 @@ open Lentis.app --args --benchmark /abs/path/to/file.nii.gz --perf-stress
 
 - **Toolchain:** Swift 6.3, Xcode 26.4, macOS arm64. Deployment target **macOS 26**
   (Tahoe) for native Liquid Glass APIs; Swift 5 language mode pinned. Bundle id
-  `com.kalicooper.lentis`, marketing version `2.2.0`. **One native dependency: Sparkle
+  `com.kalicooper.lentis`, marketing version `2.2.1`. **One native dependency: Sparkle
   2.x** (auto-update, bundled into the `.app` by `package_app.sh`); imaging stays pure
   Swift + Metal/AppKit.
 - `swift build` after adding a `PanelMode` case → the compiler flags every
@@ -434,6 +434,10 @@ All phases below are **DONE and merged to `master`** unless noted.
     advanced, clarifies export.
   - **Pan tool repair:** dead Pan tool fixed via absolute-coordinate deltas; greyed out
     on 3D.
+- [x] **Panel drop replacement confirmation (2026-06-27).** File/folder drops onto
+  rendered image panels now route through `requestLoad`, matching the ContentView drop
+  path and preserving the unsaved-work replace confirmation gate. Version bumped to
+  **2.2.1**.
   - **Brush enhancements:** size shortcuts (`-`/`=`); canvas footprint overlay; brush
     undo (one stroke = one ⌘Z) with staleness guard, sagittal footprint, B/K global
     routing, post-stroke per-voxel guard, orphaned-pre-stroke-label remap.

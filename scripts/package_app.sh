@@ -9,9 +9,9 @@ APP_NAME="Lentis"
 # Bundle version. Override from CI (e.g. the release tag) via the environment;
 # falls back to these defaults for local builds.
 #   CFBundleShortVersionString (marketing version, e.g. 2.0.0)
-APP_VERSION="${LENTIS_MARKETING_VERSION:-2.2.0}"
+APP_VERSION="${LENTIS_MARKETING_VERSION:-2.2.1}"
 #   CFBundleVersion (build number, e.g. a monotonically increasing integer)
-APP_BUILD="${LENTIS_BUILD_VERSION:-7}"
+APP_BUILD="${LENTIS_BUILD_VERSION:-8}"
 # Set to your own "Developer ID Application: ..." identity before using --notarize.
 SIGNING_IDENTITY="Developer ID Application: CHANGE_ME"
 NOTARY_PROFILE="Lentis"
