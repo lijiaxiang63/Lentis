@@ -412,9 +412,29 @@ struct PanelInteractiveImageView: NSViewRepresentable {
 
             // Register for drag & drop: series from sidebar (.string) + files/folders from Finder (.fileURL)
             registerForDraggedTypes([.string, .fileURL])
+
+            // NSImageView auto-registers for image + `NSFilenamesPboardType` drags
+            // (even when non-editable), so as the front-most subview it would
+            // *intercept* a Finder file drop over the rendered image and silently
+            // swallow it — a `.nii.gz` isn't a displayable image, so nothing
+            // happens. That left only the panel margins (where there is no
+            // NSImageView) able to reach the file-drop handler. Strip the
+            // imageView's drag registration so the drop falls through to this
+            // view's `performDragOperation` (→ `requestLoad`) everywhere on the
+            // panel, not just the margins.
+            imageView.unregisterDraggedTypes()
         }
 
         // MARK: - Drag & Drop (NSDraggingDestination)
+
+        /// Test seam: the drag types the front-most image subview is registered
+        /// for. Must stay empty (see `setup`'s `unregisterDraggedTypes`) so a
+        /// Finder file drop over the rendered image reaches `performDragOperation`
+        /// instead of being swallowed by NSImageView's auto-registered image /
+        /// `NSFilenamesPboardType` drag handling.
+        var imageSubviewRegisteredDraggedTypes: [NSPasteboard.PasteboardType] {
+            imageView.registeredDraggedTypes
+        }
 
         private func hasDraggableContent(_ sender: NSDraggingInfo) -> Bool {
             let pb = sender.draggingPasteboard
