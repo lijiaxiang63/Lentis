@@ -540,12 +540,20 @@ class ViewerModel: ObservableObject {
     func loadFolder(url: URL) {
         isScanningFolder = true
         errorMessage = nil
+        // Bump the load generation so a close (or a newer open) during the scan
+        // supersedes this attempt's completion — a stale scan must not install
+        // a dataset / auto-load an image after the viewer was cleared.
+        loadGeneration &+= 1
+        let gen = loadGeneration
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let secured = url.startAccessingSecurityScopedResource()
             defer { if secured { url.stopAccessingSecurityScopedResource() } }
             let scanned = BIDSDataset.scan(at: url)
             DispatchQueue.main.async {
                 guard let self else { return }
+                // Discard a stale scan (closed / new open superseded it).
+                guard self.loadGeneration == gen else { return }
                 guard let scanned else {
                     self.isScanningFolder = false
                     self.errorMessage = "No NIfTI (.nii / .nii.gz) files found in “\(url.lastPathComponent)”."

@@ -467,7 +467,7 @@ All phases below are **DONE and merged to `master`** unless noted.
     cancel / no-prior-file / no-unsaved-work). `AppSettingsTests` adds persistence +
     default-on for `confirmReplaceOnDiscard`. A `confirmReplaceOnDiscardOverride` on
     `ViewerModel` keeps the gate tests isolated from the process-wide
-    `AppSettings.shared` singleton. Suite now 265 tests (178 XCTest + 87
+    `AppSettings.shared` singleton.     Suite now 266 tests (179 XCTest + 87
     swift-testing), 0 failures.
   - **In-flight-load / in-flight-import race hardening (review P1/P2):** a
     monotonic `loadGeneration` token (bumped on every `loadNifti` +
@@ -479,8 +479,9 @@ All phases below are **DONE and merged to `master`** unless noted.
     repopulate `layerStore` after a close; `closeCurrentFile` also resets
     `isImportingLayers`/`layerImportError`/`isLoading`/`isScanningFolder`/
     `isScanning`. Regression tests: `testCloseDuringInFlightLoadDoesNotReopen`,
-    `testLoadAppliesWhenNotSuperseded` (sanity), and
-    `testCloseDuringInFlightLayerImportDiscardsIt` + `testCloseResetsImportFlags`.
+    `testLoadAppliesWhenNotSuperseded` (sanity),
+    `testCloseDuringInFlightLayerImportDiscardsIt` + `testCloseResetsImportFlags`,
+    and `testCloseDuringInFlightFolderScanDiscardsIt` (folder-scan P2 follow-up).
 
 ---
 

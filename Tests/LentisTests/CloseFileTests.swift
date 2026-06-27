@@ -342,4 +342,42 @@ final class CloseFileTests: XCTestCase {
         XCTAssertFalse(model.isImportingLayers, "isImportingLayers reset on close")
         XCTAssertNil(model.layerImportError, "layerImportError cleared on close")
     }
+
+    // MARK: - Race: close must cancel an in-flight folder scan (P2 follow-up)
+
+    /// Write a loose NIfTI into a temp folder so `loadFolder` finds it quickly.
+    private func writeTempFolderWithNifti() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lentis-close-folder-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let fileURL = dir.appendingPathComponent("scan-test.nii")
+        let data = buildNifti(
+            NiftiSpec(nx: 4, ny: 4, nz: 2, datatype: 4, bitpix: 16),
+            voxels: [Float](repeating: 40, count: 4 * 4 * 2))
+        try data.write(to: fileURL)
+        return dir
+    }
+
+    /// Close while a folder scan is in flight must win: the scan's main-thread
+    /// completion is discarded by the load-generation guard, so the dataset is
+    /// not installed and no image is auto-loaded after close.
+    func testCloseDuringInFlightFolderScanDiscardsIt() throws {
+        let folderURL = try writeTempFolderWithNifti()
+        defer { try? FileManager.default.removeItem(at: folderURL) }
+
+        let model = ViewerModel()
+        model.loadFolder(url: folderURL)   // kicks off background scan
+        XCTAssertTrue(model.isScanningFolder, "scan started")
+        model.closeCurrentFile()            // supersede it on the main queue
+
+        // Drain the main run loop so the background scan completion lands.
+        let exp = expectation(description: "in-flight scan settled")
+        DispatchQueue.main.async { exp.fulfill() }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertNil(model.dataset, "stale scan discarded — no dataset after close")
+        XCTAssertNil(model.niftiDataset, "stale scan discarded — no image after close")
+        XCTAssertTrue(model.allSeries.isEmpty)
+        XCTAssertFalse(model.isScanningFolder, "close reset isScanningFolder; stale scan didn't clobber it")
+    }
 }
